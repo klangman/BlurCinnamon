@@ -148,6 +148,9 @@ class BlurPanels {
       this._signalManager.connect(global.settings, 'changed::panels-height',    this._panel_changed, this);
       this._signalManager.connect(global.settings, 'changed::panels-resizable', this._panel_changed, this);
       this._signalManager.connect(global.settings, 'changed::panels-autohide',  this._panel_changed, this);
+      // Connect to event where we might need to adjust the clipping of the background overlays
+      this._signalManager.connect(Main.layoutManager, "monitors-changed", this._panel_changed, this);
+
    }
 
    // Set the portion of the panel background that is visible to match the size of the panel
@@ -170,7 +173,7 @@ class BlurPanels {
       }
    }
 
-   // This function is called when some change occurred to the panel setup (i.e. number of panels or panel heights)
+   // This function is called when some change occurred to the panel setup (i.e. number of panels or panel heights, panel locations)
    _panel_changed() {
       let panels = Main.getPanels();
       for ( let i=0 ; i < this._blurredPanels.length || i < panels.length  ; i++ ) {
@@ -256,12 +259,13 @@ class BlurPanels {
          blurredPanel.effect = fx;
          blurredPanel.background = background;
       }
-      //return blurredPanel;
    }
 
    // This function will restore all panels to their original state and undo the monkey patching
    unblurPanels() {
       let panels = Main.getPanels();
+
+      this._signalManager.disconnectAllSignals();
 
       // Restore the panels to their original state
       for ( let i=0 ; i < this._blurredPanels.length ; i++ ) {
