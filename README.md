@@ -70,7 +70,7 @@ If you like this Cinnamon extension, "star" this Github repository to encourage 
 
 ## Credits
 
-Some code was borrowed from the [BlurOverview]([Extensions : Blur Overview : Cinnamon Spices](https://cinnamon-spices.linuxmint.com/extensions/view/72)) Extension by nailfarmer.
+Some code was borrowed from the [BlurOverview](https://cinnamon-spices.linuxmint.com/extensions/view/72) Extension by nailfarmer.
 
 The Gaussian effect code was borrowed from the Gnome [Blur my shell](https://github.com/aunetx/blur-my-shell) extension by [Aurélien Hamy](https://github.com/aunetx).
 
