@@ -8,7 +8,7 @@ const Cinnamon = imports.gi.Cinnamon;
 const Clutter = imports.gi.Clutter;
 const GLib = imports.gi.GLib;
 
-const UUID = "blur-overview@nailfarmer.nailfarmer.com";
+const UUID = "BlurCinnamon@klangman";
 
 const SHADER_FILENAME = 'gaussian_blur.glsl';
 const DEFAULT_PARAMS = {
