@@ -127,7 +127,7 @@ class BlurPanels {
 
    constructor() {
       this._signalManager = new SignalManager.SignalManager(null);
-      this._bluredPanels = [];
+      this._blurredPanels = [];
       this._blurExistingPanels();
 
       blurExtensionThis = this; // Make the 'this' pointer available in patch functions
@@ -144,10 +144,10 @@ class BlurPanels {
       Panel.Panel.prototype._hidePanel = this.blurHidePanel;
 
       // Connect to important panel events
-      this._signalManager.connect(global.settings, 'changed::panels-enabled', this._panel_changed, this);
-      this._signalManager.connect(global.settings, 'changed::panels-height', this._panel_changed, this);
+      this._signalManager.connect(global.settings, 'changed::panels-enabled',   this._panel_changed, this);
+      this._signalManager.connect(global.settings, 'changed::panels-height',    this._panel_changed, this);
       this._signalManager.connect(global.settings, 'changed::panels-resizable', this._panel_changed, this);
-      this._signalManager.connect(global.settings, 'changed::panels-autohide', this._panel_changed, this);
+      this._signalManager.connect(global.settings, 'changed::panels-autohide',  this._panel_changed, this);
    }
 
    // Set the portion of the panel background that is visible to match the size of the panel
@@ -173,24 +173,24 @@ class BlurPanels {
    // This function is called when some change occurred to the panel setup (i.e. number of panels or panel heights)
    _panel_changed() {
       let panels = Main.getPanels();
-      for ( let i=0 ; i < panels.length ; i++ ) {
+      for ( let i=0 ; i < this._blurredPanels.length || i < panels.length  ; i++ ) {
          if (panels[i]) {
-            let bluredPanel = this._bluredPanels[i];
             let panel = panels[i];
-            if (bluredPanel) {
+            let blurredPanel = panel.__blurredPanel;
+            if (blurredPanel) {
                // The panel height might have changed
                let actor = panel.actor;
-               this._setBackgroundClip( panel, bluredPanel.background );
+               this._setBackgroundClip( panel, blurredPanel.background );
             } else {
                // A new panel was added, so we need to apply the effects to it
-               this._bluredPanels[i] = this._blurPanel( panel );
+               this._blurPanel( panel, i );
             }
-         } else if (this._bluredPanels[i]) {
+         } else if (this._blurredPanels[i]) {
             // A panel was removed
-            let bluredPanel = this._bluredPanels[i];
-            if (bluredPanel.background) {
-               bluredPanel.background.destroy();
-               this._bluredPanels[i] = null;
+            let blurredPanel = this._blurredPanels[i];
+            if (blurredPanel.background) {
+               blurredPanel.background.destroy();
+               this._blurredPanels[i] = null;
             }
          }
       }
@@ -203,33 +203,41 @@ class BlurPanels {
       for ( let i=0 ; i < panels.length ; i++ ) {
          if (panels[i]) {
             let panel = panels[i];
-            this._bluredPanels[i] = this._blurPanel( panel );
+            this._blurPanel( panel, i );
          }
       }
    }
 
    // Create a new blur effect for the panel argument.
-   // The original style and color arguments are optional
-   _blurPanel(panel, original_style, original_color) {
+   _blurPanel(panel, index) {
       let blurType = (settings.panelsOverride) ? settings.panelsBlurType : settings.blurType;
       let radius = (settings.panelsOverride) ? settings.panelsRadius : settings.radius;
       let colorBlend = (settings.panelsOverride) ? settings.panelsColorBlend : settings.colorBlend;
       let blendColor = (settings.panelsOverride) ? settings.panelsBlendColor : settings.blendColor;
       let opacity = (settings.panelsOverride) ? settings.panelsOpacity : settings.opacity;
       let actor = panel.actor;
-      let bluredPanel = { original_color: null, origianl_style: null, original_class: null, original_pseudo_class: null, background: null, effect: null };
+      let blurredPanel = panel.__blurredPanel;
 
-      bluredPanel.original_color = original_color ? original_color : actor.get_background_color();
+      if (!blurredPanel) {
+         // Save the current panel setting if we don't already have the data saved
+         blurredPanel = { original_color: null, origianl_style: null, original_class: null, original_pseudo_class: null, background: null, effect: null };
+         blurredPanel.original_color = actor.get_background_color();
+         blurredPanel.original_style = actor.get_style();
+         blurredPanel.original_class = actor.get_style_class_name();
+         blurredPanel.original_pseudo_class = actor.get_style_pseudo_class();
+         panel.__blurredPanel = blurredPanel;
+         this._blurredPanels[index] = blurredPanel;
+      }
+      // Set the panels color
       let [ret,color] = Clutter.Color.from_string( (colorBlend) ? blendColor : "rgba(0,0,0,0)" );
       color.alpha = opacity*2.55;
       actor.set_background_color(color);
-      bluredPanel.original_style = original_style ? original_style : actor.get_style();
-      bluredPanel.original_class = actor.get_style_class_name();
-      bluredPanel.original_pseudo_class = actor.get_style_pseudo_class();
+      // Make the panel transparent
       actor.set_style( "border-image: none;  border-color: transparent;  box-shadow: 0 0 transparent; " +
                        "background-gradient-direction: vertical; background-gradient-start: transparent; " +
                        "background-gradient-end: transparent;    background: transparent;" );
 
+      // If blurring is required, create a background, create effect, clip background to cover the panel only
       if (blurType > BlurType.None) {
          let fx;
          let background = Meta.X11BackgroundActor.new_for_display(global.display);
@@ -245,11 +253,10 @@ class BlurPanels {
             background.set_opacity(0);
             background.hide();
          }
-         bluredPanel.effect = fx;
-         bluredPanel.background = background;
+         blurredPanel.effect = fx;
+         blurredPanel.background = background;
       }
-      panel.__bluredPanel = bluredPanel;
-      return bluredPanel;
+      //return blurredPanel;
    }
 
    // This function will restore all panels to their original state and undo the monkey patching
@@ -257,22 +264,22 @@ class BlurPanels {
       let panels = Main.getPanels();
 
       // Restore the panels to their original state
-      for ( let i=0 ; i < this._bluredPanels.length ; i++ ) {
-         if (panels[i] && this._bluredPanels[i]) {
+      for ( let i=0 ; i < this._blurredPanels.length ; i++ ) {
+         if (panels[i] && this._blurredPanels[i]) {
             let panel = panels[i];
             let actor = panel.actor;
-            let bluredPanel = this._bluredPanels[i];
+            let blurredPanel = this._blurredPanels[i];
 
-            actor.set_background_color(bluredPanel.original_color);
-            actor.set_style(bluredPanel.original_style);
-            actor.set_style_class_name(bluredPanel.original_class);
-            actor.set_style_pseudo_class(bluredPanel.original_pseudo_class);
-            if (bluredPanel.background) {
-               bluredPanel.background.remove_effect(bluredPanel.effect);
-               bluredPanel.background.destroy();
+            actor.set_background_color(blurredPanel.original_color);
+            actor.set_style(blurredPanel.original_style);
+            actor.set_style_class_name(blurredPanel.original_class);
+            actor.set_style_pseudo_class(blurredPanel.original_pseudo_class);
+            if (blurredPanel.background) {
+               blurredPanel.background.remove_effect(blurredPanel.effect);
+               blurredPanel.background.destroy();
             }
-            this._bluredPanels[i] = null;
-            delete panel.__bluredPanel;
+            this._blurredPanels[i] = null;
+            delete panel.__blurredPanel;
          }
       }
 
@@ -289,8 +296,8 @@ class BlurPanels {
       let opacity    = (settings.panelsOverride) ? settings.panelsOpacity    : settings.opacity;
       let colorBlend = (settings.panelsOverride) ? settings.panelsColorBlend : settings.colorBlend;
       let blendColor = (settings.panelsOverride) ? settings.panelsBlendColor : settings.blendColor;
-      for ( let i=0 ; i < this._bluredPanels.length ; i++ ) {
-         if (panels[i] && this._bluredPanels[i]) {
+      for ( let i=0 ; i < this._blurredPanels.length ; i++ ) {
+         if (panels[i] && this._blurredPanels[i]) {
             let [ret,color] = Clutter.Color.from_string( (colorBlend) ? blendColor : "rgba(0,0,0,0)" );
             color.alpha = opacity*2.55;
             panels[i].actor.set_background_color(color);
@@ -302,28 +309,28 @@ class BlurPanels {
    updateBlur() {
       let blurType = (settings.panelsOverride) ? settings.panelsBlurType : settings.blurType;
       let radius = (settings.panelsOverride)   ? settings.panelsRadius   : settings.radius;
-      for ( let i=0 ; i < this._bluredPanels.length ; i++ ) {
-         let bluredPanel = this._bluredPanels[i];
-         if (bluredPanel) {
-            if (blurType !== BlurType.None && !bluredPanel.background) {
-               let panels = Main.getPanels();
-               if (panels[i]) {
-                  this._bluredPanels[i] = this._blurPanel(panels[i], bluredPanel.original_style, bluredPanel.original_color);
+      let panels = Main.getPanels();
+      for ( let i=0 ; i < panels.length ; i++ ) {
+         if (panels[i]) {
+            let blurredPanel = panels[i].__blurredPanel;
+            if (blurredPanel) {
+               if (blurType !== BlurType.None && !blurredPanel.background) {
+                  this._blurPanel(panels[i], i);
+               } else if (blurType === BlurType.None && blurredPanel.background) {
+                  blurredPanel.background.remove_effect(blurredPanel.effect);
+                  blurredPanel.background.destroy();
+                  blurredPanel.background = null;
+               } else if (blurType === BlurType.Simple && blurredPanel.effect instanceof GaussianBlur.GaussianBlurEffect) {
+                  blurredPanel.background.remove_effect(blurredPanel.effect);
+                  blurredPanel.effect =  new Clutter.BlurEffect();
+                  blurredPanel.background.add_effect_with_name( "blur", blurredPanel.effect );
+               } else if (blurType === BlurType.Gaussian && blurredPanel.effect instanceof Clutter.BlurEffect) {
+                  blurredPanel.background.remove_effect(blurredPanel.effect);
+                  blurredPanel.effect = new GaussianBlur.GaussianBlurEffect( {radius: radius, brightness: 1, width: 0, height: 0} );
+                  blurredPanel.background.add_effect_with_name( "blur", blurredPanel.effect );
+               } else if (blurType === BlurType.Gaussian && blurredPanel.radius !== radius) {
+                  blurredPanel.effect.radius = radius;
                }
-            } else if (blurType === BlurType.None && bluredPanel.effect) {
-               bluredPanel.background.remove_effect(bluredPanel.effect);
-               bluredPanel.background.destroy();
-               bluredPanel.background = null;
-            } else if (blurType === BlurType.Simple && bluredPanel.effect instanceof GaussianBlur.GaussianBlurEffect) {
-               bluredPanel.background.remove_effect(bluredPanel.effect);
-               bluredPanel.effect =  new Clutter.BlurEffect();
-               bluredPanel.background.add_effect_with_name( "blur", bluredPanel.effect );
-            } else if (blurType === BlurType.Gaussian && bluredPanel.effect instanceof Clutter.BlurEffect) {
-               bluredPanel.background.remove_effect(bluredPanel.effect);
-               bluredPanel.effect = new GaussianBlur.GaussianBlurEffect( {radius: radius, brightness: 1, width: 0, height: 0} );
-               bluredPanel.background.add_effect_with_name( "blur", bluredPanel.effect );
-            } else if (blurType === BlurType.Gaussian && bluredPanel.radius !== radius) {
-               bluredPanel.effect.radius = radius;
             }
          }
       }
@@ -331,41 +338,44 @@ class BlurPanels {
 
    // Functions that will be monkey patched over the Panel functions
    blurEnable(...params) {
-      if (this.__bluredPanel && this.__bluredPanel.background && !this._hidden) {
-         this.__bluredPanel.background.show();
-         this.__bluredPanel.background.ease(
-            {opacity: 255, duration: Panel.Panel.AUTOHIDE_ANIMATION_TIME * 1000, mode: Clutter.AnimationMode.EASE_OUT_QUAD } );
-      }
+      try {
+         if (this.__blurredPanel && this.__blurredPanel.background && !this._hidden) {
+            this.__blurredPanel.background.show();
+            this.__blurredPanel.background.ease(
+               {opacity: 255, duration: Panel.Panel.AUTOHIDE_ANIMATION_TIME * 1000, mode: Clutter.AnimationMode.EASE_OUT_QUAD } );
+         }
+      } catch (e) {}
       blurExtensionThis._originalPanelEnable.apply(this, params);
    }
 
    blurDisable(...params) {
-      if (this.__bluredPanel && this. __bluredPanel.background && !this._hidden) {
-         this.__bluredPanel.background.ease(
-            {opacity: 0, duration: Panel.Panel.AUTOHIDE_ANIMATION_TIME * 1000, mode: Clutter.AnimationMode.EASE_OUT_QUAD,
-               onComplete: () => { this.__bluredPanel.background.hide(); } });
-      }
+      try {
+         if (this.__blurredPanel && this. __blurredPanel.background && !this._hidden) {
+            this.__blurredPanel.background.ease(
+               {opacity: 0, duration: Panel.Panel.AUTOHIDE_ANIMATION_TIME * 1000, mode: Clutter.AnimationMode.EASE_OUT_QUAD,
+                  onComplete: () => { this.__blurredPanel.background.hide(); } });
+         }
+      } catch (e) {}
       blurExtensionThis._originalPanelDisable.apply(this, params);
    }
 
    blurShowPanel(...params) {
       try {
          if (!this._disabled && this._hidden) {
-            this.__bluredPanel.background.show();
-            Tweener.addTween(this.__bluredPanel.background, {opacity: 255, time: Panel.Panel.AUTOHIDE_ANIMATION_TIME} );
+            this.__blurredPanel.background.show();
+            Tweener.addTween(this.__blurredPanel.background, {opacity: 255, time: Panel.Panel.AUTOHIDE_ANIMATION_TIME} );
          }
-      } catch (e) {
-      }
+      } catch (e) {}
       blurExtensionThis._originalPanelShowPanel.apply(this, params);
    }
 
    blurHidePanel(force) {
       try {
-         if (this.__bluredPanel.background && !this._destroyed && (!this._shouldShow || force) && global.menuStackLength < 1) {
-            Tweener.addTween(this.__bluredPanel.background, {opacity: 0, time: Panel.Panel.AUTOHIDE_ANIMATION_TIME, onComplete: () => { this.__bluredPanel.background.hide(); } } );
+         let background = this.__blurredPanel.background;
+         if (background && background.is_visible() && !this._destroyed && (!this._shouldShow || force) && global.menuStackLength < 1) {
+            Tweener.addTween(background, {opacity: 0, time: Panel.Panel.AUTOHIDE_ANIMATION_TIME, onComplete: () => { background.hide(); } } );
          }
-      } catch (e) {
-      }
+      } catch (e) {}
       blurExtensionThis._originalPanelHidePanel.apply(this, force);
    }
 }
@@ -403,7 +413,7 @@ class BlurSettings {
 
       this.settings.bind('enable-overview-effects', 'enableOverviewEffects', enableOverviewChanged);
       this.settings.bind('enable-expo-effects',     'enableExpoEffects',     enableExpoChanged);
-      this.settings.bind('enable-panels-effects',   'enablePanelsEffects',     enablePanelsChanged);
+      this.settings.bind('enable-panels-effects',   'enablePanelsEffects',   enablePanelsChanged);
    }
 }
 

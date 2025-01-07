@@ -8,18 +8,25 @@ A Cinnamon extension to Dim, Blur and Colorize parts of the Cinnamon Desktop.
 2. Dimming overlay with user configurable color and intensity (0-100%, transparent to a solid color)
 3. Simple blur algorithm (the Cinnamon built-in algorithm) which I would only recommend for very old computers
 4. Makes the Panels and the Expo transparent so that the desktop background image effects are visible
-5. Currently applies the blur, colorization and dimming effects to all Panels, the Overview and the Expo
-6. You can use a general setup for Panels/Overview/Expo or use unique setup for each Cinnamon component
+5. Applies blurring, colorization and dimming effects to all Panels, the Overview and the Expo
+6. You can use general settings for Panels/Overview/Expo or use unique settings for each Cinnamon component
 
 ## Requirements
 
 This extension requires Cinnamon 6.0 or better (i.e Mint 21.3 or better).
 
-You should **disable** any of the following Cinnamon extensions **before** enabling BlueCinnamon:
+If you have installed any of the following Cinnamon extensions, you should **disable** them **before** enabling Blur Cinnamon:
 
 - Transparent panels
 - Transparent panels reloaded
 - Blur Overview
+
+Using any of the above with Blur Cinnamon may have some odd side effects that would require a Cinnamon restart to resolve.
+
+## Limitations
+
+1. Currently, any windows that are moved such that they overlap with a panel will not be visible beneath the panel as you might expect with a transparent panel. This is because the blur effect is applied to a user interface element that floats above all windows just like the panel floats above the windows. At some point I hope to look into making the blur element appear below all windows rather than above.
+2. If you disable Overview, Expo or Panels under the settings General tab while the "Override the generic effect setting" options are enabled, the "Panel effect setting" under the Overview, Expo or Panels tabs will still appear, but changing those setting will have no effect until you re-enable the component under the General tab.
 
 ## Installation
 
