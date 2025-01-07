@@ -45,7 +45,7 @@ For the development version, follow these instructions to install manually:
 2. If you downloaded a ZIP, decompress the zip into a directory of your choice
    
    ```
-   unzip ~/Downloads/CinnamonMagicLamp-main.zip
+   unzip ~/Downloads/BlurCinnamon-main.zip
    ```
 
 3. Change directory to the cloned repo or the decompressed ZIP file
