@@ -143,14 +143,35 @@ class BlurPanels {
       Panel.Panel.prototype._showPanel = this.blurShowPanel;
       Panel.Panel.prototype._hidePanel = this.blurHidePanel;
 
-      // Connect to important panel events
-      this._signalManager.connect(global.settings, 'changed::panels-enabled',   this._panel_changed, this);
-      this._signalManager.connect(global.settings, 'changed::panels-height',    this._panel_changed, this);
-      this._signalManager.connect(global.settings, 'changed::panels-resizable', this._panel_changed, this);
-      this._signalManager.connect(global.settings, 'changed::panels-autohide',  this._panel_changed, this);
-      // Connect to event where we might need to adjust the clipping of the background overlays
-      this._signalManager.connect(Main.layoutManager, "monitors-changed", this._panel_changed, this);
+      // Connect to important events
+      this._signalManager.connect(global.settings, "changed::panels-enabled",   this._panel_changed, this);
+      this._signalManager.connect(global.settings, "changed::panels-height",    this._panel_changed, this);
+      this._signalManager.connect(global.settings, "changed::panels-resizable", this._panel_changed, this);
+      this._signalManager.connect(global.settings, "changed::panels-autohide",  this._panel_changed, this);
+      this._signalManager.connect(Main.layoutManager, "monitors-changed",       this._panel_changed, this);
+      this._signalManager.connect(global.display, "in-fullscreen-changed",      this._fullscreen_changed, this);
+   }
 
+   // If a fullscreen window event occurs we need to hide or show the background overlay
+   _fullscreen_changed() {
+      let panels = Main.getPanels();
+      let monitor;
+      let panel;
+      let background;
+
+      for ( let i=0 ; i < panels.length ; i++ ) {
+         panel = panels[i];
+         if (panel && panel.__blurredPanel && panel.__blurredPanel.background && !panel._hidden) {
+            background = panel.__blurredPanel.background;
+            if (global.display.get_monitor_in_fullscreen(panel.monitor)) {
+               background.set_opacity(0);
+               background.hide();
+            } else {
+               background.set_opacity(255);
+               background.show();
+            }
+         }
+      }
    }
 
    // Set the portion of the panel background that is visible to match the size of the panel
@@ -252,7 +273,7 @@ class BlurPanels {
          }
          background.add_effect_with_name( "blur", fx );
          this._setBackgroundClip( panel, background );
-         if (panel._hidden) {
+         if (panel._hidden || global.display.get_monitor_in_fullscreen(panel.monitor)) {
             background.set_opacity(0);
             background.hide();
          }
@@ -343,7 +364,7 @@ class BlurPanels {
    // Functions that will be monkey patched over the Panel functions
    blurEnable(...params) {
       try {
-         if (this.__blurredPanel && this.__blurredPanel.background && !this._hidden) {
+         if (this.__blurredPanel && this.__blurredPanel.background && !global.display.get_monitor_in_fullscreen(this.monitor) && !this._hidden) {
             this.__blurredPanel.background.show();
             this.__blurredPanel.background.ease(
                {opacity: 255, duration: Panel.Panel.AUTOHIDE_ANIMATION_TIME * 1000, mode: Clutter.AnimationMode.EASE_OUT_QUAD } );
