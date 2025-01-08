@@ -39,7 +39,7 @@ For the development version, follow these instructions to install manually:
 1. Clone the repo (or Download the latest repo by clinking on the green "code" button above then click "Download ZIP")
    
    ```
-   git clone git@github.com:klangman/BlurCinnamon.git
+   git clone https://github.com/klangman/BlurCinnamon.git
    ```
 
 2. If you downloaded a ZIP, decompress the zip into a directory of your choice
