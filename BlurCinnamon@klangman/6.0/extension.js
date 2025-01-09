@@ -163,7 +163,7 @@ class BlurPanels {
          panel = panels[i];
          if (panel && panel.__blurredPanel && panel.__blurredPanel.background && !panel._hidden) {
             background = panel.__blurredPanel.background;
-            if (global.display.get_monitor_in_fullscreen(panel.monitor)) {
+            if (global.display.get_monitor_in_fullscreen(panel.monitorIndex)) {
                background.set_opacity(0);
                background.hide();
             } else {
@@ -273,7 +273,7 @@ class BlurPanels {
          }
          background.add_effect_with_name( "blur", fx );
          this._setBackgroundClip( panel, background );
-         if (panel._hidden || global.display.get_monitor_in_fullscreen(panel.monitor)) {
+         if (panel._hidden || global.display.get_monitor_in_fullscreen(panel.monitorIndex)) {
             background.set_opacity(0);
             background.hide();
          }
@@ -364,7 +364,7 @@ class BlurPanels {
    // Functions that will be monkey patched over the Panel functions
    blurEnable(...params) {
       try {
-         if (this.__blurredPanel && this.__blurredPanel.background && !global.display.get_monitor_in_fullscreen(this.monitor) && !this._hidden) {
+         if (this.__blurredPanel && this.__blurredPanel.background && !global.display.get_monitor_in_fullscreen(this.monitorIndex) && !this._hidden) {
             this.__blurredPanel.background.show();
             this.__blurredPanel.background.ease(
                {opacity: 255, duration: Panel.Panel.AUTOHIDE_ANIMATION_TIME * 1000, mode: Clutter.AnimationMode.EASE_OUT_QUAD } );
