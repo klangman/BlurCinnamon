@@ -122,6 +122,10 @@ function _animateVisibleExpo() {
       { opacity: Math.round(opacity*2.55), time: ANIMATION_TIME, transition: 'easeNone' } );
 }
 
+function panelHasOpenMenus() {
+   return global.menuStackLength > 0;
+}
+
 // This class manages the blurring of the panels
 class BlurPanels {
 
@@ -149,7 +153,7 @@ class BlurPanels {
       this._signalManager.connect(global.settings, "changed::panels-resizable", this._panel_changed, this);
       this._signalManager.connect(global.settings, "changed::panels-autohide",  this._panel_changed, this);
       this._signalManager.connect(Main.layoutManager, "monitors-changed",       this._panel_changed, this);
-      this._signalManager.connect(global.display, "in-fullscreen-changed",      this._fullscreen_changed, this);
+      this._signalManager.connect(global.display,  "in-fullscreen-changed",     this._fullscreen_changed, this);
    }
 
    // If a fullscreen window event occurs we need to hide or show the background overlay
@@ -242,6 +246,11 @@ class BlurPanels {
       let actor = panel.actor;
       let blurredPanel = panel.__blurredPanel;
 
+      // Emulate the Cinnamon 6.4 panel._panelHasOpenMenus() function for older Cinnamon releases
+      if (typeof panel._panelHasOpenMenus !== "function") {
+         this.added_panelHasOpenMenus = true;
+         panel._panelHasOpenMenus = panelHasOpenMenus;
+      }
       if (!blurredPanel) {
          // Save the current panel setting if we don't already have the data saved
          blurredPanel = { original_color: null, origianl_style: null, original_class: null, original_pseudo_class: null, background: null, effect: null };
@@ -305,6 +314,9 @@ class BlurPanels {
             }
             this._blurredPanels[i] = null;
             delete panel.__blurredPanel;
+            if (this.added_panelHasOpenMenus) {
+               delete panel._panelHasOpenMenus;
+            }
          }
       }
 
@@ -397,7 +409,7 @@ class BlurPanels {
    blurHidePanel(force) {
       try {
          let background = this.__blurredPanel.background;
-         if (background && background.is_visible() && !this._destroyed && (!this._shouldShow || force) && global.menuStackLength < 1) {
+         if (background && background.is_visible() && !this._destroyed && (!this._shouldShow || force) && !this._panelHasOpenMenus()) {
             Tweener.addTween(background, {opacity: 0, time: Panel.Panel.AUTOHIDE_ANIMATION_TIME, onComplete: () => { background.hide(); } } );
          }
       } catch (e) {}
