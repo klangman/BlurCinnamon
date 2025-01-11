@@ -28,7 +28,7 @@ Using any of the above with Blur Cinnamon may have some odd side effects that wo
 ## Limitations
 
 1. Currently, any windows that are moved such that they overlap with a panel will not be visible beneath the panel as you might expect with a transparent panel. This is because the blur effect is applied to a user interface element that floats above all windows just like the panel floats above the windows. At some point I hope to look into making the blur element appear below all windows rather than above.
-2. If you disable Overview, Expo or Panels under the settings General tab while the "Override the generic effect setting" options are enabled, the "Panel effect setting" under the Overview, Expo or Panels tabs will still appear, but changing those setting will have no effect until you re-enable the component under the General tab.
+2. If you disable effects for the Overview, Expo or Panels under the General tab of the setting dialog while any "Override the generic effect settings" options are enabled under the other tabs, the components "effect setting" options under the other tabs will still be visible, but changing those setting will have no effect until you re-enable the component under the General tab. Ideally those effect setting would only be visible when the component is enabled under the general tab but Cinnamon setting support is a bit limited in this way.
 
 ## Installation
 
