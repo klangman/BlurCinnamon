@@ -32,9 +32,13 @@ Using any of the above with Blur Cinnamon may have some odd side effects that wo
 
 ## Installation
 
-Soon I will submit this extension to the Cinnamon Spices repo, but until then you will need to follow these instructions.
+This extension is also available on Cinnamon Spices. It can be installed directly from within Cinnamon using the "Extensions" application under the "System Settings".
 
-For the development version, follow these instructions to install manually:
+[Blur Cinnamon on Cinnamon Spices](https://cinnamon-spices.linuxmint.com/extensions/view/104)
+
+
+
+For the latest cutting edge development version, follow these instructions to install manually:
 
 1. Clone the repo (or Download the latest repo by clinking on the green "code" button above then click "Download ZIP")
    
