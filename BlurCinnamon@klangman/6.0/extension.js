@@ -49,6 +49,18 @@ const BlurType = {
    Gaussian: 2
 }
 
+const PanelLoc = {
+   All: 0,
+   Top: 1,
+   Bottom: 2,
+   Left: 3,
+   Right: 4
+}
+
+const PanelMonitor = {
+   All: 0
+}
+
 
 function _animateVisibleOverview() {
    if (this.visible || this.animationInProgress)
@@ -60,7 +72,6 @@ function _animateVisibleOverview() {
 
    let blurType = (settings.overviewOverride) ? settings.overviewBlurType : settings.blurType;
    let radius = (settings.overviewOverride) ? settings.overviewRadius : settings.radius;
-   let colorBlend = (settings.overviewOverride) ? settings.overviewColorBlend : settings.colorBlend;
    let blendColor = (settings.overviewOverride) ? settings.overviewBlendColor : settings.blendColor;
    let opacity = (settings.overviewOverride) ? settings.overviewOpacity : settings.opacity;
 
@@ -77,7 +88,7 @@ function _animateVisibleOverview() {
    }
    // Get the overview's backgroundShade child and set it's color to see-through solid black/"Color blend" color
    let backgroundShade = children[1];
-   let [ret,color] = Clutter.Color.from_string( (colorBlend) ? blendColor : "rgba(0,0,0,1)" );
+   let [ret,color] = Clutter.Color.from_string( blendColor );
    backgroundShade.set_opacity(0);
    backgroundShade.set_background_color(color);
 
@@ -95,7 +106,6 @@ function _animateVisibleExpo() {
 
    let blurType = (settings.expoOverride) ? settings.expoBlurType : settings.blurType;
    let radius = (settings.expoOverride) ? settings.expoRadius : settings.radius;
-   let colorBlend = (settings.expoOverride) ? settings.expoColorBlend : settings.colorBlend;
    let blendColor = (settings.expoOverride) ? settings.expoBlendColor : settings.blendColor;
    let opacity = (settings.expoOverride) ? settings.expoOpacity : settings.opacity;
    if (blurType > BlurType.None) {
@@ -114,7 +124,7 @@ function _animateVisibleExpo() {
    this._backgroundShade = backgroundShade;
    backgroundShade.set_size(global.screen_width, global.screen_height);
    this._background.add_actor(backgroundShade);
-   let [ret,color] = Clutter.Color.from_string( (colorBlend) ? blendColor : "rgba(0,0,0,1)" );
+   let [ret,color] = Clutter.Color.from_string( blendColor );
    backgroundShade.set_opacity(0);
    backgroundShade.set_background_color(color);
    // Dim the backgroundShade by making the black/"Color blend" color less see-through by the configured percentage
@@ -238,11 +248,10 @@ class BlurPanels {
 
    // Create a new blur effect for the panel argument.
    _blurPanel(panel, index) {
-      let blurType = (settings.panelsOverride) ? settings.panelsBlurType : settings.blurType;
-      let radius = (settings.panelsOverride) ? settings.panelsRadius : settings.radius;
-      let colorBlend = (settings.panelsOverride) ? settings.panelsColorBlend : settings.colorBlend;
-      let blendColor = (settings.panelsOverride) ? settings.panelsBlendColor : settings.blendColor;
-      let opacity = (settings.panelsOverride) ? settings.panelsOpacity : settings.opacity;
+      let settings = this._getPanelSettings(panel, index);
+      if (!settings ) return;
+      let [opacity, blendColor, blurType, radius] = settings;
+
       let actor = panel.actor;
       let blurredPanel = panel.__blurredPanel;
 
@@ -262,7 +271,8 @@ class BlurPanels {
          this._blurredPanels[index] = blurredPanel;
       }
       // Set the panels color
-      let [ret,color] = Clutter.Color.from_string( (colorBlend) ? blendColor : "rgba(0,0,0,0)" );
+      let [ret,color] = Clutter.Color.from_string( blendColor );
+      if (!ret) { [ret,color] = Clutter.Color.from_string( "rgba(0,0,0,0)" ); }
       color.alpha = opacity*2.55;
       actor.set_background_color(color);
       // Make the panel transparent
@@ -327,52 +337,111 @@ class BlurPanels {
       Panel.Panel.prototype._hidePanel = this._originalPanelHidePanel;
    }
 
+   _unblurPanel(panel, index) {
+      if (panel && this._blurredPanels[index]) {
+         let actor = panel.actor;
+         let blurredPanel = this._blurredPanels[index];
+
+         actor.set_background_color(blurredPanel.original_color);
+         actor.set_style(blurredPanel.original_style);
+         actor.set_style_class_name(blurredPanel.original_class);
+         actor.set_style_pseudo_class(blurredPanel.original_pseudo_class);
+         if (blurredPanel.background) {
+            blurredPanel.background.remove_effect(blurredPanel.effect);
+            blurredPanel.background.destroy();
+         }
+         this._blurredPanels[index] = null;
+         delete panel.__blurredPanel;
+         if (this.added_panelHasOpenMenus) {
+            delete panel._panelHasOpenMenus;
+         }
+      }
+   }
+
    // An extension setting controlling how the dim overlay was modified
    updateColor() {
       let panels = Main.getPanels();
-      let opacity    = (settings.panelsOverride) ? settings.panelsOpacity    : settings.opacity;
-      let colorBlend = (settings.panelsOverride) ? settings.panelsColorBlend : settings.colorBlend;
-      let blendColor = (settings.panelsOverride) ? settings.panelsBlendColor : settings.blendColor;
       for ( let i=0 ; i < this._blurredPanels.length ; i++ ) {
          if (panels[i] && this._blurredPanels[i]) {
-            let [ret,color] = Clutter.Color.from_string( (colorBlend) ? blendColor : "rgba(0,0,0,0)" );
-            color.alpha = opacity*2.55;
-            panels[i].actor.set_background_color(color);
+            let settings = this._getPanelSettings(panels[i], i);
+            if (settings) {
+               let [opacity, blendColor, blurType, radius] = settings;
+               let [ret,color] = Clutter.Color.from_string( blendColor );
+               if (!ret) { [ret,color] = Clutter.Color.from_string( "rgba(0,0,0,0)" ); }
+               color.alpha = opacity*2.55;
+               panels[i].actor.set_background_color(color);
+            }
          }
       }
    }
 
    // An extension setting controlling how to blur is handled was modified
    updateBlur() {
-      let blurType = (settings.panelsOverride) ? settings.panelsBlurType : settings.blurType;
-      let radius = (settings.panelsOverride)   ? settings.panelsRadius   : settings.radius;
       let panels = Main.getPanels();
       for ( let i=0 ; i < panels.length ; i++ ) {
          if (panels[i]) {
-            let blurredPanel = panels[i].__blurredPanel;
-            if (blurredPanel) {
-               if (blurType !== BlurType.None && !blurredPanel.background) {
+            let settings = this._getPanelSettings(panels[i], i);
+            if (settings) {
+               let [opacity, blendColor, blurType, radius] = settings;
+               let blurredPanel = panels[i].__blurredPanel;
+               if (blurredPanel) {
+                  if (blurType !== BlurType.None && !blurredPanel.background) {
+                     this._blurPanel(panels[i], i);
+                  } else if (blurType === BlurType.None && blurredPanel.background) {
+                     blurredPanel.background.remove_effect(blurredPanel.effect);
+                     blurredPanel.background.destroy();
+                     blurredPanel.background = null;
+                  } else if (blurType === BlurType.Simple && blurredPanel.effect instanceof GaussianBlur.GaussianBlurEffect) {
+                     blurredPanel.background.remove_effect(blurredPanel.effect);
+                     blurredPanel.effect =  new Clutter.BlurEffect();
+                     blurredPanel.background.add_effect_with_name( "blur", blurredPanel.effect );
+                  } else if (blurType === BlurType.Gaussian && blurredPanel.effect instanceof Clutter.BlurEffect) {
+                     blurredPanel.background.remove_effect(blurredPanel.effect);
+                     blurredPanel.effect = new GaussianBlur.GaussianBlurEffect( {radius: radius, brightness: 1, width: 0, height: 0} );
+                     blurredPanel.background.add_effect_with_name( "blur", blurredPanel.effect );
+                  } else if (blurType === BlurType.Gaussian && blurredPanel.radius !== radius) {
+                     blurredPanel.effect.radius = radius;
+                  }
+               } else {
                   this._blurPanel(panels[i], i);
-               } else if (blurType === BlurType.None && blurredPanel.background) {
-                  blurredPanel.background.remove_effect(blurredPanel.effect);
-                  blurredPanel.background.destroy();
-                  blurredPanel.background = null;
-               } else if (blurType === BlurType.Simple && blurredPanel.effect instanceof GaussianBlur.GaussianBlurEffect) {
-                  blurredPanel.background.remove_effect(blurredPanel.effect);
-                  blurredPanel.effect =  new Clutter.BlurEffect();
-                  blurredPanel.background.add_effect_with_name( "blur", blurredPanel.effect );
-               } else if (blurType === BlurType.Gaussian && blurredPanel.effect instanceof Clutter.BlurEffect) {
-                  blurredPanel.background.remove_effect(blurredPanel.effect);
-                  blurredPanel.effect = new GaussianBlur.GaussianBlurEffect( {radius: radius, brightness: 1, width: 0, height: 0} );
-                  blurredPanel.background.add_effect_with_name( "blur", blurredPanel.effect );
-               } else if (blurType === BlurType.Gaussian && blurredPanel.radius !== radius) {
-                  blurredPanel.effect.radius = radius;
                }
             }
          }
       }
    }
 
+   _getPanelSettings(panel, index) {
+      if (settings.enablePanelUniqueSettings) {
+         for( let i=0 ; i < settings.panelUniqueSettings.length ; i++ ) {
+            let uniqueSetting = settings.panelUniqueSettings[i];
+            if (uniqueSetting.enabled) {
+               if (uniqueSetting.panels !== PanelLoc.All) {
+                  if ( (panel.panelPosition === Panel.PanelLoc.top && uniqueSetting.panels !== PanelLoc.Top) ||
+                       (panel.panelPosition === Panel.PanelLoc.bottom && uniqueSetting.panels !== PanelLoc.Bottom) ||
+                       (panel.panelPosition === Panel.PanelLoc.left && uniqueSetting.panels !== PanelLoc.Left) ||
+                       (panel.panelPosition === Panel.PanelLoc.right && uniqueSetting.panels !== PanelLoc.Right) )
+                  {
+                     continue;
+                  }
+               }
+               if (uniqueSetting.monitors !== PanelMonitor.All) {
+                  if (panel.monitorIndex !== uniqueSetting.monitors) {
+                     continue;
+                  }
+               }
+               return [uniqueSetting.opacity, uniqueSetting.color, uniqueSetting.blurtype, uniqueSetting.radius];
+            }
+         }
+         this._unblurPanel(panel, index)
+         return null;
+      } else {
+         let radius = (settings.panelsOverride) ? settings.panelsRadius : settings.radius;
+         let blurType = (settings.panelsOverride) ? settings.panelsBlurType : settings.blurType;
+         let blendColor = (settings.panelsOverride) ? settings.panelsBlendColor : settings.blendColor;
+         let opacity = (settings.panelsOverride) ? settings.panelsOpacity : settings.opacity;
+         return [opacity, blendColor, blurType, radius];
+      }
+   }
    // Functions that will be monkey patched over the Panel functions
    blurEnable(...params) {
       try {
@@ -417,40 +486,48 @@ class BlurPanels {
    }
 }
 
+// This class manages the blurring of the popup menus
+class BlurPopupMenu {
+
+   constructor() {
+   }
+
+}
+
+
 class BlurSettings {
    constructor(uuid) {
       this.settings = new Settings.ExtensionSettings(this, uuid);
       this.settings.bind('opacity',    'opacity',    colorChanged);
       this.settings.bind('blurType',   'blurType',   blurChanged);
       this.settings.bind('radius',     'radius',     blurChanged);
-      this.settings.bind('colorBlend', 'colorBlend', colorChanged);
       this.settings.bind('blendColor', 'blendColor', colorChanged);
 
       this.settings.bind('overview-opacity',    'overviewOpacity');
       this.settings.bind('overview-blurType',   'overviewBlurType');
       this.settings.bind('overview-radius',     'overviewRadius');
-      this.settings.bind('overview-colorBlend', 'overviewColorBlend');
       this.settings.bind('overview-blendColor', 'overviewBlendColor');
 
       this.settings.bind('expo-opacity',    'expoOpacity');
       this.settings.bind('expo-blurType',   'expoBlurType');
       this.settings.bind('expo-radius',     'expoRadius');
-      this.settings.bind('expo-colorBlend', 'expoColorBlend');
       this.settings.bind('expo-blendColor', 'expoBlendColor');
 
       this.settings.bind('panels-opacity',    'panelsOpacity',    colorChanged);
       this.settings.bind('panels-blurType',   'panelsBlurType',   blurChanged);
       this.settings.bind('panels-radius',     'panelsRadius',     blurChanged);
-      this.settings.bind('panels-colorBlend', 'panelsColorBlend', colorChanged);
       this.settings.bind('panels-blendColor', 'panelsBlendColor', colorChanged);
 
       this.settings.bind('enable-overview-override', 'overviewOverride');
       this.settings.bind('enable-expo-override',     'expoOverride');
-      this.settings.bind('enable-panels-override',   'panelsOverride', panelsOverrideChangled);
+      this.settings.bind('enable-panels-override',   'panelsOverride', panelsSettingsChangled);
 
       this.settings.bind('enable-overview-effects', 'enableOverviewEffects', enableOverviewChanged);
       this.settings.bind('enable-expo-effects',     'enableExpoEffects',     enableExpoChanged);
       this.settings.bind('enable-panels-effects',   'enablePanelsEffects',   enablePanelsChanged);
+
+      this.settings.bind('enable-panel-unique-settings', 'enablePanelUniqueSettings');
+      this.settings.bind('panel-unique-settings', 'panelUniqueSettings', panelsSettingsChangled);
    }
 }
 
@@ -466,7 +543,8 @@ function blurChanged() {
    }
 }
 
-function panelsOverrideChangled() {
+function panelsSettingsChangled() {
+   log( "panelsSettingsChangled" );
    if (blurPanels) {
       blurPanels.updateBlur();
       blurPanels.updateColor();
