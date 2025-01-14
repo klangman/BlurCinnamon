@@ -383,11 +383,15 @@ class BlurPanels {
                } else {
                   this._blurPanel(panels[i], i);
                }
+            } else {
+               // No settings found to apply to this panel, so remove all effects for this panel
+               this._unblurPanel(panels[i], i)
             }
          }
       }
    }
 
+   // Determine the settings that should apply for the panel argument panel
    _getPanelSettings(panel, index) {
       if (settings.enablePanelUniqueSettings) {
          for( let i=0 ; i < settings.panelUniqueSettings.length ; i++ ) {
@@ -410,7 +414,6 @@ class BlurPanels {
                return [uniqueSetting.opacity, uniqueSetting.color, uniqueSetting.blurtype, uniqueSetting.radius];
             }
          }
-         this._unblurPanel(panel, index)
          return null;
       } else {
          let radius = (settings.panelsOverride) ? settings.panelsRadius : settings.radius;
@@ -420,6 +423,7 @@ class BlurPanels {
          return [opacity, blendColor, blurType, radius];
       }
    }
+
    // Functions that will be monkey patched over the Panel functions
    blurEnable(...params) {
       try {
