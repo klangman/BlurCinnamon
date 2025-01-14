@@ -34,6 +34,7 @@ const Mainloop      = imports.mainloop;
 const GaussianBlur = require("./gaussian_blur");
 
 const ANIMATION_TIME = 0.25;
+const AUTOHIDE_ANIMATION_TIME = 0.2;  // This is a copy of "Panel.AUTOHIDE_ANIMATION_TIME", we can't legally access it since it's a const and EC6 does not allow it
 
 let originalAnimateOverview;
 let originalAnimateExpo;
@@ -178,33 +179,11 @@ class BlurPanels {
          if (panel && panel.__blurredPanel && panel.__blurredPanel.background && !panel._hidden) {
             background = panel.__blurredPanel.background;
             if (global.display.get_monitor_in_fullscreen(panel.monitorIndex)) {
-               background.set_opacity(0);
                background.hide();
             } else {
-               background.set_opacity(255);
                background.show();
             }
          }
-      }
-   }
-
-   // Set the portion of the panel background that is visible to match the size of the panel
-   // When a panel is hidden, the panel exists just off the screen, so we need to adjust the clip for this.
-   _setBackgroundClip(panel, background) {
-      let actor = panel.actor;
-      let monitor = panel.monitor
-      if (panel._hidden) {
-         if (panel.panelPosition === Panel.PanelLoc.top) {
-            background.set_clip( actor.x, monitor.y, actor.width, actor.height );
-         } else if (panel.panelPosition == Panel.PanelLoc.bottom) {
-            background.set_clip( actor.x, monitor.height-actor.height, actor.width, actor.height );
-         } else if (panel.panelPosition == Panel.PanelLoc.left) {
-            background.set_clip( monitor.x, actor.y, actor.width, actor.height );
-         } else {
-            background.set_clip( monitor.width-actor.width, actor.y, actor.width, actor.height );
-         }
-      } else {
-         background.set_clip( actor.x, actor.y, actor.width, actor.height );
       }
    }
 
@@ -218,7 +197,7 @@ class BlurPanels {
             if (blurredPanel) {
                // The panel height might have changed
                let actor = panel.actor;
-               this._setBackgroundClip( panel, blurredPanel.background );
+               blurredPanel.background.set_clip( actor.x, actor.y, actor.width, actor.height );
             } else {
                // A new panel was added, so we need to apply the effects to it
                this._blurPanel( panel, i );
@@ -291,9 +270,8 @@ class BlurPanels {
             fx = new GaussianBlur.GaussianBlurEffect( {radius: radius, brightness: 1 , width: 0, height: 0} );
          }
          background.add_effect_with_name( "blur", fx );
-         this._setBackgroundClip( panel, background );
+         background.set_clip( panel.actor.x, panel.actor.y, panel.actor.width, panel.actor.height );
          if (panel._hidden || global.display.get_monitor_in_fullscreen(panel.monitorIndex)) {
-            background.set_opacity(0);
             background.hide();
          }
          blurredPanel.effect = fx;
@@ -448,7 +426,7 @@ class BlurPanels {
          if (this.__blurredPanel && this.__blurredPanel.background && !global.display.get_monitor_in_fullscreen(this.monitorIndex) && !this._hidden) {
             this.__blurredPanel.background.show();
             this.__blurredPanel.background.ease(
-               {opacity: 255, duration: Panel.Panel.AUTOHIDE_ANIMATION_TIME * 1000, mode: Clutter.AnimationMode.EASE_OUT_QUAD } );
+               {opacity: 255, duration: AUTOHIDE_ANIMATION_TIME * 1000, mode: Clutter.AnimationMode.EASE_OUT_QUAD } );
          }
       } catch (e) {}
       blurExtensionThis._originalPanelEnable.apply(this, params);
@@ -458,7 +436,7 @@ class BlurPanels {
       try {
          if (this.__blurredPanel && this. __blurredPanel.background && !this._hidden) {
             this.__blurredPanel.background.ease(
-               {opacity: 0, duration: Panel.Panel.AUTOHIDE_ANIMATION_TIME * 1000, mode: Clutter.AnimationMode.EASE_OUT_QUAD,
+               {opacity: 0, duration: AUTOHIDE_ANIMATION_TIME * 1000, mode: Clutter.AnimationMode.EASE_OUT_QUAD,
                   onComplete: () => { this.__blurredPanel.background.hide(); } });
          }
       } catch (e) {}
@@ -468,8 +446,11 @@ class BlurPanels {
    blurShowPanel(...params) {
       try {
          if (!this._disabled && this._hidden) {
+            let background = this.__blurredPanel.background;
             this.__blurredPanel.background.show();
-            Tweener.addTween(this.__blurredPanel.background, {opacity: 255, time: Panel.Panel.AUTOHIDE_ANIMATION_TIME} );
+            Tweener.addTween(this.__blurredPanel.background, {time: AUTOHIDE_ANIMATION_TIME, onUpdateScope: this, onUpdate: () => {
+               this.__blurredPanel.background.set_clip( this.actor.x, this.actor.y, this.actor.width, this.actor.height );
+            } } );
          }
       } catch (e) {}
       blurExtensionThis._originalPanelShowPanel.apply(this, params);
@@ -479,7 +460,9 @@ class BlurPanels {
       try {
          let background = this.__blurredPanel.background;
          if (background && background.is_visible() && !this._destroyed && (!this._shouldShow || force) && !this._panelHasOpenMenus()) {
-            Tweener.addTween(background, {opacity: 0, time: Panel.Panel.AUTOHIDE_ANIMATION_TIME, onComplete: () => { background.hide(); } } );
+            Tweener.addTween(background, {time: AUTOHIDE_ANIMATION_TIME, onUpdateScope: this, onUpdate: () => { 
+               this.__blurredPanel.background.set_clip( this.actor.x, this.actor.y, this.actor.width, this.actor.height ); 
+            }, onComplete: () => { background.hide(); } } );
          }
       } catch (e) {}
       blurExtensionThis._originalPanelHidePanel.apply(this, force);
@@ -544,7 +527,6 @@ function blurChanged() {
 }
 
 function panelsSettingsChangled() {
-   log( "panelsSettingsChangled" );
    if (blurPanels) {
       blurPanels.updateBlur();
       blurPanels.updateColor();
