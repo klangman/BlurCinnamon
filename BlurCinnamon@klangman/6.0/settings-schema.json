@@ -141,7 +141,7 @@
         "columns" : [
             {"id": "enabled",   "title": "Enabled",   "type": "boolean", "default": true},
             {"id": "panels",    "title": "Panel",     "type": "integer", "default": 0, "options": { "All" : 0, "Top" : 1, "Bottom" : 2, "Left" : 3, "Right" : 4 } },
-            {"id": "monitors",  "title": "Monitor",   "type": "integer", "default": 0, "options": { "All" : 0, "1" : 1, "2" : 2, "3" : 3, "4" : 4 } },
+            {"id": "monitors",  "title": "Monitor",   "type": "integer", "default": 0, "options": { "All" : 100, "1" : 0, "2" : 1, "3" : 2, "4" : 3 } },
             {"id": "opacity",   "title": "Dimming",   "type": "integer", "default": 40,  "min": 0, "max": 100},
             {"id": "color",     "title": "Color",     "type": "string",  "default": "rgb(0,0,0)"},
             {"id": "blurtype",  "title": "Blur",      "type": "integer", "default": 2, "options": { "None": 0, "Simple": 1, "Gaussian": 2 } },

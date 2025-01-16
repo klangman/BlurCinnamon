@@ -59,9 +59,8 @@ const PanelLoc = {
 }
 
 const PanelMonitor = {
-   All: 0
+   All: 100
 }
-
 
 function _animateVisibleOverview() {
    if (this.visible || this.animationInProgress)
@@ -286,26 +285,8 @@ class BlurPanels {
       this._signalManager.disconnectAllSignals();
 
       // Restore the panels to their original state
-      for ( let i=0 ; i < this._blurredPanels.length ; i++ ) {
-         if (panels[i] && this._blurredPanels[i]) {
-            let panel = panels[i];
-            let actor = panel.actor;
-            let blurredPanel = this._blurredPanels[i];
-
-            actor.set_background_color(blurredPanel.original_color);
-            actor.set_style(blurredPanel.original_style);
-            actor.set_style_class_name(blurredPanel.original_class);
-            actor.set_style_pseudo_class(blurredPanel.original_pseudo_class);
-            if (blurredPanel.background) {
-               blurredPanel.background.remove_effect(blurredPanel.effect);
-               blurredPanel.background.destroy();
-            }
-            this._blurredPanels[i] = null;
-            delete panel.__blurredPanel;
-            if (this.added_panelHasOpenMenus) {
-               delete panel._panelHasOpenMenus;
-            }
-         }
+      for ( let i=0 ; i < panels.length ; i++ ) {
+         this._unblurPanel(panels[i], i);
       }
 
       // Restore the original functions that we monkey patched
@@ -393,7 +374,7 @@ class BlurPanels {
 
    // Determine the settings that should apply for the panel argument panel
    _getPanelSettings(panel, index) {
-      if (settings.enablePanelUniqueSettings) {
+      if (settings.panelsOverride && settings.enablePanelUniqueSettings) {
          for( let i=0 ; i < settings.panelUniqueSettings.length ; i++ ) {
             let uniqueSetting = settings.panelUniqueSettings[i];
             if (uniqueSetting.enabled) {
