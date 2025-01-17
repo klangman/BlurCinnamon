@@ -62,7 +62,7 @@
       "panels-override" : {
          "type" : "section",
          "title" : "Panels settings",
-         "keys" : ["enable-panels-override", "panels-info"]
+         "keys" : ["enable-panels-override", "panels-info", "allow-transparent-color-panels" ]
       },
       "panels-effect-settings" : {
          "type" : "section",
@@ -106,6 +106,12 @@
         "type" : "label",
         "description" : "Panel effects are currently disabled under the General tab.",
         "dependency" : "!enable-panels-effects"
+    },
+    "allow-transparent-color-panels" : {
+        "type": "switch",
+        "description": "Modify the panels transparency and background color (recommended)",
+        "tooltip": "Allow this extension to modify the panels transparency and background color settings. If this is disabled the extension will only apply a blur overlay under the panels. This setting should only be disabled when the theme already uses transparent panels and you want the themes setting to apply",
+        "default": true
     },
 
     "enable-overview-override" : {
