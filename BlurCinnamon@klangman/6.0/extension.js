@@ -573,6 +573,15 @@ class BlurMainMenu {
                this.background.show();
             }
          }
+
+         if (settings.allowTransparentColorMainMenu) {
+            // The menu's class seems to be updated every time the menu is opened, so we have to reset it every time to be transparent again!
+            // Since it's reset every time anyhow, we don't need to remember the style and restore it when/if menu effects are disabled
+            menu.actor.set_style(  "border-radius: 0px; " + //"border-image: none;  border-color: transparent;  box-shadow: 0 0 transparent; " +
+                           "background-gradient-direction: vertical; background-gradient-start: transparent; " +
+                           "background-gradient-end: transparent;    background: transparent;"  );
+         }
+
          // Set the menu color
          let [ret,color] = Clutter.Color.from_string( blendColor );
          if (!ret) { [ret,color] = Clutter.Color.from_string( "rgba(0,0,0,0)" ); }
