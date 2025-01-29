@@ -84,7 +84,7 @@
       "mainmenu-effect-settings" : {
          "type" : "section",
          "title" : "Panel effects settings",
-         "dependency" : "enable-panels-override",
+         "dependency" : "enable-mainmenu-override",
          "keys" : ["mainmenu-opacity", "mainmenu-accent-opacity", "mainmenu-blendColor", "mainmenu-blurType", "mainmenu-radius"]
       }
 
@@ -145,7 +145,7 @@
     "allow-transparent-color-mainmenu" : {
         "type": "switch",
         "description": "Modify the Main Menu transparency and background color (recommended)",
-        "tooltip": "Allow this extension to modify the Main Menu transparency and background color settings. If this is disabled the extension will only apply a blur overlay under the main menu. This setting should only be disabled when the theme already uses a transparent main menu and you want the themes setting to apply.",
+        "tooltip": "Allow this extension to modify the Main Menu transparency, background color and rounded corner settings. If this is disabled the extension will only apply a blur overlay under the main menu. This setting should only be disabled when the theme already uses a transparent main menu and you want the themes setting to apply.",
         "default": true
     },
 

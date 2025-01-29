@@ -532,10 +532,10 @@ class BlurMainMenu {
    // Handle a resize event for the currently open menu
    _onResize(w, h) {
       this.origCallback.apply(this.openMenu, [w, h]);
-      if (this.openMenu && this.openMenu.launcher && this.openMenu.launcher._resizer && this.openMenu.launcher._resizer.resizingInProgress) {
-         let menu = this.openMenu;
-         let margin = menu.actor.get_margin();
-         this.background.set_clip( menu.actor.x+margin.left, menu.actor.y+margin.top, menu.actor.width-(margin.left+margin.right), menu.actor.height-(margin.top+margin.bottom) );
+      if (this.openMenu) {
+         let actor = this.openMenu.actor;
+         let margin = actor.get_margin();
+         this.background.set_clip( actor.x+margin.left, actor.y+margin.top, actor.width-(margin.left+margin.right), actor.height-(margin.top+margin.bottom) );
       }
    }
 
