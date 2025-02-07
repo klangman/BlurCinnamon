@@ -77,17 +77,22 @@ function _animateVisibleOverview() {
    let radius = (settings.overviewOverride) ? settings.overviewRadius : settings.radius;
    let blendColor = (settings.overviewOverride) ? settings.overviewBlendColor : settings.blendColor;
    let opacity = (settings.overviewOverride) ? settings.overviewOpacity : settings.opacity;
+   let saturation = (settings.overviewOverride) ? settings.overviewSaturation : settings.saturation;
 
    // Get the overview's background image and add the BlurEffect to it if configured to do so
+   let desktopBackground = children[0];
    if (blurType > BlurType.None) {
       let fx;
-      let desktopBackground = children[0];
       if (blurType === BlurType.Simple) {
          fx =  new Clutter.BlurEffect();
       } else {
          fx = new GaussianBlur.GaussianBlurEffect( { radius: radius, brightness: 1, width: 0, height: 0 } );
       }
       desktopBackground.add_effect_with_name( "blur", fx );
+   }
+   if (saturation<100) {
+      let desat = new Clutter.DesaturateEffect({factor: (100-saturation)/100});
+      desktopBackground.add_effect_with_name( "desat", desat );
    }
    // Get the overview's backgroundShade child and set it's color to see-through solid black/"Color blend" color
    let backgroundShade = children[1];
@@ -111,9 +116,11 @@ function _animateVisibleExpo() {
    let radius = (settings.expoOverride) ? settings.expoRadius : settings.radius;
    let blendColor = (settings.expoOverride) ? settings.expoBlendColor : settings.blendColor;
    let opacity = (settings.expoOverride) ? settings.expoOpacity : settings.opacity;
+   let saturation = (settings.expoOverride) ? settings.expoSaturation : settings.saturation;
+
+   let desktopBackground = this._background
    if (blurType > BlurType.None) {
       let fx;
-      let desktopBackground = this._background
       if (blurType === BlurType.Simple) {
          fx =  new Clutter.BlurEffect();
       } else {
@@ -121,7 +128,10 @@ function _animateVisibleExpo() {
       }
       desktopBackground.add_effect_with_name( "blur", fx );
    }
-
+   if (saturation<100) {
+      let desat = new Clutter.DesaturateEffect({factor: (100-saturation)/100});
+      desktopBackground.add_effect_with_name( "desat", desat );
+   }
    // Create a shade, set it's color in accordance with the settings and make it invisible
    let backgroundShade = new St.Bin({style_class: 'workspace-overview-background-shade'});
    this._backgroundShade = backgroundShade;
@@ -230,7 +240,7 @@ class BlurPanels {
    _blurPanel(panel, index) {
       let panelSettings = this._getPanelSettings(panel, index);
       if (!panelSettings ) return;
-      let [opacity, blendColor, blurType, radius] = panelSettings;
+      let [opacity, blendColor, blurType, radius, saturation] = panelSettings;
 
       let actor = panel.actor;
       let blurredPanel = panel.__blurredPanel;
@@ -276,6 +286,15 @@ class BlurPanels {
          blurredPanel.effect = fx;
          blurredPanel.background = background;
       }
+      if (saturation<100) {
+         if (!blurredPanel.background) {
+            let background = Meta.X11BackgroundActor.new_for_display(global.display);
+            global.overlay_group.add_actor(background);
+            blurredPanel.background = background;
+         }
+         let desat = new Clutter.DesaturateEffect({factor: (100-saturation)/100});
+         blurredPanel.background.add_effect_with_name( "desat", desat );
+      }
    }
 
    // This function will restore all panels to their original state and undo the monkey patching
@@ -318,7 +337,33 @@ class BlurPanels {
       }
    }
 
-   // An extension setting controlling how the dim overlay was modified
+   // An extension setting controlling the color saturation overlay was modified
+   updateSaturation() {
+      let panels = Main.getPanels();
+      for ( let i=0 ; i < this._blurredPanels.length ; i++ ) {
+         if (panels[i] && this._blurredPanels[i]) {
+            let panelSettings = this._getPanelSettings(panels[i], i);
+            if (panelSettings) {
+               let [opacity, blendColor, blurType, radius, saturation] = panelSettings;
+               let blurredPanel = panels[i].__blurredPanel;
+               if (!blurredPanel.background) {
+                  let background = Meta.X11BackgroundActor.new_for_display(global.display);
+                  global.overlay_group.add_actor(background);
+                  blurredPanel.background = background;
+               }
+               let effect = blurredPanel.background.get_effect("desat");
+               if (effect) {
+                  effect.set_factor((100-saturation)/100);
+               } else {
+                  let desat = new Clutter.DesaturateEffect({factor: (100-saturation)/100});
+                  blurredPanel.background.add_effect_with_name( "desat", desat );
+               }
+            }
+         }
+      }
+   }
+
+   // An extension setting controlling the dim overlay was modified
    updateColor() {
       let panels = Main.getPanels();
       for ( let i=0 ; i < this._blurredPanels.length ; i++ ) {
@@ -326,7 +371,7 @@ class BlurPanels {
             let panelSettings = this._getPanelSettings(panels[i], i);
             if (panelSettings) {
                let actor = panels[i].actor;
-               let [opacity, blendColor, blurType, radius] = panelSettings;
+               let [opacity, blendColor, blurType, radius, saturation] = panelSettings;
                if (settings.allowTransparentColorPanels) {
                   let [ret,color] = Clutter.Color.from_string( blendColor );
                   if (!ret) { [ret,color] = Clutter.Color.from_string( "rgba(0,0,0,0)" ); }
@@ -355,7 +400,7 @@ class BlurPanels {
          if (panels[i]) {
             let panelSettings = this._getPanelSettings(panels[i], i);
             if (panelSettings) {
-               let [opacity, blendColor, blurType, radius] = panelSettings;
+               let [opacity, blendColor, blurType, radius, saturation] = panelSettings;
                let blurredPanel = panels[i].__blurredPanel;
                if (blurredPanel) {
                   if (blurType !== BlurType.None && !blurredPanel.background) {
@@ -406,7 +451,7 @@ class BlurPanels {
                      continue;
                   }
                }
-               return [uniqueSetting.opacity, uniqueSetting.color, uniqueSetting.blurtype, uniqueSetting.radius];
+               return [uniqueSetting.opacity, uniqueSetting.color, uniqueSetting.blurtype, uniqueSetting.radius, uniqueSetting.saturation];
             }
          }
          return null;
@@ -415,7 +460,8 @@ class BlurPanels {
          let blurType = (settings.panelsOverride) ? settings.panelsBlurType : settings.blurType;
          let blendColor = (settings.panelsOverride) ? settings.panelsBlendColor : settings.blendColor;
          let opacity = (settings.panelsOverride) ? settings.panelsOpacity : settings.opacity;
-         return [opacity, blendColor, blurType, radius];
+         let saturation = (settings.panelsOverride) ? settings.panelsSaturation : settings.saturation;
+         return [opacity, blendColor, blurType, radius, saturation];
       }
    }
 
@@ -478,6 +524,7 @@ class BlurMainMenu {
       // We only need one background and only one blur effect since only one menu can be open at a time
       this.background = null;
       this.fx = null;
+      this.desat = null;
       this._blurExistingMenus();
       // Listen for new applets added to the panels
       this._signalManager.connect(global.settings, "changed::enabled-applets", Lang.bind(this, this.onEnabledAppletsChanged) );
@@ -490,8 +537,13 @@ class BlurMainMenu {
          for (let i=0 ; i < applets.length ; i++) {
             this._blurMenu( applets[i] );
          }
+         /*
+         applets = AppletManager.getRunningInstancesForUuid("calendar@cinnamon.org");
+         for (let i=0 ; i < applets.length ; i++) {
+            this._blurCalendar( applets[i] );
+         }*/
       } else {
-         // The applects are not all loaded yes, so we need to wait a bit before we can be sure to see the main menu
+         // The applets are not all loaded yet, so we need to wait a bit before we can be sure to see the main menu
          if (this._timeWaited < 60) {
             this._timeWaited++;
             Mainloop.timeout_add( 1000, Lang.bind(this, this._blurExistingMenus) );
@@ -529,6 +581,16 @@ class BlurMainMenu {
       }
    }
 
+   _blurCalendar(applet) {
+      if (applet && applet.menu && applet.menu.box) {
+         let box = applet.menu.box;
+         box.set_style( "border-radius: 0px; " + //"border-image: none;  border-color: transparent;  box-shadow: 0 0 transparent; " +
+                        "background-gradient-direction: vertical; background-gradient-start: transparent; " +
+                        "background-gradient-end: transparent;    background: transparent;" );
+         this._signalManager.connect(applet.menu, "open-state-changed", Lang.bind(this, this._onOpenStateChanged) );
+      }
+   }
+
    // Handle a resize event for the currently open menu
    _onResize(w, h) {
       this.origCallback.apply(this.openMenu, [w, h]);
@@ -547,6 +609,8 @@ class BlurMainMenu {
          let blurType = (settings.mainmenuOverride) ? settings.mainmenuBlurType : settings.blurType;
          let blendColor = (settings.mainmenuOverride) ? settings.mainmenuBlendColor : settings.blendColor;
          let opacity = (settings.mainmenuOverride) ? settings.mainmenuOpacity : settings.opacity;
+         let saturation = (settings.mainmenuOverride) ? settings.mainmenuSaturation : settings.saturation;
+
          let accentOpacity = (settings.mainmenuOverride) ? settings.mainmenuAccentOpacity : Math.min(settings.opacity+10, 100);
          if (!this.background) {
             this.background = Meta.X11BackgroundActor.new_for_display(global.display);
@@ -557,6 +621,13 @@ class BlurMainMenu {
                this.fx = new GaussianBlur.GaussianBlurEffect( {radius: radius, brightness: 1 , width: 0, height: 0} );
             }
             this.background.add_effect_with_name( "blur", this.fx );
+            if (saturation<100) {
+               this.desat = new Clutter.DesaturateEffect({factor: (100-saturation)/100});
+               this.background.add_effect_with_name( "desat", this.desat );
+            }
+            if (menu.animating) {
+               this.background.hide();
+            }
          } else {
             if (blurType === BlurType.Simple && this.fx instanceof GaussianBlur.GaussianBlurEffect) {
                this.background.remove_effect(this.fx);
@@ -569,12 +640,15 @@ class BlurMainMenu {
             } else if (blurType === BlurType.Gaussian && this.fx.radius !== radius) {
                this.fx.radius = radius;
             }
-            if (blurType !== BlurType.None) {
+            if (this.desat && this.desat.get_factor() != (100-saturation)/100) {
+               this.desat.set_factor((100-saturation)/100);
+            }
+            if (blurType !== BlurType.None || !menu.animating) {
                this.background.show();
             }
          }
 
-         if (settings.allowTransparentColorMainMenu) {
+         if (menu.launcher.searchEntry && settings.allowTransparentColorMainMenu) {
             // The menu's class seems to be updated every time the menu is opened, so we have to reset it every time to be transparent again!
             // Since it's reset every time anyhow, we don't need to remember the style and restore it when/if menu effects are disabled
             menu.actor.set_style(  "border-radius: 0px; " + //"border-image: none;  border-color: transparent;  box-shadow: 0 0 transparent; " +
@@ -588,22 +662,46 @@ class BlurMainMenu {
          color.alpha = opacity*2.55;
          menu.box.set_background_color(color);
 
-         color.alpha = (accentOpacity)*2.55;
-         menu.launcher.searchEntry.set_background_color(color);
-         menu.launcher.left_box.set_background_color(color);
-
-         this.background.set_clip( menu.actor.x+margin.left, menu.actor.y+margin.top, menu.actor.width-(margin.left+margin.right), menu.actor.height-(margin.top+margin.bottom) );
-         // Monkey patch the resize callback so we can intercept the resize events
-         this.origCallback = menu.launcher._resizer._resized_callback;
-         menu.launcher._resizer._resized_callback = Lang.bind( this, this._onResize );
+         if (menu.launcher.searchEntry) {
+            color.alpha = (accentOpacity)*2.55;
+            menu.launcher.searchEntry.set_background_color(color);
+            menu.launcher.left_box.set_background_color(color);
+            // Monkey patch the resize callback so we can intercept the resize events
+            this.origCallback = menu.launcher._resizer._resized_callback;
+            menu.launcher._resizer._resized_callback = Lang.bind( this, this._onResize );
+         }
          this.openMenu = menu;
+         if (menu.animating) {
+            Mainloop.idle_add( () => { this.updateClip(menu); } );
+         } else {
+            this.background.set_clip( menu.actor.x+margin.left, menu.actor.y+margin.top, menu.actor.width-(margin.left+margin.right), menu.actor.height-(margin.top+margin.bottom) );
+            this.background.show();
+         }
       } else {
          if (this.background) {
-           this.background.hide();
+           if (menu.animating) {
+              Mainloop.idle_add( () => { this.updateClip(menu); } );
+           } else {
+              this.background.hide();
+           }
          }
          // Restore the monkey patched callback
-         menu.launcher._resizer._resized_callback = this.origCallback;
+         if (menu.launcher.searchEntry) {
+            menu.launcher._resizer._resized_callback = this.origCallback;
+         }
          this.openMenu = null;
+      }
+   }
+
+   updateClip(menu) {
+      this.background.set_clip( menu.actor.x, menu.actor.y, menu.actor.width, menu.actor.height );
+      if (menu.animating) {
+         this.background.show();
+         Mainloop.idle_add( () => {this.updateClip(menu);} );
+      } else {
+         if (!this.openMenu) {
+            this.background.hide();
+         }
       }
    }
 
@@ -613,7 +711,6 @@ class BlurMainMenu {
       let applets = AppletManager.getRunningInstancesForUuid("menu@cinnamon.org");
       for (i=0 ; i < applets.length ; i++) {
          if (!this.mainMenuApplets.find( (mmData) => mmData.applet === applets[i] )) {
-            log( "BlurCinnamon: Applying effects to new main menu applet instance" );
             this._blurMenu( applets[i] );
          }
       }
@@ -671,27 +768,32 @@ class BlurSettings {
       this.settings.bind('blurType',   'blurType',   blurChanged);
       this.settings.bind('radius',     'radius',     blurChanged);
       this.settings.bind('blendColor', 'blendColor', colorChanged);
+      this.settings.bind('saturation', 'saturation', saturationChanged);
 
       this.settings.bind('overview-opacity',    'overviewOpacity');
       this.settings.bind('overview-blurType',   'overviewBlurType');
       this.settings.bind('overview-radius',     'overviewRadius');
       this.settings.bind('overview-blendColor', 'overviewBlendColor');
+      this.settings.bind('overview-saturation', 'overviewSaturation');
 
       this.settings.bind('expo-opacity',    'expoOpacity');
       this.settings.bind('expo-blurType',   'expoBlurType');
       this.settings.bind('expo-radius',     'expoRadius');
       this.settings.bind('expo-blendColor', 'expoBlendColor');
+      this.settings.bind('expo-saturation', 'expoSaturation');
 
       this.settings.bind('panels-opacity',    'panelsOpacity',    colorChanged);
       this.settings.bind('panels-blurType',   'panelsBlurType',   blurChanged);
       this.settings.bind('panels-radius',     'panelsRadius',     blurChanged);
       this.settings.bind('panels-blendColor', 'panelsBlendColor', colorChanged);
+      this.settings.bind('panels-saturation', 'panelsSaturation', saturationChanged);
 
       this.settings.bind('mainmenu-opacity',        'mainmenuOpacity');
       this.settings.bind('mainmenu-accent-opacity', 'mainmenuAccentOpacity');
       this.settings.bind('mainmenu-blurType',       'mainmenuBlurType');
       this.settings.bind('mainmenu-radius',         'mainmenuRadius');
       this.settings.bind('mainmenu-blendColor',     'mainmenuBlendColor');
+      this.settings.bind('mainmenu-saturation',     'mainmenuSaturation');
       this.settings.bind('allow-transparent-color-mainmenu', 'allowTransparentColorMainMenu', mainMenuChanged);
 
       this.settings.bind('enable-overview-override', 'overviewOverride');
@@ -707,6 +809,12 @@ class BlurSettings {
       this.settings.bind('enable-panel-unique-settings', 'enablePanelUniqueSettings');
       this.settings.bind('panel-unique-settings', 'panelUniqueSettings', panelsSettingsChangled);
       this.settings.bind('allow-transparent-color-panels', 'allowTransparentColorPanels', colorChanged);
+   }
+}
+
+function saturationChanged() {
+   if (blurPanels) {
+      blurPanels.updateSaturation();
    }
 }
 
@@ -726,6 +834,7 @@ function panelsSettingsChangled() {
    if (blurPanels) {
       blurPanels.updateBlur();
       blurPanels.updateColor();
+      blurPanels.updateSaturation();
    }
 }
 

@@ -37,7 +37,7 @@
       "generic-effect-settings" : {
          "type" : "section",
          "title" : "Generic effect settings",
-         "keys" : ["opacity", "blendColor", "blurType", "radius"]
+         "keys" : ["opacity", "blendColor", "blurType", "radius", "saturation"]
       },
 
       "overview-override" : {
@@ -49,7 +49,7 @@
          "type" : "section",
          "title" : "Overview effect settings",
          "dependency" : "enable-overview-override=1",
-         "keys" : ["overview-opacity", "overview-blendColor", "overview-blurType", "overview-radius"]
+         "keys" : ["overview-opacity", "overview-blendColor", "overview-blurType", "overview-radius", "overview-saturation"]
       },
 
       "expo-override" : {
@@ -61,19 +61,19 @@
          "type" : "section",
          "title" : "Expo effect settings",
          "dependency" : "enable-expo-override=1",
-         "keys" : ["expo-opacity", "expo-blendColor", "expo-blurType", "expo-radius"]
+         "keys" : ["expo-opacity", "expo-blendColor", "expo-blurType", "expo-radius", "expo-saturation"]
       },
 
       "panels-override" : {
          "type" : "section",
          "title" : "Panels settings",
-         "keys" : ["enable-panels-override", "panels-info", "allow-transparent-color-panels" ]
+         "keys" : ["enable-panels-override", "panels-info", "allow-transparent-color-panels"]
       },
       "panels-effect-settings" : {
          "type" : "section",
          "title" : "Panel effects settings",
          "dependency" : "enable-panels-override",
-         "keys" : ["enable-panel-unique-settings", "panel-unique-settings", "panels-opacity", "panels-blendColor", "panels-blurType", "panels-radius"]
+         "keys" : ["enable-panel-unique-settings", "panel-unique-settings", "panels-opacity", "panels-blendColor", "panels-blurType", "panels-radius", "panels-saturation"]
       },
 
       "mainmenu-override" : {
@@ -85,7 +85,7 @@
          "type" : "section",
          "title" : "Panel effects settings",
          "dependency" : "enable-mainmenu-override",
-         "keys" : ["mainmenu-opacity", "mainmenu-accent-opacity", "mainmenu-blendColor", "mainmenu-blurType", "mainmenu-radius"]
+         "keys" : ["mainmenu-opacity", "mainmenu-accent-opacity", "mainmenu-blendColor", "mainmenu-blurType", "mainmenu-radius", "mainmenu-saturation"]
       }
 
    },
@@ -105,13 +105,13 @@
     "enable-panels-effects" : {
         "type": "switch",
         "description": "Panels  (Please read tooltip)",
-        "tooltip": "Apply effects to the Panels. This option should work well with most dark themes but light themes could also be made to work with some creative use of the dimming color settings and an appropriate background image. It overrides some themes settings to achieve a (semi-)transparent panel so that the blurred background is visible.",
+        "tooltip": "Apply effects to the Panels. This option should work well with most dark desktop themes but light themes could also be made to work with some creative use of the dimming color settings and an appropriate background image. It overrides some themes settings to achieve a (semi-)transparent panel so that the blurred background is visible.",
         "default": true
     },
     "enable-mainmenu-effects" : {
         "type": "switch",
         "description": "Main Menu  (Please read tooltip)",
-        "tooltip": "Apply effects to the Main Menu (menu@cinnamon.org applet). This option is intended for the Cinnamon (6.4) and Mint-Y Dark themes but might work well with other themes. Light themes are unlikely to give good results but might be made to work with some creative use of the dimming color settings and an appropriate background image. It overrides some theme settings to achieve a (semi-)transparent menu so that the blurred background is visible. It also removes rounded corners so that the blurred background will not spill over the rounded edges.",
+        "tooltip": "Apply effects to the Main Menu (menu@cinnamon.org applet). This option is intended for the Cinnamon (6.4) and Mint-Y Dark desktop themes but might work well with other themes. Light themes are unlikely to give good results but might be made to work with some creative use of the dimming color settings and an appropriate background image. It overrides some theme settings to achieve a (semi-)transparent menu so that the blurred background is visible. It also removes rounded corners so that the blurred background will not spill over the rounded edges.",
         "default": false
     },
 
@@ -192,14 +192,15 @@
             {"id": "opacity",   "title": "Dimming",   "type": "integer", "default": 40,  "min": 0, "max": 100},
             {"id": "color",     "title": "Color",     "type": "string",  "default": "rgb(0,0,0)"},
             {"id": "blurtype",  "title": "Blur",      "type": "integer", "default": 2, "options": { "None": 0, "Simple": 1, "Gaussian": 2 } },
-            {"id": "radius",    "title": "Intensity", "type": "integer", "default": 10,  "min": 0, "max": 100}
+            {"id": "radius",    "title": "Intensity", "type": "integer", "default": 10,  "min": 0, "max": 100},
+            {"id": "saturation","title": "Saturation","type": "integer", "default": 100, "min": 0, "max": 100}
         ],
         "tooltip": "Defines the effects applied to different panels. If a panel does not meet the criteria of any enabled entry in this list, it will have no effects applied. The settings of the first entry in this list that can apply to a given panel will take effect. The color field is in the rgb(#,#,#) syntax and black will be used when a color is not provided or is in an incorrect syntax",
         "default" : [
-            { "enabled": true, "panels": 1, "monitors": 0, "opacity": 40, "color": "rgb(0,0,0)", "blurtype": 2, "radius": 10 },
-            { "enabled": true, "panels": 2, "monitors": 0, "opacity": 40, "color": "rgb(0,0,0)", "blurtype": 2, "radius": 10 },
-            { "enabled": true, "panels": 3, "monitors": 0, "opacity": 40, "color": "rgb(0,0,0)", "blurtype": 2, "radius": 10 },
-            { "enabled": true, "panels": 4, "monitors": 0, "opacity": 40, "color": "rgb(0,0,0)", "blurtype": 2, "radius": 10 }
+            { "enabled": true, "panels": 1, "monitors": 0, "opacity": 40, "color": "rgb(0,0,0)", "blurtype": 2, "radius": 10, "saturation": 100 },
+            { "enabled": true, "panels": 2, "monitors": 0, "opacity": 40, "color": "rgb(0,0,0)", "blurtype": 2, "radius": 10, "saturation": 100 },
+            { "enabled": true, "panels": 3, "monitors": 0, "opacity": 40, "color": "rgb(0,0,0)", "blurtype": 2, "radius": 10, "saturation": 100 },
+            { "enabled": true, "panels": 4, "monitors": 0, "opacity": 40, "color": "rgb(0,0,0)", "blurtype": 2, "radius": 10, "saturation": 100 }
         ]
     },
 
@@ -242,6 +243,16 @@
         "default": 9
     },
 
+    "saturation": {
+        "type": "scale",
+        "description" : "Background color saturation",
+        "min" : 0.0,
+        "max" : 100,
+        "step" : 0.1,
+        "tooltip": "Adjusts the color saturation of the background image.",
+        "default": 100
+    },
+
 
     "overview-opacity" : {
         "type": "scale",
@@ -282,6 +293,16 @@
         "default": 9
     },
 
+    "overview-saturation": {
+        "type": "scale",
+        "description" : "Background color saturation",
+        "min" : 0.0,
+        "max" : 100,
+        "step" : 0.1,
+        "tooltip": "Adjusts the color saturation of the background image.",
+        "default": 100
+    },
+
 
     "expo-opacity" : {
         "type": "scale",
@@ -289,15 +310,13 @@
         "min": 0,
         "max": 100,
         "default": 40,
-        "step": 1,
-        "dependency" : "enable-expo-override=1"
+        "step": 1
     },
 
     "expo-blendColor": {
         "type": "colorchooser",
         "description" : "Dimming overlay color",
         "default": "rgb(0,0,0)",
-        "dependency" : "enable-expo-override=1",
         "tooltip": "Defines the color that is blended into the background based on the dimming control above. Use black for a normal dimming effect or some other color for a color blend effect"
     },
 
@@ -310,8 +329,7 @@
             "Gaussian": 2
         },
         "description": "Type of blur effect",
-        "tooltip": "What type of blur algorithm should be used to blur the background",
-        "dependency" : "enable-expo-override=1"
+        "tooltip": "What type of blur algorithm should be used to blur the background"
     },
 
     "expo-radius": {
@@ -322,7 +340,17 @@
         "step" : 0.1,
         "tooltip": "Adjusts the intensity of the blur effect by changing the radius use by the effect.",
         "default": 9,
-        "dependency" : "enable-expo-override=1"
+        "dependency" : "expo-blurType=2"
+    },
+
+    "expo-saturation": {
+        "type": "scale",
+        "description" : "Background color saturation",
+        "min" : 0.0,
+        "max" : 100,
+        "step" : 0.1,
+        "tooltip": "Adjusts the color saturation of the background image.",
+        "default": 100
     },
 
 
@@ -367,6 +395,17 @@
         "default": 6,
         "dependency" : "!enable-panel-unique-settings"
     },
+
+    "panels-saturation": {
+        "type": "scale",
+        "description" : "Background color saturation",
+        "min" : 0.0,
+        "max" : 100,
+        "step" : 0.1,
+        "tooltip": "Adjusts the color saturation of the background image.",
+        "default": 100
+    },
+
 
     "mainmenu-opacity" : {
         "type": "scale",
@@ -419,6 +458,15 @@
         "tooltip": "Adjusts the intensity of the Gaussian blur effect by changing the radius use by the effect. This setting does not effect the Simple blur type",
         "default": 20,
         "dependency" : "enable-mainmenu-override=1"
-    }
+    },
 
+    "mainmenu-saturation": {
+        "type": "scale",
+        "description" : "Background color saturation",
+        "min" : 0.0,
+        "max" : 100,
+        "step" : 0.1,
+        "tooltip": "Adjusts the color saturation of the background image.",
+        "default": 100
+    }
 }
