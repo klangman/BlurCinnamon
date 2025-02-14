@@ -671,10 +671,9 @@ class BlurPopupMenus {
                                 "background-gradient-end: transparent;    background: transparent;" );
                child.set_background_color(this._accentColor);
             }
-         }/* else if (child instanceof St.ScrollView) {
-            let styleClassName = child.get_style_class_name();
-            if (styleClassName && styleClassName.indexOf("popup-sub-menu") !== -1) {
-               //child = child.get_parent();
+         } else if (child instanceof St.Table) {
+            let name = child.get_name();
+            if (name && name.indexOf("notification") !== -1) {
                menu.blurCinnamonData.push( {entry: child, original_entry_color: child.get_background_color(), original_entry_style: child.get_style(),
                                 original_entry_class: child.get_style_class_name(), original_entry_pseudo_class: child.get_style_pseudo_class()} );
 
@@ -683,7 +682,7 @@ class BlurPopupMenus {
                                 "background-gradient-end: transparent;    background: transparent;" );
                child.set_background_color(this._accentColor);
             }
-         }*/
+         }
       }
    }
 
