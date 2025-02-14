@@ -1,17 +1,26 @@
 # Blur Cinnamon
 
-A Cinnamon extension to Dim, Blur and Colorize parts of the Cinnamon Desktop.
+A Cinnamon extension to Blur, Dim, Colorize, Desaturate and make transparent parts of the Cinnamon Desktop.
+
+Cinnamon components you can effect (currently):
+
+1. The overview
+2. The Expo
+3. Panels
+4. Panel applet popup menus (i.e Menu menu, Calendar, etc.)
+   
+   
 
 ![screen shot](BlurCinnamon@klangman/screenshot.png)
 
 ## Features
 
 1. Gaussian blur algorithm (borrowed from the Gnome extension Blur-my-Shell) with a user configurable intensity
-2. Dimming overlay with user configurable color and intensity (0-100%, transparent to a solid color)
-3. Simple blur algorithm (the Cinnamon built-in algorithm) which I would only recommend for very old computers
-4. Makes the Panels and the Expo transparent so that the desktop background image effects are visible
-5. Applies blurring, colorization and dimming effects to all Panels, the Overview and the Expo
-6. You can use general settings for Panels/Overview/Expo or use unique settings for each Cinnamon component
+2. Simple blur algorithm (the Cinnamon built-in algorithm) which I would only recommend for very old computers
+3. Dimming overlay with user configurable color and intensity (fully-transparent to a solid color)
+4. Makes the Panels, Popup menus and the Expo transparent so that the desktop background image effects are visible
+5. Allows you to adjust the color saturation of the background overlay. You can reduced or completely desaturated (i.e gray scale)
+6. You can use general settings for Popups/Panels/Overview/Expo or use unique settings for each
 
 ## Requirements
 
@@ -28,15 +37,14 @@ Using any of the above with Blur Cinnamon may have some odd side effects that wo
 ## Limitations
 
 1. Currently, any windows that are moved such that they overlap with a panel will not be visible beneath the panel as you might expect with a transparent panel. This is because the blur effect is applied to a user interface element that floats above all windows just like the panel floats above the windows. At some point I hope to look into making the blur element appear below all windows rather than above.
-2. If you disable effects for the Overview, Expo or Panels under the General tab of the setting dialog while any "Override the generic effect settings" options are enabled under the other tabs, the components "effect setting" options under the other tabs will still be visible, but changing those setting will have no effect until you re-enable the component under the General tab. Ideally those effect setting would only be visible when the component is enabled under the general tab but Cinnamon setting support is a bit limited in this way.
+2. The panel applet popup menu effects works for all the applets that I have tested except "Cinnamenu", which uses a bit of an odd way to activate the popup menu when clicked, making it more difficult to intercept the menu open process so that I can change the menu's transparency setting.
+3. If you disable effects for the Overview, Expo or Panels under the General tab of the setting dialog while any "Override the generic effect settings" options are enabled under the other tabs, the components "effect setting" options under the other tabs will still be visible, but changing those setting will have no effect until you re-enable the component under the General tab. Ideally those effect setting would only be visible when the component is enabled under the general tab but Cinnamon setting support is a bit limited in this way.
 
 ## Installation
 
 This extension is also available on Cinnamon Spices. It can be installed directly from within Cinnamon using the "Extensions" application under the "System Settings".
 
 [Blur Cinnamon on Cinnamon Spices](https://cinnamon-spices.linuxmint.com/extensions/view/104)
-
-
 
 For the latest cutting edge development version, follow these instructions to install manually:
 
@@ -70,7 +78,7 @@ For the latest cutting edge development version, follow these instructions to in
 
 Feel free to open an issue here in my Github repo if you want to make a suggestion or report an issue.
 
-If you like this Cinnamon extension, "star" this Github repository to encourage me to continue working on the project. Thanks!
+If you like this Cinnamon extension, "star" this Github repository and its Cinnamon-spices [page]([Extensions : Blur Cinnamon : Cinnamon Spices](https://cinnamon-spices.linuxmint.com/extensions/view/104) to encourage me to continue working on the project. Thanks!
 
 ## Credits
 
