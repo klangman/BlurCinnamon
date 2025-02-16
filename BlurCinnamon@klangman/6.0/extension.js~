@@ -632,8 +632,8 @@ class BlurPopupMenus {
             this._background.set_clip( actor.x+margin.left, actor.y+margin.top, actor.width-(margin.left+margin.right), actor.height-(margin.top+margin.bottom) );
          }
          this._background.show();
-         // Now that the menu is open we need to know if new actors are added so we can check for accent elements
-         menu.blurCinnamonSignalManager.connect(menu.actor, "queue-relayout", () => {this._findAccentActors(menu, menu.actor);} );
+         menu.blurCinnamonSignalManager.connect(menu.actor, "queue-relayout", () => {log("relayout"); this._findAccentActors(menu, menu.actor);} );
+
       }
    }
 
@@ -642,13 +642,34 @@ class BlurPopupMenus {
       this._unblurPopupMenu(menu);
    }
 
+   // Is this needed, I have found no examples of this yet!
+   _onActorAdded(container, actor) {
+      log( "actor added!" );
+      if (actor instanceof St.BoxLayout) {
+         let color = child.get_background_color();
+         if (color) {
+            //log( `Color: ${color.red} ${color.green} ${color.blue} ${color.alpha}` );
+            if (color.alpha === 255) {
+               log( "A St.BoxLayout with a solid background color as added" );
+            }
+         }
+      }
+   }
+
    // Look for Popup menu accent actors
-   _findAccentActors(menu, actor, indent="") {
+   _findAccentActors(menu, actor) {
       let children = actor.get_children();
       for (let i=0 ; i < children.length ; i++ ) {
          let child = children[i];
+         // If it's a ScrollView then we are likely in the Main Menu and we can optimize by skipping these actors
+         //if (!(child instanceof St.ScrollView)) {
+            this._findAccentActors(menu, child);
+         //} else {
+         //   continue;
+         //}
          if (child instanceof St.Entry) {
             if (!menu.blurCinnamonData.find( (element) => {return(element.entry === child);} )) {
+               log( `Adding save for ${child}` );
                menu.blurCinnamonData.push( {entry: child, original_entry_color: child.get_background_color(), original_entry_style: child.get_style(),
                                 original_entry_class: child.get_style_class_name(), original_entry_pseudo_class: child.get_style_pseudo_class()} );
             }
@@ -661,6 +682,7 @@ class BlurPopupMenus {
             if (styleClassName && styleClassName.indexOf("menu-favorites-box") !== -1) {
                // This is for the menu@cinnamon.org applet
                if (!menu.blurCinnamonData.find( (element) => {return(element.entry === child);} )) {
+                  log( `Adding save for ${child}` );
                   menu.blurCinnamonData.push( {entry: child, original_entry_color: child.get_background_color(), original_entry_style: child.get_style(),
                                 original_entry_class: child.get_style_class_name(), original_entry_pseudo_class: child.get_style_pseudo_class()} );
                }
@@ -672,16 +694,18 @@ class BlurPopupMenus {
          } else if (child instanceof St.Table) {
             let name = child.get_name();
             if (name && name.indexOf("notification") !== -1) {
-               // Notification messages in the Notifications applet, these messages can be removed by the user so we need to handle that case
                if (!menu.blurCinnamonData.find( (element) => {return(element.entry === child);} )) {
+                  log( `Adding save for ${child}` );
                   menu.blurCinnamonData.push( {entry: child, original_entry_color: child.get_background_color(), original_entry_style: child.get_style(),
                                 original_entry_class: child.get_style_class_name(), original_entry_pseudo_class: child.get_style_pseudo_class()} );
                   menu.blurCinnamonSignalManager.connect(child, 'destroy', (actor) =>
                      {
                         // If the child is removed then remove the restore data to avoid errors
+                        log( `Removing data for child: ${actor}` );
                         let idx = menu.blurCinnamonData.findIndex( (element) => {return(element.entry === child);} )
                         if (idx!=-1) {
                            menu.blurCinnamonData.splice(idx,1);
+                           log( "removed!" );
                         }
                      } );
                }
@@ -691,10 +715,6 @@ class BlurPopupMenus {
                child.set_background_color(this._accentColor);
             }
          }
-         //if (child instanceof St.Widget) {
-         //   log( `Widget: ${indent}${child}` );
-         //}
-         this._findAccentActors(menu, child, indent+"  ");
       }
    }
 
@@ -703,6 +723,7 @@ class BlurPopupMenus {
       menu.blurCinnamonSignalManager = new SignalManager.SignalManager(null);
       menu.blurCinnamonSignalManager.connect(menu, "open-state-changed", Lang.bind(this, this._onOpenStateChanged) );
       menu.blurCinnamonSignalManager.connect(menu, "menu-animated-closed", Lang.bind(this, this._onClosed) );
+      menu.blurCinnamonSignalManager.connect(menu.actor, "actor-added", Lang.bind(this, this._onActorAdded) );
       menu.blurCinnamonSignalManager.connect(menu.actor, 'notify::size', () => {this._setClip(menu);} );
       menu.blurCinnamonSignalManager.connect(menu.actor, 'notify::position', () => {this._setClip(menu);} );
    }
