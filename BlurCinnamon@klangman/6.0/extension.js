@@ -48,6 +48,7 @@ let originalAnimateExpo;
 let settings;
 let blurPanels;
 let blurPopupMenus;
+let blurDesktop;
 
 var blurPanelsThis;
 var blurPopupMenusThis;
@@ -331,7 +332,8 @@ class BlurPanels {
          actor.set_style_class_name(blurredPanel.original_class);
          actor.set_style_pseudo_class(blurredPanel.original_pseudo_class);
          if (blurredPanel.background) {
-            blurredPanel.background.remove_effect(blurredPanel.effect);
+            if (blurredPanel.effect)
+               blurredPanel.background.remove_effect(blurredPanel.effect);
             global.overlay_group.remove_actor(blurredPanel.background);
             blurredPanel.background.destroy();
          }
@@ -369,7 +371,7 @@ class BlurPanels {
       }
    }
 
-   // An extension setting controlling the dim overlay was modified
+   // An extension setting controlling how the dim overlay was modified
    updateColor() {
       let panels = Main.getPanels();
       for ( let i=0 ; i < this._blurredPanels.length ; i++ ) {
@@ -412,7 +414,8 @@ class BlurPanels {
                   if (blurType !== BlurType.None && !blurredPanel.background) {
                      this._blurPanel(panels[i], i);
                   } else if (blurType === BlurType.None && blurredPanel.background) {
-                     blurredPanel.background.remove_effect(blurredPanel.effect);
+                     if (blurredPanel.effect)
+                        blurredPanel.background.remove_effect(blurredPanel.effect);
                      blurredPanel.background.destroy();
                      blurredPanel.background = null;
                   } else if (blurType === BlurType.Simple && blurredPanel.effect instanceof GaussianBlur.GaussianBlurEffect) {
@@ -733,6 +736,120 @@ class BlurPopupMenus {
    }
 }
 
+class BlurDesktop {
+   constructor() {
+      this._signalManager = new SignalManager.SignalManager(null);
+
+      this._blurEffect = new GaussianBlur.GaussianBlurEffect( {radius: 0, brightness: 1, width: 0, height: 0} );
+      this._desatEffect = new Clutter.DesaturateEffect({factor: 1});
+      this._brightnessEffect = new Clutter.BrightnessContrastEffect();
+      global.background_actor.add_effect_with_name( "blur", this._blurEffect );
+      global.background_actor.add_effect_with_name( "desat", this._desatEffect );
+      global.background_actor.add_effect_with_name( "brightness", this._brightnessEffect );
+
+      this._originalBackgroundColor = global.background_actor.get_background_color();
+      this._effects_applied = true;
+      this.updateEffects();
+   }
+
+   updateEffects() {
+      let blurType = (settings.desktopOverride) ? settings.desktopBlurType : settings.blurType;
+      let radius = (settings.desktopOverride) ? settings.desktopRadius : settings.radius;
+      let blendColor = (settings.desktopOverride) ? settings.desktopBlendColor : settings.blendColor;
+      let opacity = (settings.desktopOverride) ? settings.desktopOpacity : settings.opacity;
+      let saturation = (settings.desktopOverride) ? settings.desktopSaturation : settings.saturation;
+
+      this._withoutFocusSettings = {radius: radius, opacity: opacity, saturation: saturation};
+      if (settings.desktopOverride && settings.desktopWithFocus) {
+         this._withFocusSettings = {radius: settings.radius, opacity: settings.opacity, saturation: settings.saturation};
+      } else {
+         this._withFocusSettings = {radius: 0, opacity: 0, saturation: 100};
+      }
+      if (this._connected && !settings.desktopWithoutFocus) {
+         this._signalManager.disconnectAllSignals();
+         this._connected = false
+      } else if(!this._connected && settings.desktopWithoutFocus) {
+         this._signalManager.connect(global.display, "notify::focus-window", this._onFocusChanged, this);
+         this._connected = true;
+      }
+      let curEffect = global.background_actor.get_effect("blur");
+      if (blurType === BlurType.None && curEffect) {
+         //global.background_actor.remove_effect(this._blurEffect);
+      } else if (blurType === BlurType.Simple && !(this._blurEffect instanceof Clutter.BlurEffect)) {
+         if (curEffect) {
+            global.background_actor.remove_effect(this._blurEffect);
+         }
+         this._blurEffect = new Clutter.BlurEffect();
+         global.background_actor.add_effect_with_name( "blur", this._blurEffect );
+      } else if (blurType === BlurType.Gaussian && !(this._blurEffect instanceof GaussianBlur.GaussianBlurEffect)) {
+         if (curEffect) {
+            global.background_actor.remove_effect(this._blurEffect);
+         }
+         this._blurEffect = new GaussianBlur.GaussianBlurEffect( {radius: radius, brightness: 1, width: 0, height: 0} );
+         global.background_actor.add_effect_with_name( "blur", this._blurEffect );
+      } else if (blurType !== BlurType.None && curEffect === null) {
+         global.background_actor.add_effect_with_name( "blur", this._blurEffect );
+      }
+      // Adjust the effects
+      if (this._blurEffect instanceof GaussianBlur.GaussianBlurEffect) {
+         if (this._blurEffect.radius != radius) {
+            this._blurEffect.radius = radius; //Math.max(0.0001,radius);
+         }
+         //if (this._blurEffect.brightness != (100-opacity)/100) {
+         //   this._blurEffect.brightness = (100-opacity)/100;
+         //}
+      }
+      if (this._desatEffect.factor !== (100-saturation)/100) {
+         this._desatEffect.set_factor((100-saturation)/100);
+      }
+      if(this._brightnessEffect) {
+         this._brightnessEffect.set_brightness(-(opacity/100));
+         //let [ret,color] = Clutter.Color.from_string( blendColor );
+         //if (!ret) { [ret,color] = Clutter.Color.from_string( "rgba(0,0,0,0)" ); }
+         //let b = 1(opacity/100);
+         //this._brightnessEffect.set_brightness_full( -b+(color.red/255*b), -b+(color.green/255*b), -b+(color.blue/255*b) );
+      }
+      if (this._connected) {
+         this._onFocusChanged();
+      }
+   }
+
+   _onFocusChanged(){
+      let window = global.display.get_focus_window();
+      if (window && window.get_window_type() === Meta.WindowType.DESKTOP) {
+         this._blurEffect.radius = this._withFocusSettings.radius; //Math.max(0.0001,this._withFocusSettings.radius);
+         //this._blurEffect.brightness = (100-this._withFocusSettings.opacity)/100;
+         this._brightnessEffect.set_brightness(-(this._withFocusSettings.opacity/100));
+         this._desatEffect.set_factor((100-this._withFocusSettings.saturation)/100);
+         this._currentlyWithFocus = true;
+         return;
+      }
+      if (this._currentlyWithFocus) {
+            this._blurEffect.radius = this._withoutFocusSettings.radius; //Math.max(0.0001,this._withoutFocusSettings.radius);
+            //this._blurEffect.brightness = (100-this._withoutFocusSettings.opacity)/100;
+            this._brightnessEffect.set_brightness(-(this._withoutFocusSettings.opacity/100));
+            this._desatEffect.set_factor((100-this._withoutFocusSettings.saturation)/100);
+            this._currentlyWithFocus = false;
+      }
+   }
+
+   destroy() {
+      this._signalManager.disconnectAllSignals();
+      let effect = global.background_actor.get_effect("blur");
+      if (effect) {
+         global.background_actor.remove_effect(effect);
+      }
+      effect = global.background_actor.get_effect("desat");
+      if (effect) {
+         global.background_actor.remove_effect(effect);
+      }
+      effect = global.background_actor.get_effect("brightness");
+      if (effect) {
+         global.background_actor.remove_effect(effect);
+      }
+   }
+}
+
 class BlurSettings {
    constructor(uuid) {
       this.settings = new Settings.ExtensionSettings(this, uuid);
@@ -768,15 +885,25 @@ class BlurSettings {
       this.settings.bind('popup-saturation',     'popupSaturation');
       this.settings.bind('allow-transparent-color-popup', 'allowTransparentColorPopup');
 
+      this.settings.bind('desktop-opacity',       'desktopOpacity',      updateDesktopEffects);
+      this.settings.bind('desktop-blurType',      'desktopBlurType',     updateDesktopEffects);
+      this.settings.bind('desktop-radius',        'desktopRadius',       updateDesktopEffects);
+      this.settings.bind('desktop-blendColor',    'desktopBlendColor',   updateDesktopEffects);
+      this.settings.bind('desktop-saturation',    'desktopSaturation',   updateDesktopEffects);
+      this.settings.bind('desktop-with-focus',    'desktopWithFocus',    updateDesktopEffects);
+      this.settings.bind('desktop-without-focus', 'desktopWithoutFocus', updateDesktopEffects);
+
       this.settings.bind('enable-overview-override', 'overviewOverride');
       this.settings.bind('enable-expo-override',     'expoOverride');
       this.settings.bind('enable-panels-override',   'panelsOverride', panelsSettingsChangled);
       this.settings.bind('enable-popup-override',    'popupOverride');
+      this.settings.bind('enable-desktop-override',    'desktopOverride', updateDesktopEffects);
 
       this.settings.bind('enable-overview-effects', 'enableOverviewEffects', enableOverviewChanged);
       this.settings.bind('enable-expo-effects',     'enableExpoEffects',     enableExpoChanged);
       this.settings.bind('enable-panels-effects',   'enablePanelsEffects',   enablePanelsChanged);
-      this.settings.bind('enable-popup-effects', 'enablePopupEffects', enablePopupChanged);
+      this.settings.bind('enable-popup-effects',    'enablePopupEffects',    enablePopupChanged);
+      this.settings.bind('enable-desktop-effects',  'enableDesktopEffects',  enableDesktopChanged);
 
       this.settings.bind('enable-panel-unique-settings', 'enablePanelUniqueSettings');
       this.settings.bind('panel-unique-settings', 'panelUniqueSettings', panelsSettingsChangled);
@@ -784,9 +911,18 @@ class BlurSettings {
    }
 }
 
+function updateDesktopEffects() {
+   if (blurDesktop && settings.enableDesktopEffects) {
+      blurDesktop.updateEffects();
+   }
+}
+
 function saturationChanged() {
    if (blurPanels) {
       blurPanels.updateSaturation();
+   }
+   if (blurDesktop && settings.enableDesktopEffects) {
+      blurDesktop.updateEffects();
    }
 }
 
@@ -794,11 +930,17 @@ function colorChanged() {
    if (blurPanels) {
       blurPanels.updateColor();
    }
+   if (blurDesktop && settings.enableDesktopEffects) {
+      blurDesktop.updateEffects();
+   }
 }
 
 function blurChanged() {
    if (blurPanels) {
       blurPanels.updateBlur();
+   }
+   if (blurDesktop && settings.enableDesktopEffects) {
+      blurDesktop.updateEffects();
    }
 }
 
@@ -848,6 +990,15 @@ function enablePopupChanged() {
    }
 }
 
+function enableDesktopChanged() {
+   if (blurDesktop && !settings.enableDesktopEffects) {
+      blurDesktop.destroy();
+      blurDesktop = null;
+   } else if (!blurDesktop && settings.enableDesktopEffects ) {
+      blurDesktop = new BlurDesktop();
+   }
+}
+
 function init(extensionMeta) {
    settings = new BlurSettings(extensionMeta.uuid);
 
@@ -876,6 +1027,10 @@ function enable() {
    if (settings.enablePopupEffects) {
       blurPopupMenus = new BlurPopupMenus();
    }
+   // Create a Desktop Effects class instance, the constructor will set everything up.
+   if (settings.enableDesktopEffects) {
+      blurDesktop = new BlurDesktop();
+   }
 }
 
 function disable() {
@@ -897,5 +1052,10 @@ function disable() {
    if (blurPopupMenus) {
       blurPopupMenus.destroy();
       blurPopupMenus = null;
+   }
+
+   if (blurDesktop) {
+      blurDesktop.destory();
+      blurDesktop = null;
    }
 }

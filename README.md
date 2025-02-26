@@ -8,6 +8,7 @@ Cinnamon components you can effect (currently):
 2. The Expo
 3. Panels
 4. Panel applet popup menus (i.e Menu menu, Calendar, etc.)
+5. Desktop background
    
    
 
@@ -21,6 +22,8 @@ Cinnamon components you can effect (currently):
 4. Makes the Panels, Popup menus and the Expo transparent so that the desktop background image effects are visible
 5. Allows you to adjust the color saturation of the background overlay. You can reduced or completely desaturated (i.e gray scale)
 6. You can use general settings for Popups/Panels/Overview/Expo or use unique settings for each
+7. You can blur, dim and desaturate the desktop background image
+8. The desktop background image effects can be configured to only apply when the desktop is not in focus
 
 ## Requirements
 
