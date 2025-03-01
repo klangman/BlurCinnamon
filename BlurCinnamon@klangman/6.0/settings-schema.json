@@ -225,10 +225,10 @@
         ],
         "tooltip": "Defines the effects applied to different panels. If a panel does not meet the criteria of any enabled entry in this list, it will have no effects applied. The settings of the first entry in this list that can apply to a given panel will take effect. The color field is in the rgb(#,#,#) syntax and black will be used when a color is not provided or is in an incorrect syntax",
         "default" : [
-            { "enabled": true, "panels": 1, "monitors": 0, "opacity": 40, "color": "rgb(0,0,0)", "blurtype": 2, "radius": 10, "saturation": 100 },
-            { "enabled": true, "panels": 2, "monitors": 0, "opacity": 40, "color": "rgb(0,0,0)", "blurtype": 2, "radius": 10, "saturation": 100 },
-            { "enabled": true, "panels": 3, "monitors": 0, "opacity": 40, "color": "rgb(0,0,0)", "blurtype": 2, "radius": 10, "saturation": 100 },
-            { "enabled": true, "panels": 4, "monitors": 0, "opacity": 40, "color": "rgb(0,0,0)", "blurtype": 2, "radius": 10, "saturation": 100 }
+            { "enabled": true, "panels": 1, "monitors": 100, "opacity": 40, "color": "rgb(0,0,0)", "blurtype": 2, "radius": 10, "saturation": 100 },
+            { "enabled": true, "panels": 2, "monitors": 100, "opacity": 40, "color": "rgb(0,0,0)", "blurtype": 2, "radius": 10, "saturation": 100 },
+            { "enabled": true, "panels": 3, "monitors": 100, "opacity": 40, "color": "rgb(0,0,0)", "blurtype": 2, "radius": 10, "saturation": 100 },
+            { "enabled": true, "panels": 4, "monitors": 100, "opacity": 40, "color": "rgb(0,0,0)", "blurtype": 2, "radius": 10, "saturation": 100 }
         ]
     },
 
@@ -431,7 +431,8 @@
         "max" : 100,
         "step" : 0.1,
         "tooltip": "Adjusts the color saturation of the background image.",
-        "default": 100
+        "default": 100,
+        "dependency" : "!enable-panel-unique-settings"
     },
 
 
@@ -490,7 +491,7 @@
 
     "popup-saturation": {
         "type": "scale",
-        "description" : "Background color saturation",
+        "description" : "Background image color saturation",
         "min" : 0.0,
         "max" : 100,
         "step" : 0.1,
@@ -502,7 +503,7 @@
     "desktop-without-focus" : {
         "type": "switch",
         "description": "Only apply effect settings if the desktop is not in focus",
-        "tooltip": "When enabled, the effect settings on this tab will only apply when the desktop is not in focus",
+        "tooltip": "When enabled, the desktop background image effects will only apply when the desktop is not in focus",
         "default": true,
         "dependency" : "enable-popup-override=1"
     },
@@ -510,14 +511,14 @@
     "desktop-with-focus" : {
         "type": "switch",
         "description": "Apply the generic effect settings when the desktop is in focus",
-        "tooltip": "When enabled, the generic effect settings (on the General tab) will apply when the desktop is in focus",
+        "tooltip": "When enabled, the generic effect settings (on the General tab) will apply to the desktop background image when the desktop is in focus",
         "default": false,
         "dependency" : "enable-popup-override=1"
     },
 
     "desktop-opacity" : {
         "type": "scale",
-        "description": "Dim/Colorize Background (percentage)",
+        "description": "Dim background Image (percentage)",
         "min": 0,
         "max": 100,
         "default": 50,
