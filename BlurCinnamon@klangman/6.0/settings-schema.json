@@ -504,8 +504,7 @@
         "type": "switch",
         "description": "Only apply effect settings if the desktop is not in focus",
         "tooltip": "When enabled, the desktop background image effects will only apply when the desktop is not in focus",
-        "default": true,
-        "dependency" : "enable-popup-override=1"
+        "default": true
     },
 
     "desktop-with-focus" : {
@@ -513,7 +512,7 @@
         "description": "Apply the generic effect settings when the desktop is in focus",
         "tooltip": "When enabled, the generic effect settings (on the General tab) will apply to the desktop background image when the desktop is in focus",
         "default": false,
-        "dependency" : "enable-popup-override=1"
+        "dependency" : "enable-desktop-override=1"
     },
 
     "desktop-opacity" : {
@@ -523,14 +522,14 @@
         "max": 100,
         "default": 50,
         "step": 1,
-        "dependency" : "enable-popup-override=1"
+        "dependency" : "enable-desktop-override=1"
     },
 
     "desktop-blendColor": {
         "type": "colorchooser",
         "description" : "Dimming ovrerlay color",
         "default": "rgb(0,0,0)",
-        "dependency" : "enable-popup-override=1",
+        "dependency" : "enable-desktop-override=1",
         "tooltip": "Defines the color that is blended into the background based on the dimming control above. Use black for a normal dimming effect or some other color for a color blend effect"
     },
 
@@ -544,7 +543,7 @@
         },
         "description": "Type of blur effect",
         "tooltip": "What type of blur algorithm should be used to blur the background",
-        "dependency" : "enable-popup-override=1"
+        "dependency" : "enable-desktop-override=1"
     },
 
     "desktop-radius": {
@@ -555,7 +554,7 @@
         "step" : 0.1,
         "tooltip": "Adjusts the intensity of the Gaussian blur effect by changing the radius use by the effect. This setting does not effect the Simple blur type",
         "default": 20,
-        "dependency" : "enable-popup-override=1"
+        "dependency" : "enable-desktop-override=1"
     },
 
     "desktop-saturation": {
@@ -565,7 +564,8 @@
         "max" : 100,
         "step" : 0.1,
         "tooltip": "Adjusts the color saturation of the background image.",
-        "default": 100
+        "default": 100,
+        "dependency" : "enable-desktop-override=1"
     }
 
 }
