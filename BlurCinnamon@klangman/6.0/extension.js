@@ -44,6 +44,10 @@ const GaussianBlur = require("./gaussian_blur");
 const ANIMATION_TIME = 0.25;
 const AUTOHIDE_ANIMATION_TIME = 0.2;  // This is a copy of "Panel.AUTOHIDE_ANIMATION_TIME", we can't legally access it since it's a const and EC6 does not allow it
 
+const BLUR_EFFECT_NAME = "blur";
+const DESAT_EFFECT_NAME = "desat";
+const BRIGHTNESS_EFFECT_NAME = "brightness";
+
 let originalAnimateOverview;
 let originalAnimateExpo;
 
@@ -96,11 +100,11 @@ function _animateVisibleOverview() {
       } else {
          fx = new GaussianBlur.GaussianBlurEffect( { radius: radius, brightness: 1, width: 0, height: 0 } );
       }
-      desktopBackground.add_effect_with_name( "blur", fx );
+      desktopBackground.add_effect_with_name( BLUR_EFFECT_NAME, fx );
    }
    if (saturation<100) {
       let desat = new Clutter.DesaturateEffect({factor: (100-saturation)/100});
-      desktopBackground.add_effect_with_name( "desat", desat );
+      desktopBackground.add_effect_with_name( DESAT_EFFECT_NAME, desat );
    }
    // Get the overview's backgroundShade child and set it's color to see-through solid black/"Color blend" color
    let backgroundShade = children[1];
@@ -134,11 +138,11 @@ function _animateVisibleExpo() {
       } else {
          fx = new GaussianBlur.GaussianBlurEffect( {radius: radius, brightness: 1, width: 0, height: 0} );
       }
-      desktopBackground.add_effect_with_name( "blur", fx );
+      desktopBackground.add_effect_with_name( BLUR_EFFECT_NAME, fx );
    }
    if (saturation<100) {
       let desat = new Clutter.DesaturateEffect({factor: (100-saturation)/100});
-      desktopBackground.add_effect_with_name( "desat", desat );
+      desktopBackground.add_effect_with_name( DESAT_EFFECT_NAME, desat );
    }
    // Create a shade, set it's color in accordance with the settings and make it invisible
    let backgroundShade = new St.Bin({style_class: 'workspace-overview-background-shade'});
@@ -312,7 +316,7 @@ class BlurPanels {
             fx = new GaussianBlur.GaussianBlurEffect( {radius: radius, brightness: 1 , width: 0, height: 0} );
          }
          if (fx) {
-            background.add_effect_with_name( "blur", fx );
+            background.add_effect_with_name( BLUR_EFFECT_NAME, fx );
             //blurredPanel.effect = fx;
          }
          if (panel._hidden || global.display.get_monitor_in_fullscreen(panel.monitorIndex)) {
@@ -320,7 +324,7 @@ class BlurPanels {
          }
          if (saturation<100) {
             let desat = new Clutter.DesaturateEffect({factor: (100-saturation)/100});
-            blurredPanel.background.add_effect_with_name( "desat", desat );
+            blurredPanel.background.add_effect_with_name( DESAT_EFFECT_NAME, desat );
          }
       //}
       blurredPanel.signalManager = new SignalManager.SignalManager(null);
@@ -354,10 +358,10 @@ class BlurPanels {
             actor.set_style_class_name(blurredPanel.original_class);
             actor.set_style_pseudo_class(blurredPanel.original_pseudo_class);
             if (blurredPanel.background) {
-               let effect = blurredPanel.background.get_effect("blur");
+               let effect = blurredPanel.background.get_effect(BLUR_EFFECT_NAME);
                if (effect)
                   blurredPanel.background.remove_effect(effect);
-               effect = blurredPanel.background.get_effect("deset");
+               effect = blurredPanel.background.get_effect(DESAT_EFFECT_NAME);
                if (effect)
                   blurredPanel.background.remove_effect(effect);
                global.overlay_group.remove_actor(blurredPanel.background);
@@ -394,12 +398,12 @@ class BlurPanels {
                //blurredPanel.background = background;
                this._blurPanel(panel);
             } else {
-               let effect = blurredPanel.background.get_effect("desat");
+               let effect = blurredPanel.background.get_effect(DESAT_EFFECT_NAME);
                if (effect) {
                   effect.set_factor((100-saturation)/100);
                } else {
                   let desat = new Clutter.DesaturateEffect({factor: (100-saturation)/100});
-                  blurredPanel.background.add_effect_with_name( "desat", desat );
+                  blurredPanel.background.add_effect_with_name( DESAT_EFFECT_NAME, desat );
                }
             }
          }
@@ -448,7 +452,7 @@ class BlurPanels {
                let [opacity, blendColor, blurType, radius, saturation] = panelSettings;
                let blurredPanel = panels[i].__blurredPanel;
                if (blurredPanel) {
-                  let effect = (blurredPanel.background) ? blurredPanel.background.get_effect("blur") : null;
+                  let effect = (blurredPanel.background) ? blurredPanel.background.get_effect(BLUR_EFFECT_NAME) : null;
                   if (blurType !== BlurType.None && !blurredPanel.background) {
                      this._blurPanel(panels[i]);
                   } else if (blurType === BlurType.None && effect) {
@@ -459,12 +463,12 @@ class BlurPanels {
                      if (effect)
                         blurredPanel.background.remove_effect(effect);
                      effect =  new Clutter.BlurEffect();
-                     blurredPanel.background.add_effect_with_name( "blur", effect );
+                     blurredPanel.background.add_effect_with_name( BLUR_EFFECT_NAME, effect );
                   } else if (blurType === BlurType.Gaussian && (!effect || effect instanceof Clutter.BlurEffect)) {
                      if (effect)
                         blurredPanel.background.remove_effect(effect);
                      effect = new GaussianBlur.GaussianBlurEffect( {radius: radius, brightness: 1, width: 0, height: 0} );
-                     blurredPanel.background.add_effect_with_name( "blur", effect );
+                     blurredPanel.background.add_effect_with_name( BLUR_EFFECT_NAME, effect );
                   } else if (effect && blurType === BlurType.Gaussian && blurredPanel.radius !== radius) {
                      effect.radius = radius;
                   }
@@ -548,8 +552,8 @@ class BlurPopupMenus {
       this._blurEffect = new GaussianBlur.GaussianBlurEffect( {radius: 0, brightness: 1 , width: 0, height: 0} );
       this._desatEffect = new Clutter.DesaturateEffect({factor: 1});
       this._background = Meta.X11BackgroundActor.new_for_display(global.display);
-      this._background.add_effect_with_name( "blur", this._blurEffect );
-      this._background.add_effect_with_name( "desat", this._desatEffect );
+      this._background.add_effect_with_name( BLUR_EFFECT_NAME, this._blurEffect );
+      this._background.add_effect_with_name( DESAT_EFFECT_NAME, this._desatEffect );
       global.overlay_group.add_actor(this._background);
       this._background.hide();
    }
@@ -613,23 +617,23 @@ class BlurPopupMenus {
             this._findAccentActors(menu, menu.actor);
          }
          // Setup the blur effect properly
-         let curEffect = this._background.get_effect("blur");
+         let curEffect = this._background.get_effect(BLUR_EFFECT_NAME);
          if (blurType === BlurType.None && curEffect) {
-            this._background.remove_effect(this._blurEffect);
+            this._background.remove_effect(curEffect);
          } else if (blurType === BlurType.Simple && !(this._blurEffect instanceof Clutter.BlurEffect)) {
             if (curEffect) {
-               this._background.remove_effect(this._blurEffect);
+               this._background.remove_effect(curEffect);
             }
             this._blurEffect =  new Clutter.BlurEffect();
-            this._background.add_effect_with_name( "blur", this._blurEffect );
+            this._background.add_effect_with_name( BLUR_EFFECT_NAME, this._blurEffect );
          } else if (blurType === BlurType.Gaussian && !(this._blurEffect instanceof GaussianBlur.GaussianBlurEffect)) {
             if (curEffect) {
-               this._background.remove_effect(this._blurEffect);
+               this._background.remove_effect(curEffect);
             }
             this._blurEffect = new GaussianBlur.GaussianBlurEffect( {radius: radius, brightness: 1, width: 0, height: 0} );
-            this._background.add_effect_with_name( "blur", this._blurEffect );
+            this._background.add_effect_with_name( BLUR_EFFECT_NAME, this._blurEffect );
          } else if (blurType !== BlurType.None && curEffect === null) {
-            this._background.add_effect_with_name( "blur", this._blurEffect );
+            this._background.add_effect_with_name( BLUR_EFFECT_NAME, this._blurEffect );
          }
          // Adjust the effects
          if (this._blurEffect instanceof GaussianBlur.GaussianBlurEffect && this._blurEffect.radius != radius) {
@@ -758,9 +762,9 @@ class BlurDesktop {
       this._desatEffect = new Clutter.DesaturateEffect({factor: 1});
       this._brightnessEffect = new Clutter.BrightnessContrastEffect();
       //this._tintEffect = new Clutter.ColorizeEffect( Clutter.Color.from_string( "rgba(0,0,0,0.2)" )[1] );
-      global.background_actor.add_effect_with_name( "blur", this._blurEffect );
-      global.background_actor.add_effect_with_name( "desat", this._desatEffect );
-      global.background_actor.add_effect_with_name( "brightness", this._brightnessEffect );
+      global.background_actor.add_effect_with_name( BLUR_EFFECT_NAME, this._blurEffect );
+      global.background_actor.add_effect_with_name( DESAT_EFFECT_NAME, this._desatEffect );
+      global.background_actor.add_effect_with_name( BRIGHTNESS_EFFECT_NAME, this._brightnessEffect );
       //global.background_actor.add_effect_with_name( "tint", this._tintEffect );
 
       this._originalBackgroundColor = global.background_actor.get_background_color();
@@ -788,23 +792,23 @@ class BlurDesktop {
          this._signalManager.connect(global.display, "notify::focus-window", this._onFocusChanged, this);
          this._connected = true;
       }
-      let curEffect = global.background_actor.get_effect("blur");
+      let curEffect = global.background_actor.get_effect(BLUR_EFFECT_NAME);
       if (blurType === BlurType.None && curEffect) {
-         //global.background_actor.remove_effect(this._blurEffect);
+         global.background_actor.remove_effect(curEffect);
       } else if (blurType === BlurType.Simple && !(this._blurEffect instanceof Clutter.BlurEffect)) {
          if (curEffect) {
-            global.background_actor.remove_effect(this._blurEffect);
+            global.background_actor.remove_effect(curEffect);
          }
          this._blurEffect = new Clutter.BlurEffect();
-         global.background_actor.add_effect_with_name( "blur", this._blurEffect );
+         global.background_actor.add_effect_with_name( BLUR_EFFECT_NAME, this._blurEffect );
       } else if (blurType === BlurType.Gaussian && !(this._blurEffect instanceof GaussianBlur.GaussianBlurEffect)) {
          if (curEffect) {
-            global.background_actor.remove_effect(this._blurEffect);
+            global.background_actor.remove_effect(curEffect);
          }
          this._blurEffect = new GaussianBlur.GaussianBlurEffect( {radius: radius, brightness: 1, width: 0, height: 0} );
-         global.background_actor.add_effect_with_name( "blur", this._blurEffect );
+         global.background_actor.add_effect_with_name( BLUR_EFFECT_NAME, this._blurEffect );
       } else if (blurType !== BlurType.None && curEffect === null) {
-         global.background_actor.add_effect_with_name( "blur", this._blurEffect );
+         global.background_actor.add_effect_with_name( BLUR_EFFECT_NAME, this._blurEffect );
       }
       // Adjust the effects
       if (this._blurEffect instanceof GaussianBlur.GaussianBlurEffect && this._blurEffect.radius != radius) {
@@ -815,17 +819,13 @@ class BlurDesktop {
       }
       if (this._brightnessEffect) {
          this._brightnessEffect.set_brightness(-(opacity/100));
-         //let [ret,color] = Clutter.Color.from_string( blendColor );
-         //if (!ret) { [ret,color] = Clutter.Color.from_string( "rgba(0,0,0,0)" ); }
-         //let b = 1(opacity/100);
-         //this._brightnessEffect.set_brightness_full( -b+(color.red/255*b), -b+(color.green/255*b), -b+(color.blue/255*b) );
       }
-      if (this._tintEffect) {
+      //if (this._tintEffect) {
          //let [ret,color] = Clutter.Color.from_string( blendColor );
          //if (!ret) { [ret,color] = Clutter.Color.from_string( "rgba(0,0,0,0)" ); }
          //color.alpha = .6; //opacity*2.55;
          //this._tintEffect.set_tint(color);
-      }
+      //}
       if (this._connected) {
          this._onFocusChanged();
       }
@@ -856,15 +856,15 @@ class BlurDesktop {
 
    destroy() {
       this._signalManager.disconnectAllSignals();
-      let effect = global.background_actor.get_effect("blur");
+      let effect = global.background_actor.get_effect(BLUR_EFFECT_NAME);
       if (effect) {
          global.background_actor.remove_effect(effect);
       }
-      effect = global.background_actor.get_effect("desat");
+      effect = global.background_actor.get_effect(DESAT_EFFECT_NAME);
       if (effect) {
          global.background_actor.remove_effect(effect);
       }
-      effect = global.background_actor.get_effect("brightness");
+      effect = global.background_actor.get_effect(BRIGHTNESS_EFFECT_NAME);
       if (effect) {
          global.background_actor.remove_effect(effect);
       }
