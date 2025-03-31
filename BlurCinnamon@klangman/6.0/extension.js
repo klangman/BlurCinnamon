@@ -306,7 +306,12 @@ class BlurPanels {
       // windows beneath the panels from being visible.
       //if (blurType > BlurType.None || saturation<100) {
          let fx;
-         let background = Meta.X11BackgroundActor.new_for_display(global.display);
+         let background;
+         if (!Meta.is_wayland_compositor()) {
+            background = Meta.X11BackgroundActor.new_for_display(global.display);
+         } else {
+            background = new Clutter.Actor();
+         }
          global.overlay_group.add_actor(background);
          blurredPanel.background = background;
          background.set_clip( panel.actor.x, panel.actor.y, panel.actor.width, panel.actor.height );
@@ -521,9 +526,8 @@ class BlurPanels {
    blurEnable(...params) {
       try {
          if (this.__blurredPanel && this.__blurredPanel.background && !global.display.get_monitor_in_fullscreen(this.monitorIndex) && !this._hidden) {
-            this.__blurredPanel.background.show();
-            this.__blurredPanel.background.ease(
-               {opacity: 255, duration: AUTOHIDE_ANIMATION_TIME * 1000, mode: Clutter.AnimationMode.EASE_OUT_QUAD } );
+            // Only show the blurred background after the panel animation is done
+            Mainloop.timeout_add(AUTOHIDE_ANIMATION_TIME * 1000, () => this.__blurredPanel.background.show() );
          }
       } catch (e) {}
       blurPanelsThis._originalPanelEnable.apply(this, params);
@@ -532,9 +536,8 @@ class BlurPanels {
    blurDisable(...params) {
       try {
          if (this.__blurredPanel && this. __blurredPanel.background && !this._hidden) {
-            this.__blurredPanel.background.ease(
-               {opacity: 0, duration: AUTOHIDE_ANIMATION_TIME * 1000, mode: Clutter.AnimationMode.EASE_OUT_QUAD,
-                  onComplete: () => { this.__blurredPanel.background.hide(); } });
+            // Delay 50ms before hiding the blurred background to avoid a sudden unblurring of the panel before other animations even get started
+            Mainloop.timeout_add(50, () => this.__blurredPanel.background.hide() );
          }
       } catch (e) {}
       blurPanelsThis._originalPanelDisable.apply(this, params);
@@ -551,7 +554,11 @@ class BlurPopupMenus {
 
       this._blurEffect = new GaussianBlur.GaussianBlurEffect( {radius: 0, brightness: 1 , width: 0, height: 0} );
       this._desatEffect = new Clutter.DesaturateEffect({factor: 1});
-      this._background = Meta.X11BackgroundActor.new_for_display(global.display);
+      if (!Meta.is_wayland_compositor()) {
+         this._background = Meta.X11BackgroundActor.new_for_display(global.display);
+      } else {
+         this._background = new Clutter.Actor();
+      }
       this._background.add_effect_with_name( BLUR_EFFECT_NAME, this._blurEffect );
       this._background.add_effect_with_name( DESAT_EFFECT_NAME, this._desatEffect );
       global.overlay_group.add_actor(this._background);
