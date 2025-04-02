@@ -526,8 +526,8 @@ class BlurPanels {
    blurEnable(...params) {
       try {
          if (this.__blurredPanel && this.__blurredPanel.background && !global.display.get_monitor_in_fullscreen(this.monitorIndex) && !this._hidden) {
-            // Only show the blurred background after the panel animation is done
-            Mainloop.timeout_add(AUTOHIDE_ANIMATION_TIME * 1000, () => this.__blurredPanel.background.show() );
+            // Only show the blurred background after the panel animation is almost done
+            Mainloop.timeout_add((AUTOHIDE_ANIMATION_TIME * 1000)*.9, () => this.__blurredPanel.background.show() );
          }
       } catch (e) {}
       blurPanelsThis._originalPanelEnable.apply(this, params);
@@ -757,6 +757,8 @@ class BlurPopupMenus {
    destroy() {
       // Restore monkey patched PopupMenu open & close functions
       PopupMenu.PopupMenu.prototype.open = this.original_popupmenu_open;
+      global.overlay_group.remove_actor(this._background);
+      this._background.destroy();
       //PopupMenu.PopupMenu.prototype.close = this.original_popupmenu_close;
    }
 }
