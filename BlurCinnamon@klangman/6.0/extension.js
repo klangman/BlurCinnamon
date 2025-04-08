@@ -696,7 +696,7 @@ class BlurPopupMenus {
                   menu.blurCinnamonData.push( {entry: child, original_entry_color: child.get_background_color(), original_entry_style: child.get_style(),
                                 original_entry_class: child.get_style_class_name(), original_entry_pseudo_class: child.get_style_pseudo_class()} );
                }
-               child.set_style( "border-radius: 0px; " + //"border-image: none;  border-color: transparent;  box-shadow: 0 0 transparent; " +
+               child.set_style( "border-radius: 0px; transition-duration: 0;" + //"border-image: none;  border-color: transparent;  box-shadow: 0 0 transparent; " +
                                 "background-gradient-direction: vertical; background-gradient-start: transparent; " +
                                 "background-gradient-end: transparent;    background: transparent;" );
                child.set_background_color(this._accentColor);
