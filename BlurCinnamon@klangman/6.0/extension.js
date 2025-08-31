@@ -33,7 +33,8 @@ const Mainloop      = imports.mainloop;
 const AppletManager = imports.ui.appletManager;
 const Lang          = imports.lang;
 const UPowerGlib    = imports.gi.UPowerGlib;
-
+const MessageTray   = imports.ui.messageTray;
+const Util          = imports.misc.util;
 
 // For PopupMenu effects
 const Applet        = imports.ui.applet;
@@ -55,9 +56,12 @@ let settings;
 let blurPanels;
 let blurPopupMenus;
 let blurDesktop;
+let blurNotifications;
+let metaData;
 
 var blurPanelsThis;
 var blurPopupMenusThis;
+var blurNotificationsThis;
 
 const BlurType = {
    None: 0,
@@ -75,6 +79,10 @@ const PanelLoc = {
 
 const PanelMonitor = {
    All: 100
+}
+
+function debugMsg(...params) {
+   //log(...params);
 }
 
 function _animateVisibleOverview() {
@@ -167,6 +175,7 @@ class BlurPanels {
 
    constructor() {
       this._signalManager = new SignalManager.SignalManager(null);
+      this._maximizeSignalManager = new SignalManager.SignalManager(null);
       this._blurredPanels = [];
       this._blurExistingPanels();
 
@@ -179,10 +188,13 @@ class BlurPanels {
       Panel.Panel.prototype.enable     = this.blurEnable;
       Panel.Panel.prototype.disable    = this.blurDisable;
 
-      // Connect to important events
+      // Connect to events so we know if panels are added or removed
       this._signalManager.connect(global.settings,    "changed::panels-enabled", this._panel_changed, this);
       this._signalManager.connect(Main.layoutManager, "monitors-changed",        this._panel_changed, this);
+      // Connect to an event that can hide the panels
       this._signalManager.connect(global.display,     "in-fullscreen-changed",   this._fullscreen_changed, this);
+
+      this.setupMaximizeMonitoring();
 
       // Get notified when we resume from sleep so we can try and fix up the blurred panels
       // There has a been a report of issues after a resume
@@ -191,9 +203,154 @@ class BlurPanels {
       //this._upClient.connect('notify::resume', Lang.bind(this, this._resumeedFromSleep));
    }
 
+   setupMaximizeMonitoring() {
+      if (settings.noPanelEffectsMaximized) {
+         // Connect to events so we can know if there is a maximized window
+         this._maximizeSignalManager.connect(global.window_manager, "size-change", this._on_window_size_change, this);
+         this._maximizeSignalManager.connect(global.window_manager, "unminimize", this._on_window_unminimize, this);
+         this._maximizeSignalManager.connect(global.window_manager, "minimize", this._on_window_minimize, this);
+         this._maximizeSignalManager.connect(global.window_manager, "switch-workspace", this._on_workspace_switch, this);
+         this._maximizeSignalManager.connect(global.window_manager, "destroy", this._on_window_removed, this);
+         this._maximizeSignalManager.connect(global.screen, "window-added", this._on_window_added, this);
+         //this._maximizeSignalManager.connect(global.screen, "window-monitor-changed", this.windowMonitorChanged, this);
+         this._maximizeSignalManager.connect(global.screen, "window-workspace-changed", this._on_window_workspace_changed, this);
+         // If there are panels to make transparent, then do it now.
+         if (this._blurredPanels.length) {
+            this._setupPanelTransparencyOnAllMonitors();
+         }
+      } else {
+         // Remove all the signals for detecting maximized windows
+         this._maximizeSignalManager.disconnectAllSignals();
+         // Make sure all the panels are made transparent
+         if (this._blurredPanels.length) {
+            this._applyPanelTransparencyOnAllMonitors();
+         }
+      }
+   }
+
    //_resumeedFromSleep() {
    //   log( "Blur Cinnamon: We have resumed from sleep!" );
    //}
+
+   _on_window_workspace_changed(screen, metaWindow, metaWorkspace) {
+      let workspace = global.screen.get_active_workspace();
+      if (workspace === metaWorkspace) {
+         if (this._windowIsMaximized(metaWindow)) {
+            this._setTransparencyForEachPanelOnMonitor(metaWindow.get_monitor(), false);
+         }
+      } else {
+         if (this._windowIsMaximized(metaWindow)) {
+            this._setupPanelTransparencyOnMonitor(metaWindow.get_monitor());
+         }
+      }
+   }
+
+   _on_window_added(screen, metaWindow, monitor) {
+      if (this._blurredPanels.length === 0) return;
+      // Post an event to the end of the event queue, if we check right away we won't see this new window as maximized just yet
+      Mainloop.idle_add( () => {
+            if (this._windowIsMaximized(metaWindow)) {
+               this._setTransparencyForEachPanelOnMonitor(monitor, false);
+            }
+      });
+   }
+
+   _on_window_removed(ws, win) {
+      if (this._blurredPanels.length === 0) return;
+      // If we removed a mizimized window, then we might need to make panels transparent
+      let metaWindow = win.get_meta_window();
+      let monitor = metaWindow.get_monitor();
+      if (this._windowIsMaximized(metaWindow)) {
+         // The removed window doesn't show up in the list of windows on this monitor any more, so it's safe to check now for all maximized windows
+         this._setupPanelTransparencyOnMonitor(monitor);
+      }
+   }
+
+   _on_window_size_change(wm, win, change) {
+      if (this._blurredPanels.length === 0) return;
+
+      let metaWindow = win.get_meta_window();
+      let monitor = metaWindow.get_monitor();
+      if (change === Meta.SizeChange.MAXIMIZE) {
+         this._setTransparencyForEachPanelOnMonitor(monitor, false);
+      } else if (change === Meta.SizeChange.UNMAXIMIZE || change === Meta.SizeChange.TILE) {
+         this._setupPanelTransparencyOnMonitor(monitor);
+      }
+   }
+
+   _on_window_minimize(wm, win) {
+      if (this._blurredPanels.length === 0) return;
+
+      let metaWindow = win.get_meta_window();
+      if (metaWindow.get_maximized() === Meta.MaximizeFlags.BOTH) {
+         let monitor = metaWindow.get_monitor();
+         this._setupPanelTransparencyOnMonitor(monitor);
+      }
+   }
+
+   _on_window_unminimize(wm, win) {
+      if (this._blurredPanels.length === 0) return;
+
+      // A window was unminimized one one monitor, so we need check for other maximized windows on that monitor and set the panels transparency for panels on that monitor
+      let metaWindow = win.get_meta_window();
+      if (this._windowIsMaximized(metaWindow)) {
+         let monitor = metaWindow.get_monitor();
+         this._setupPanelTransparencyOnMonitor(monitor);
+      }
+   }
+
+   _on_workspace_switch() {
+      if (this._blurredPanels.length === 0) return;
+
+      // All the windows on all monitors have changed, so we have to check everything
+      this._setupPanelTransparencyOnAllMonitors();
+   }
+
+   // A window has changed on the one monitor so we need to setup the panels transparency of panels on that monitor
+   _setupPanelTransparencyOnMonitor(monitor) {
+      let workspace = global.screen.get_active_workspace();
+      let windows = workspace.list_windows();
+      let maximizedWindows = windows.filter( (window) => {return(window.get_monitor() === monitor && this._windowIsMaximized(window));} );
+      this._setTransparencyForEachPanelOnMonitor(monitor, maximizedWindows.length===0);
+   }
+
+   // Apply/Remove transparency appropriately for all blurred panels (taking maximized windows in to account)
+   _setupPanelTransparencyOnAllMonitors() {
+      let workspace = global.screen.get_active_workspace();
+      let windows = workspace.list_windows();
+      let maximizedWindows = windows.filter( (window) => this._windowIsMaximized(window) );
+
+      // Clear the transparent flag in get blurredPanel
+      this._blurredPanels.forEach( (element) => { element.transparent = undefined; } );
+
+      if (maximizedWindows.length) {
+         // Remove effects from any panel on a monitor with a maximized window
+         maximizedWindows.forEach( (window) => {this._setTransparencyForEachPanelOnMonitor( window.get_monitor(), false );} );
+         // Apply effects on all panels that don't have a maximized window
+         this._blurredPanels.forEach( (bp) => {if (bp.transparent == undefined) this._setPanelTransparency(bp, true);} );
+      } else {
+         // Make sure all panels are blurred
+         this._blurredPanels.forEach( (bp) => {this._setPanelTransparency(bp, true);} );
+      }
+   }
+
+   // Unconditionally apply transparency to all blurred pancels
+   _applyPanelTransparencyOnAllMonitors() {
+      this._blurredPanels.forEach( (bp) => {this._setPanelTransparency(bp, true);} );
+   }
+
+   _windowIsMaximized(win) {
+      return(!win.minimized && win.get_window_type() !== Meta.WindowType.DESKTOP && win.get_maximized() === Meta.MaximizeFlags.BOTH);
+   }
+
+   _setTransparencyForEachPanelOnMonitor(monitor, transparent) {
+      this._blurredPanels.forEach( (element) =>
+         {
+            if (element.panel.monitorIndex === monitor) {
+               this._setPanelTransparency(element, transparent);
+            }
+         });
+   }
 
    // If a fullscreen window event occurs we need to hide or show the background overlay
    _fullscreen_changed() {
@@ -266,6 +423,10 @@ class BlurPanels {
          if (panels[i]) {
             this._blurPanel(panels[i]);
          }
+      }
+      // Now that we are done setting up the panels, if need be, remove the transparency when maximized windows exist
+      if (settings.noPanelEffectsMaximized) {
+         this._setupPanelTransparencyOnAllMonitors();
       }
    }
 
@@ -342,6 +503,7 @@ class BlurPanels {
       let panels = Main.getPanels();
 
       this._signalManager.disconnectAllSignals();
+      this._maximizeSignalManager.disconnectAllSignals();
 
       // Restore the panels to their original state
       for ( let i=0 ; i < panels.length ; i++ ) {
@@ -384,6 +546,34 @@ class BlurPanels {
                delete panel._panelHasOpenMenus;
             }
          }
+      }
+   }
+
+   // Setup the panel to be transparent or restore the panels original setup based on the 'transparent' parameter
+   _setPanelTransparency(blurredPanel, transparent) {
+      let panel = blurredPanel.panel
+      let actor = panel.actor;
+      blurredPanel.transparent = transparent;
+      if (transparent) {
+         if (settings.allowTransparentColorPanels) {
+            let panelSettings = this._getPanelSettings(panel);
+            if (!panelSettings ) return;
+            let [opacity, blendColor, blurType, radius, saturation] = panelSettings;
+            // Set the panels color
+            let [ret,color] = Clutter.Color.from_string( blendColor );
+            if (!ret) { [ret,color] = Clutter.Color.from_string( "rgba(0,0,0,0)" ); }
+            color.alpha = opacity*2.55;
+            actor.set_background_color(color);
+            // Make the panel transparent
+            actor.set_style( "border-image: none;  border-color: transparent;  box-shadow: 0 0 transparent; " +
+                             "background-gradient-direction: vertical; background-gradient-start: transparent; " +
+                             "background-gradient-end: transparent;    background: transparent;" );
+         }
+      } else {
+         actor.set_background_color(blurredPanel.original_color);
+         actor.set_style(blurredPanel.original_style);
+         actor.set_style_class_name(blurredPanel.original_class);
+         actor.set_style_pseudo_class(blurredPanel.original_pseudo_class);
       }
    }
 
@@ -563,11 +753,13 @@ class BlurPopupMenus {
       this._background.add_effect_with_name( DESAT_EFFECT_NAME, this._desatEffect );
       global.overlay_group.add_actor(this._background);
       this._background.hide();
+      debugMsg( "BlurPopupMenus initilized, actor hidden" );
    }
 
    // Monkey patched over PupupMenu.open()
    _popupMenuOpen(animate) {
       if (this instanceof Applet.AppletPopupMenu || this instanceof Applet.AppletContextMenu || this instanceof Panel.PanelContextMenu) {
+         debugMsg( "Attaching to a new popup menu, _popupMenuOpen()" );
          blurPopupMenusThis._blurPopupMenu(this);
       }
       blurPopupMenusThis.original_popupmenu_open.call(this, animate);
@@ -593,6 +785,7 @@ class BlurPopupMenus {
 
    _onOpenStateChanged(menu, open) {
       if (open) {
+         debugMsg( "Applying setting to new popup menu" )
          let radius = (settings.popupOverride) ? settings.popupRadius : settings.radius;
          let blurType = (settings.popupOverride) ? settings.popupBlurType : settings.blurType;
          let blendColor = (settings.popupOverride) ? settings.popupBlendColor : settings.blendColor;
@@ -664,6 +857,7 @@ class BlurPopupMenus {
                                        actor.height-(margin.top+margin.bottom)-(bm.top+bm.bottom) );
          }
          this._background.show();
+         debugMsg( "Blurred actor is now visisble" );
          // Now that the menu is open we need to know if new actors are added so we can check for accent elements
          menu.blurCinnamonSignalManager.connect(menu.actor, "queue-relayout", () => {this._findAccentActors(menu, menu.actor);} );
       }
@@ -671,6 +865,7 @@ class BlurPopupMenus {
 
    // Called when Popup method is now closed and the animation is complete!
    _onClosed(menu) {
+      debugMsg( "Menu close signal" );
       this._unblurPopupMenu(menu);
    }
 
@@ -737,6 +932,7 @@ class BlurPopupMenus {
       menu.blurCinnamonSignalManager.connect(menu, "menu-animated-closed", Lang.bind(this, this._onClosed) );
       menu.blurCinnamonSignalManager.connect(menu.actor, 'notify::size', () => {this._setClip(menu);} );
       menu.blurCinnamonSignalManager.connect(menu.actor, 'notify::position', () => {this._setClip(menu);} );
+      debugMsg( "attach complete" );
    }
 
    _unblurPopupMenu(menu) {
@@ -754,8 +950,10 @@ class BlurPopupMenus {
       delete menu.blurCinnamonData;
       if (this._currentMenu === menu) {
          this._background.hide();
+         debugMsg( "blur actor hidden" );
          this._currentMenu = null;
       }
+      debugMsg( "unblur complete" );
    }
 
    destroy() {
@@ -884,6 +1082,183 @@ class BlurDesktop {
    }
 }
 
+class BlurNotifications {
+   constructor() {
+      this._signalManager = new SignalManager.SignalManager(null);
+      this.animation_time = 0.08; // seconds
+      blurNotificationsThis = this; // Make "this" available to monkey patched functions
+      // Monkey patch the Notification show and hide functions
+      this.original_showNotification = MessageTray.MessageTray.prototype._showNotification;
+      MessageTray.MessageTray.prototype._showNotification = this._showNotification;
+      this.original_hideNotification = MessageTray.MessageTray.prototype._hideNotification
+      MessageTray.MessageTray.prototype._hideNotification = this._hideNotification;
+
+      // Create the effects and the background actor to apply to effects to
+      this._blurEffect = new GaussianBlur.GaussianBlurEffect( {radius: 20, brightness: 1 , width: 0, height: 0} );
+      this._desatEffect = new Clutter.DesaturateEffect({factor: 0});
+      if (!Meta.is_wayland_compositor()) {
+         this._background = Meta.X11BackgroundActor.new_for_display(global.display);
+      } else {
+         this._background = new Clutter.Actor();
+      }
+      this._background.add_effect_with_name( BLUR_EFFECT_NAME, this._blurEffect );
+      this._background.add_effect_with_name( DESAT_EFFECT_NAME, this._desatEffect );
+      global.overlay_group.add_actor(this._background);
+      this._background.hide();
+      this._activeNotificationData = null;
+      this.updateEffects();
+   }
+
+   updateEffects() {
+      let radius = (settings.notificationOverride) ? settings.notificationRadius : settings.radius;
+      let blurType = (settings.notificationOverride) ? settings.notificationBlurType : settings.blurType;
+      let saturation = (settings.notificationOverride) ? settings.notificationSaturation : settings.saturation;
+
+      // Setup the blur effect properly
+      let curEffect = this._background.get_effect(BLUR_EFFECT_NAME);
+      if (blurType === BlurType.None && curEffect) {
+         this._background.remove_effect(curEffect);
+      } else if (blurType === BlurType.Simple && !(this._blurEffect instanceof Clutter.BlurEffect)) {
+         if (curEffect) {
+            this._background.remove_effect(curEffect);
+         }
+         this._blurEffect =  new Clutter.BlurEffect();
+         this._background.add_effect_with_name( BLUR_EFFECT_NAME, this._blurEffect );
+      } else if (blurType === BlurType.Gaussian && !(this._blurEffect instanceof GaussianBlur.GaussianBlurEffect)) {
+         if (curEffect) {
+            this._background.remove_effect(curEffect);
+         }
+         this._blurEffect = new GaussianBlur.GaussianBlurEffect( {radius: radius, brightness: 1, width: 0, height: 0} );
+         this._background.add_effect_with_name( BLUR_EFFECT_NAME, this._blurEffect );
+      } else if (blurType !== BlurType.None && curEffect === null) {
+         this._background.add_effect_with_name( BLUR_EFFECT_NAME, this._blurEffect );
+      }
+      // Adjust the effects
+      if (this._blurEffect instanceof GaussianBlur.GaussianBlurEffect && this._blurEffect.radius != radius) {
+         this._blurEffect.radius = radius;
+      }
+      if (this._desatEffect.factor !== (100-saturation)/100) {
+         this._desatEffect.set_factor((100-saturation)/100);
+      }
+
+      if (this._activeNotificationData) {
+         let blendColor = (settings.notificationOverride) ? settings.notificationBlendColor : settings.blendColor;
+         let opacity = (settings.notificationOverride) ? settings.notificationOpacity : settings.opacity;
+         let actor = this._activeNotificationData.actor;
+         let button = actor.get_child();
+         let table = button.get_child()
+         let [ret,color] = Clutter.Color.from_string( blendColor );
+         if (!ret) { [ret,color] = Clutter.Color.from_string( "rgba(0,0,0,0)" ); }
+         color.alpha = opacity*2.55;
+         table.set_background_color(color);
+         actor.set_style( "border-radius: 0px; background-gradient-direction: vertical; background-gradient-start: transparent; " +
+                          "background-gradient-end: transparent; background: transparent;" );
+         button.set_style( "border-radius: 0px; background-gradient-direction: vertical; background-gradient-start: transparent; " +
+                          "background-gradient-end: transparent; background: transparent;" );
+         table.set_style( "border-radius: 0px; background-gradient-direction: vertical; background-gradient-start: transparent; " +
+                          "background-gradient-end: transparent; background: transparent;" );
+      }
+   }
+
+   _showNotification() {
+      // Call the original function then call the function to setup the effect
+      blurNotificationsThis.original_showNotification.call(this);
+      blurNotificationsThis._blurNotification.call(blurNotificationsThis, this._notificationBin);
+   }
+
+   /*
+   _printAll(actor) {
+      let themeNode = actor.get_theme_node();
+      let margins = actor.get_margin();
+      log( `Actor: ${actor}` );
+      log( `  Margin:  ${themeNode.get_margin(St.Side.LEFT)} ${themeNode.get_margin(St.Side.RIGHT)} ${themeNode.get_margin(St.Side.TOP)} ${themeNode.get_margin(St.Side.BOTTOM)}` );
+      log( `  Border:  ${themeNode.get_border_width(St.Side.LEFT)} ${themeNode.get_border_width(St.Side.RIGHT)} ${themeNode.get_border_width(St.Side.TOP)} ${themeNode.get_border_width(St.Side.BOTTOM)}` );
+      log( `  Padding: ${themeNode.get_padding(St.Side.LEFT)} ${themeNode.get_padding(St.Side.RIGHT)} ${themeNode.get_padding(St.Side.TOP)} ${themeNode.get_padding(St.Side.BOTTOM)}` );
+      log( `  Margin:  ${margins.left} ${margins.right} ${margins.top} ${margins.bottom}` );
+   }*/
+
+   _setClip(actor, table) {
+      if (actor.visible) {
+         let themeNode = table.get_theme_node();
+         let left   = themeNode.get_margin(St.Side.LEFT)   //+ themeNode.get_padding(St.Side.LEFT);
+         let right  = themeNode.get_margin(St.Side.RIGHT)  //+ themeNode.get_padding(St.Side.RIGHT);
+         let top    = themeNode.get_margin(St.Side.TOP)    //+ themeNode.get_padding(St.Side.TOP);
+         let bottom = themeNode.get_margin(St.Side.BOTTOM) //+ themeNode.get_padding(St.Side.BOTTOM);
+         this._background.set_clip( actor.x+left, actor.y+top, actor.width-(left+right), actor.height-(top+bottom) );
+      } else {
+         this._background.set_clip( 0, 0, 0, 0 );
+      }
+   }
+
+   _blurNotification(actor) {
+      let blendColor = (settings.notificationOverride) ? settings.notificationBlendColor : settings.blendColor;
+      let opacity = (settings.notificationOverride) ? settings.notificationOpacity : settings.opacity;
+
+      let button = actor.get_child();
+      let table = button.get_child()
+      //log( `Bluring the notification bin actor: ${actor}` );
+      //log( `   button ${actor.get_child()}` );
+      //log( `   table  ${actor.get_child().get_child()}` );
+      //this._printAll(actor);
+      //this._printAll(button);
+      //this._printAll(table);
+
+
+      if (actor.visible) {
+         if (settings.allowTransparentColorPanels) {
+            // Save the current settings so we can restore it if need be.
+            this._activeNotificationData = {actor: actor, original_table_color: table.get_background_color(), original_actor_style: actor.get_style(),
+                                            original_button_style: button.get_style(), original_table_style: table.get_style()};
+            // Set the notification color and style
+            let [ret,color] = Clutter.Color.from_string( blendColor );
+            if (!ret) { [ret,color] = Clutter.Color.from_string( "rgba(0,0,0,0)" ); }
+            color.alpha = opacity*2.55;
+            table.set_background_color(color);
+            actor.set_style( "border-radius: 0px; background-gradient-direction: vertical; background-gradient-start: transparent; " +
+                             "background-gradient-end: transparent; background: transparent;" );
+            button.set_style( "border-radius: 0px; background-gradient-direction: vertical; background-gradient-start: transparent; " +
+                             "background-gradient-end: transparent; background: transparent;" );
+            table.set_style( "border-radius: 0px; background-gradient-direction: vertical; background-gradient-start: transparent; " +
+                             "background-gradient-end: transparent; background: transparent;" );
+         }
+      }
+      // Resize the background to match the size of the notification window
+      this._setClip(actor, table);
+      // The notification window size can change after being shown, so we need to adjust the background when that happens
+      this._signalManager.connect(actor, 'notify::size', () => {this._setClip(actor, table);} );
+      // Delay showing the blurred background until the notification tween is well underway.
+      Mainloop.timeout_add(this.animation_time * 1000, () => this._background.show() );
+   }
+
+   _hideNotification() {
+      blurNotificationsThis._activeNotificationData = null;
+      blurNotificationsThis._signalManager.disconnectAllSignals();
+      blurNotificationsThis._background.hide();
+      blurNotificationsThis.original_hideNotification.call(this);
+   }
+
+   destroy() {
+      // If there is an active notification, then restore it's original visual settings
+      if (this._activeNotificationData) {
+         let actor = this._activeNotificationData.actor;
+         let button = actor.get_child();
+         let table = button.get_child()
+         table.set_background_color( this._activeNotificationData.original_table_color );
+         actor.set_style( this._activeNotificationData.original_actor_style );
+         button.set_style( this._activeNotificationData.original_button_style );
+         table.set_style( this._activeNotificationData.original_table_style );
+      }
+      this._signalManager.disconnectAllSignals();
+      this._background.hide();
+
+      // Restore monkey patched functions and destroy the _background
+      MessageTray.MessageTray.prototype._showNotification = this.original_showNotification;
+      MessageTray.MessageTray.prototype._hideNotification = this.original_hideNotification;
+      global.overlay_group.remove_actor(this._background);
+      this._background.destroy();
+   }
+}
+
 class BlurSettings {
    constructor(uuid) {
       this.settings = new Settings.ExtensionSettings(this, uuid);
@@ -910,6 +1285,7 @@ class BlurSettings {
       this.settings.bind('panels-radius',     'panelsRadius',     blurChanged);
       this.settings.bind('panels-blendColor', 'panelsBlendColor', colorChanged);
       this.settings.bind('panels-saturation', 'panelsSaturation', saturationChanged);
+      this.settings.bind('no-panel-effects-maximized', 'noPanelEffectsMaximized', maximizedOptionChanged );
 
       this.settings.bind('popup-opacity',        'popupOpacity');
       this.settings.bind('popup-accent-opacity', 'popupAccentOpacity');
@@ -927,27 +1303,49 @@ class BlurSettings {
       this.settings.bind('desktop-with-focus',    'desktopWithFocus',    updateDesktopEffects);
       this.settings.bind('desktop-without-focus', 'desktopWithoutFocus', updateDesktopEffects);
 
-      this.settings.bind('enable-overview-override', 'overviewOverride');
-      this.settings.bind('enable-expo-override',     'expoOverride');
-      this.settings.bind('enable-panels-override',   'panelsOverride', panelsSettingsChangled);
-      this.settings.bind('enable-popup-override',    'popupOverride');
-      this.settings.bind('enable-desktop-override',    'desktopOverride', updateDesktopEffects);
+      this.settings.bind('notification-opacity',    'notificationOpacity',    updateNotificationEffects);
+      this.settings.bind('notification-blurType',   'notificationBlurType',   updateNotificationEffects);
+      this.settings.bind('notification-radius',     'notificationRadius',     updateNotificationEffects);
+      this.settings.bind('notification-blendColor', 'notificationBlendColor', updateNotificationEffects);
+      this.settings.bind('notification-saturation', 'notificationSaturation', updateNotificationEffects);
 
-      this.settings.bind('enable-overview-effects', 'enableOverviewEffects', enableOverviewChanged);
-      this.settings.bind('enable-expo-effects',     'enableExpoEffects',     enableExpoChanged);
-      this.settings.bind('enable-panels-effects',   'enablePanelsEffects',   enablePanelsChanged);
-      this.settings.bind('enable-popup-effects',    'enablePopupEffects',    enablePopupChanged);
-      this.settings.bind('enable-desktop-effects',  'enableDesktopEffects',  enableDesktopChanged);
+      this.settings.bind('enable-overview-override',     'overviewOverride');
+      this.settings.bind('enable-expo-override',         'expoOverride');
+      this.settings.bind('enable-panels-override',       'panelsOverride', panelsSettingsChangled);
+      this.settings.bind('enable-popup-override',        'popupOverride');
+      this.settings.bind('enable-desktop-override',      'desktopOverride', updateDesktopEffects);
+      this.settings.bind('enable-notification-override', 'notificationOverride', updateNotificationEffects);
+
+      this.settings.bind('enable-overview-effects',      'enableOverviewEffects', enableOverviewChanged);
+      this.settings.bind('enable-expo-effects',          'enableExpoEffects',     enableExpoChanged);
+      this.settings.bind('enable-panels-effects',        'enablePanelsEffects',   enablePanelsChanged);
+      this.settings.bind('enable-popup-effects',         'enablePopupEffects',    enablePopupChanged);
+      this.settings.bind('enable-desktop-effects',       'enableDesktopEffects',  enableDesktopChanged);
+      this.settings.bind('enable-notification-effects',  'enableNotificationEffects', enableNotificationChanged);
 
       this.settings.bind('enable-panel-unique-settings', 'enablePanelUniqueSettings');
       this.settings.bind('panel-unique-settings', 'panelUniqueSettings', panelsSettingsChangled);
       this.settings.bind('allow-transparent-color-panels', 'allowTransparentColorPanels', colorChanged);
+
+      this.settings.bind('new-install', 'newInstall');
+   }
+}
+
+function maximizedOptionChanged() {
+   if (blurPanels) {
+      blurPanels.setupMaximizeMonitoring();
    }
 }
 
 function updateDesktopEffects() {
    if (blurDesktop && settings.enableDesktopEffects) {
       blurDesktop.updateEffects();
+   }
+}
+
+function updateNotificationEffects() {
+   if (blurNotifications && settings.enableNotificationEffects) {
+      blurNotifications.updateEffects();
    }
 }
 
@@ -1033,8 +1431,18 @@ function enableDesktopChanged() {
    }
 }
 
+function enableNotificationChanged() {
+   if (blurNotifications && !settings.settings.enableNotificationEffects) {
+      blurNotifications.destroy();
+      blurNotifications = null;
+   } else if (!blurNotifications && settings.enableNotificationEffects ) {
+      blurNotifications = new BlurNotifications();
+   }
+}
+
 function init(extensionMeta) {
    settings = new BlurSettings(extensionMeta.uuid);
+   metaData = extensionMeta;
 
    originalAnimateOverview = Overview.Overview.prototype._animateVisible;
    originalAnimateExpo = Expo.Expo.prototype._animateVisible;
@@ -1065,6 +1473,25 @@ function enable() {
    if (settings.enableDesktopEffects) {
       blurDesktop = new BlurDesktop();
    }
+   // Create a Notification Effects class instance, the constructor will set everything up.
+   if (settings.enableNotificationEffects) {
+      blurNotifications = new BlurNotifications();
+   }
+   // If this is the first time running Blur Cinnamon, sent a welcome notification message
+   if (settings.newInstall) {
+      settings.settings.setValue( "new-install", 0 );
+      let source = new MessageTray.Source(metaData.name);
+      let notification = new MessageTray.Notification(source, _("Welcome to Blur Cinnamon"),
+         _("Hope you are enjoying your new Panel, Expo and Overview effects.\n\nOpen the Blur Cinnamon Settings to enable additional effects on specific Cinnamon components (i.e. Popup Menus, Notification Popups and the Desktop background) or disable the Panel, Expo and/or Overview effects that are enabled by default. You can also make changes to the effect properties like blur intensity, color saturation and dimming."),
+         {icon: new St.Icon({icon_name: "blur-cinnamon", icon_type: St.IconType.FULLCOLOR, icon_size: source.ICON_SIZE })}
+         );
+      Main.messageTray.add(source);
+      notification.addButton("blur-cinnamon-settings", _("Open Blur Cinnamon Settings"));
+      notification.connect("action-invoked", (self, id) => { if (id === "blur-cinnamon-settings") Util.spawnCommandLineAsync("xlet-settings extension " + metaData.uuid ); } );
+      notification.setUrgency( MessageTray.Urgency.CRITICAL );
+      source.notify(notification);
+   }
+   return Callbacks
 }
 
 function disable() {
@@ -1092,4 +1519,22 @@ function disable() {
       blurDesktop.destroy();
       blurDesktop = null;
    }
+
+   if (blurNotifications) {
+      blurNotifications.destroy();
+      blurNotifications = null;
+   }
+   settings.settings.setValue( "new-install", 1 );
+}
+
+const Callbacks = {
+  on_notification_test_button_pressed: function() {
+     let source = new MessageTray.Source(metaData.name);
+     let notification = new MessageTray.Notification(source, _("Testing Blur Cinnamon Notification Effects"),
+         _("This is how notifications will appear when using the current Blur Cinnamon Notification Popup effects.\n\nMaking further changes to the notification effect settings will automatically apply to this notification message."),
+         {icon: new St.Icon({icon_name: "blur-cinnamon", icon_type: St.IconType.FULLCOLOR, icon_size: source.ICON_SIZE })}
+         );
+      Main.messageTray.add(source);
+      notification.setUrgency( MessageTray.Urgency.CRITICAL );
+      source.notify(notification);  }
 }
