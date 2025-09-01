@@ -24,6 +24,7 @@ const St            = imports.gi.St;
 const Tweener       = imports.ui.tweener;
 const Overview      = imports.ui.overview;
 const Expo          = imports.ui.expo;
+const AppSwitcher3D = imports.ui.appSwitcher.appSwitcher3D;
 const Settings      = imports.ui.settings;
 const SignalManager = imports.misc.signalManager;
 const Panel         = imports.ui.panel;
@@ -51,6 +52,8 @@ const BRIGHTNESS_EFFECT_NAME = "brightness";
 
 let originalAnimateOverview;
 let originalAnimateExpo;
+let originalInitAppSwitcher3D;
+let originalHideAppSwitcher3D;
 
 let settings;
 let blurPanels;
@@ -163,6 +166,50 @@ function _animateVisibleExpo() {
    // Dim the backgroundShade by making the black/"Color blend" color less see-through by the configured percentage
    Tweener.addTween( backgroundShade,
       { opacity: Math.round(opacity*2.55), time: ANIMATION_TIME, transition: 'easeNone' } );
+}
+
+function _initAppSwitcher3D(...params) {
+   this._oldInit(...params);
+
+   if (this._background && this.actor) {
+      let blurType = (settings.appswitcherOverride) ? settings.appswitcherBlurType : settings.blurType;
+      let radius = (settings.appswitcherOverride) ? settings.appswitcherRadius : settings.radius;
+      let blendColor = (settings.appswitcherOverride) ? settings.appswitcherBlendColor : settings.blendColor;
+      let opacity = (settings.appswitcherOverride) ? settings.appswitcherOpacity : settings.opacity;
+      let saturation = (settings.appswitcherOverride) ? settings.appswitcherSaturation : settings.saturation;
+
+      let desktopBackground = this._background
+      if (blurType > BlurType.None) {
+         let fx;
+         if (blurType === BlurType.Simple) {
+            fx =  new Clutter.BlurEffect();
+         } else {
+            fx = new GaussianBlur.GaussianBlurEffect( {radius: radius, brightness: 1, width: 0, height: 0} );
+         }
+         desktopBackground.add_effect_with_name( BLUR_EFFECT_NAME, fx );
+         this._blurCinnamonBlurEffect = fx;
+      }
+      if (saturation<100) {
+         let desat = new Clutter.DesaturateEffect({factor: (100-saturation)/100});
+         desktopBackground.add_effect_with_name( DESAT_EFFECT_NAME, desat );
+         this._blurCinnamonDesatEffect = desat;
+      }
+
+      let [ret,color] = Clutter.Color.from_string( blendColor );
+      if (!ret) { [ret,color] = Clutter.Color.from_string( "rgba(0,0,0,0)" ); }
+      color.alpha = opacity*2.55;
+      this.actor.set_background_color(color);
+   }
+}
+
+function _hideAppSwitcher3D(...params) {
+   if (this._background && this._blurCinnamonBlurEffect) {
+      this._background.remove_effect(this._blurCinnamonBlurEffect);
+   }
+   if (this._background && this._blurCinnamonDesatEffect) {
+      this._background.remove_effect(this._blurCinnamonDesatEffect);
+   }
+   this._oldHide(...params);
 }
 
 // This is an implementation of Panel._panelHasOpenMenus() that will be used in pre-Cinnamon 6.4 versions
@@ -1309,12 +1356,19 @@ class BlurSettings {
       this.settings.bind('notification-blendColor', 'notificationBlendColor', updateNotificationEffects);
       this.settings.bind('notification-saturation', 'notificationSaturation', updateNotificationEffects);
 
+      this.settings.bind('appswitcher-opacity',    'appswitcherOpacity');
+      this.settings.bind('appswitcher-blurType',   'appswitcherBlurType');
+      this.settings.bind('appswitcher-radius',     'appswitcherRadius');
+      this.settings.bind('appswitcher-blendColor', 'appswitcherBlendColor');
+      this.settings.bind('appswitcher-saturation', 'appswitcherSaturation');
+
       this.settings.bind('enable-overview-override',     'overviewOverride');
       this.settings.bind('enable-expo-override',         'expoOverride');
       this.settings.bind('enable-panels-override',       'panelsOverride', panelsSettingsChangled);
       this.settings.bind('enable-popup-override',        'popupOverride');
       this.settings.bind('enable-desktop-override',      'desktopOverride', updateDesktopEffects);
       this.settings.bind('enable-notification-override', 'notificationOverride', updateNotificationEffects);
+      this.settings.bind('enable-appswitcher-override',  'appswitcherOverride');
 
       this.settings.bind('enable-overview-effects',      'enableOverviewEffects', enableOverviewChanged);
       this.settings.bind('enable-expo-effects',          'enableExpoEffects',     enableExpoChanged);
@@ -1322,6 +1376,7 @@ class BlurSettings {
       this.settings.bind('enable-popup-effects',         'enablePopupEffects',    enablePopupChanged);
       this.settings.bind('enable-desktop-effects',       'enableDesktopEffects',  enableDesktopChanged);
       this.settings.bind('enable-notification-effects',  'enableNotificationEffects', enableNotificationChanged);
+      this.settings.bind('enable-appswitcher-effects',   'enableAppswitcherEffects', enableAppswitcherChanged);
 
       this.settings.bind('enable-panel-unique-settings', 'enablePanelUniqueSettings');
       this.settings.bind('panel-unique-settings', 'panelUniqueSettings', panelsSettingsChangled);
@@ -1404,6 +1459,20 @@ function enableExpoChanged() {
    }
 }
 
+function enableAppswitcherChanged() {
+   if (settings.enableAppswitcherEffects) {
+      AppSwitcher3D.AppSwitcher3D.prototype._init = _initAppSwitcher3D;
+      AppSwitcher3D.AppSwitcher3D.prototype._oldInit = originalInitAppSwitcher3D;
+      AppSwitcher3D.AppSwitcher3D.prototype._hide = _hideAppSwitcher3D;
+      AppSwitcher3D.AppSwitcher3D.prototype._oldHide = originalHideAppSwitcher3D;
+   } else {
+      delete AppSwitcher3D.AppSwitcher3D.prototype._oldInit;
+      AppSwitcher3D.AppSwitcher3D.prototype._init = originalInitAppSwitcher3D;
+      delete AppSwitcher3D.AppSwitcher3D.prototype._oldHide;
+      AppSwitcher3D.AppSwitcher3D.prototype._hide = originalHideAppSwitcher3D;
+   }
+}
+
 function enablePanelsChanged() {
    if (blurPanels && !settings.enablePanelsEffects) {
       blurPanels.destroy();
@@ -1446,6 +1515,8 @@ function init(extensionMeta) {
 
    originalAnimateOverview = Overview.Overview.prototype._animateVisible;
    originalAnimateExpo = Expo.Expo.prototype._animateVisible;
+   originalInitAppSwitcher3D = AppSwitcher3D.AppSwitcher3D.prototype._init;
+   originalHideAppSwitcher3D = AppSwitcher3D.AppSwitcher3D.prototype._hide;
 }
 
 function enable() {
@@ -1459,6 +1530,13 @@ function enable() {
    if (settings.enableExpoEffects) {
       Expo.Expo.prototype._animateVisible = this._animateVisibleExpo;
       Expo.Expo.prototype._oldAnimateVisible = originalAnimateExpo;
+   }
+
+   if (settings.enableAppswitcherEffects) {
+      AppSwitcher3D.AppSwitcher3D.prototype._init = this._initAppSwitcher3D;
+      AppSwitcher3D.AppSwitcher3D.prototype._oldInit = originalInitAppSwitcher3D;
+      AppSwitcher3D.AppSwitcher3D.prototype._hide = this._hideAppSwitcher3D;
+      AppSwitcher3D.AppSwitcher3D.prototype._oldHide = originalHideAppSwitcher3D;
    }
 
    // Create a Panel Effects class instance, the constructor will kick things off
@@ -1505,6 +1583,11 @@ function disable() {
       Expo.Expo.prototype._animateVisible = originalAnimateExpo;
    }
 
+   if (settings.enableAppswitcherEffects) {
+      delete AppSwitcher3D.AppSwitcher3D.prototype._oldInit;
+      AppSwitcher3D.AppSwitcher3D.prototype._init = originalInitAppSwitcher3D;
+   }
+
    if (blurPanels) {
       blurPanels.destroy();
       blurPanels = null;
@@ -1536,5 +1619,8 @@ const Callbacks = {
          );
       Main.messageTray.add(source);
       notification.setUrgency( MessageTray.Urgency.CRITICAL );
-      source.notify(notification);  }
+      source.notify(notification);  },
+   on_window_settings_button_pressed: function() {
+      Util.spawnCommandLineAsync("cinnamon-settings windows -t 2");
+   }
 }
