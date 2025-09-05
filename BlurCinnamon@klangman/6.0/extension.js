@@ -916,6 +916,16 @@ class BlurPopupMenus {
       this._unblurPopupMenu(menu);
    }
 
+   _onDestroyed() {
+      if (this._background.is_visible()) {
+         // In some cases the Tween for the popupMenu close animation will not call its onComplete function
+         // and therefore no "menu-animated-closed" signal which would call _onClosed().
+         // In those cases we must unblur the popup menu, but the menu is already gone so we just hide the background.
+         debugMsg( "Unblurring on destroy" );
+         this._background.hide();
+      }
+   }
+
    // Look for Popup menu accent actors
    _findAccentActors(menu, actor, indent="") {
       let children = actor.get_children();
@@ -977,6 +987,7 @@ class BlurPopupMenus {
       menu.blurCinnamonSignalManager = new SignalManager.SignalManager(null);
       menu.blurCinnamonSignalManager.connect(menu, "open-state-changed", Lang.bind(this, this._onOpenStateChanged) );
       menu.blurCinnamonSignalManager.connect(menu, "menu-animated-closed", Lang.bind(this, this._onClosed) );
+      menu.blurCinnamonSignalManager.connect(menu, "destroy", Lang.bind(this, this._onDestroyed) );
       menu.blurCinnamonSignalManager.connect(menu.actor, 'notify::size', () => {this._setClip(menu);} );
       menu.blurCinnamonSignalManager.connect(menu.actor, 'notify::position', () => {this._setClip(menu);} );
       debugMsg( "attach complete" );
