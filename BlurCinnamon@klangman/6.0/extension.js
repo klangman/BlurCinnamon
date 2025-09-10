@@ -36,6 +36,7 @@ const Lang          = imports.lang;
 const UPowerGlib    = imports.gi.UPowerGlib;
 const MessageTray   = imports.ui.messageTray;
 const Util          = imports.misc.util;
+const Tooltips      = imports.ui.tooltips;
 
 // For PopupMenu effects
 const Applet        = imports.ui.applet;
@@ -60,11 +61,13 @@ let blurPanels;
 let blurPopupMenus;
 let blurDesktop;
 let blurNotifications;
+let blurTooltips;
 let metaData;
 
 var blurPanelsThis;
 var blurPopupMenusThis;
 var blurNotificationsThis;
+var blurTooltipsThis;
 
 const BlurType = {
    None: 0,
@@ -217,10 +220,124 @@ function panelHasOpenMenus() {
    return global.menuStackLength > 0;
 }
 
+class BlurBase {
+   constructor() {
+   }
+
+   _getGenericSettings() {
+      return [settings.opacity, settings.blendColor, settings.blurType, settings.radius, settings.saturation];
+   }
+
+   _getUniqueSettings() {
+      log( "Error: Blur effect class does not implement _getUniqueSettings()!" );
+   }
+
+   // Returns [opacity, blendColor, blurType, radius, saturation]
+   _getSettings(override) {
+      if (override) {
+         return this._getUniqueSettings();
+      } else {
+         return this._getGenericSettings();
+      }
+   }
+
+   _createBackgroundAndEffects(blurType, radius, saturation) {
+      let blurEffect;
+      let desatEffect;
+      let background;
+      // Create the effects and the background actor to apply to effects to
+      if (blurType === BlurType.Simple) {
+         blurEffect =  new Clutter.BlurEffect();
+      } else if (blurType === BlurType.Gaussian) {
+         blurEffect = new GaussianBlur.GaussianBlurEffect( {radius: radius, brightness: 1 , width: 0, height: 0} );
+      }
+      if (saturation<100) {
+         desatEffect = new Clutter.DesaturateEffect({factor: (100-saturation)/100});
+      }
+      if (!Meta.is_wayland_compositor()) {
+         background = Meta.X11BackgroundActor.new_for_display(global.display);
+      } else {
+         background = new Clutter.Actor();
+      }
+      if (blurEffect)
+         background.add_effect_with_name( BLUR_EFFECT_NAME, blurEffect );
+      if (desatEffect)
+         background.add_effect_with_name( DESAT_EFFECT_NAME, desatEffect );
+      global.overlay_group.add_actor(background);
+      background.hide();
+      return [background, blurEffect, desatEffect];
+   }
+
+   _updateEffects(blurType, radius, saturation) {
+      // Setup the blur effect properly
+      let curEffect = this._background.get_effect(BLUR_EFFECT_NAME);
+      if (blurType === BlurType.None && curEffect) {
+         this._background.remove_effect(curEffect);
+      } else if (blurType === BlurType.Simple && !(curEffect instanceof Clutter.BlurEffect)) {
+         if (curEffect) {
+            this._background.remove_effect(curEffect);
+         }
+         this._blurEffect =  new Clutter.BlurEffect();
+         this._background.add_effect_with_name( BLUR_EFFECT_NAME, this._blurEffect );
+      } else if (blurType === BlurType.Gaussian && !(curEffect instanceof GaussianBlur.GaussianBlurEffect)) {
+         if (curEffect) {
+            this._background.remove_effect(curEffect);
+         }
+         this._blurEffect = new GaussianBlur.GaussianBlurEffect( {radius: radius, brightness: 1, width: 0, height: 0} );
+         this._background.add_effect_with_name( BLUR_EFFECT_NAME, this._blurEffect );
+      }// else if (blurType !== BlurType.None && curEffect === null) {
+         // The last used blur effect is correct, but not enabled, so enable it
+      //   this._background.add_effect_with_name( BLUR_EFFECT_NAME, this._blurEffect );
+      //}
+      // Adjust the blur effects
+      if (curEffect instanceof GaussianBlur.GaussianBlurEffect && curEffect.radius != radius) {
+         curEffect.radius = radius;
+      }
+      // Setup/Adjust the desaturation effect
+      curEffect = this._background.get_effect(DESAT_EFFECT_NAME);
+      if (curEffect && saturation === 100) {
+         this._background.remove_effect(curEffect);
+         this._desatEffect = null;
+      } else if (curEffect && curEffect.factor !== (100-saturation)/100) {
+         curEffect.set_factor((100-saturation)/100);
+      } else if (!curEffect && saturation<100) {
+         this._desatEffect = new Clutter.DesaturateEffect({factor: (100-saturation)/100});
+         this._background.add_effect_with_name( DESAT_EFFECT_NAME, this._desatEffect );
+      }
+   }
+
+   _setClip(actor, marginsActor=null) {
+      //this._printActor(actor);
+      if (marginsActor) {
+         let themeNode = marginsActor.get_theme_node();
+         let left   = themeNode.get_margin(St.Side.LEFT)   //+ themeNode.get_padding(St.Side.LEFT);
+         let right  = themeNode.get_margin(St.Side.RIGHT)  //+ themeNode.get_padding(St.Side.RIGHT);
+         let top    = themeNode.get_margin(St.Side.TOP)    //+ themeNode.get_padding(St.Side.TOP);
+         let bottom = themeNode.get_margin(St.Side.BOTTOM) //+ themeNode.get_padding(St.Side.BOTTOM);
+         //log( `Margins: ${left}, ${right}, ${top}, ${bottom}` );
+         this._background.set_clip( actor.x+left, actor.y+top, actor.width-(left+right), actor.height-(top+bottom) );
+      } else {
+         this._background.set_clip( actor.x, actor.y, actor.width, actor.height );
+      }
+   }
+
+   _printActor(actor) {
+      let themeNode = actor.get_theme_node();
+      let margins = actor.get_margin();
+      log( `Actor: ${actor} : visible: ${actor.visible}` );
+      log( `  Size:    ${actor.x} ${actor.y} ${actor.width} ${actor.height}` );
+      log( `  Margin:  ${themeNode.get_margin(St.Side.LEFT)} ${themeNode.get_margin(St.Side.RIGHT)} ${themeNode.get_margin(St.Side.TOP)} ${themeNode.get_margin(St.Side.BOTTOM)}` );
+      log( `  Border:  ${themeNode.get_border_width(St.Side.LEFT)} ${themeNode.get_border_width(St.Side.RIGHT)} ${themeNode.get_border_width(St.Side.TOP)} ${themeNode.get_border_width(St.Side.BOTTOM)}` );
+      log( `  Padding: ${themeNode.get_padding(St.Side.LEFT)} ${themeNode.get_padding(St.Side.RIGHT)} ${themeNode.get_padding(St.Side.TOP)} ${themeNode.get_padding(St.Side.BOTTOM)}` );
+      log( `  Margin:  ${margins.left} ${margins.right} ${margins.top} ${margins.bottom}` );
+   }
+}
+
 // This class manages the blurring of the panels
-class BlurPanels {
+class BlurPanels extends BlurBase {
 
    constructor() {
+      super();
       this._signalManager = new SignalManager.SignalManager(null);
       this._maximizeSignalManager = new SignalManager.SignalManager(null);
       this._blurredPanels = [];
@@ -232,8 +349,8 @@ class BlurPanels {
       this._originalPanelEnable    = Panel.Panel.prototype.enable;
       this._originalPanelDisable   = Panel.Panel.prototype.disable;
 
-      Panel.Panel.prototype.enable     = this.blurEnable;
-      Panel.Panel.prototype.disable    = this.blurDisable;
+      Panel.Panel.prototype.enable  = this.blurEnable;
+      Panel.Panel.prototype.disable = this.blurDisable;
 
       // Connect to events so we know if panels are added or removed
       this._signalManager.connect(global.settings,    "changed::panels-enabled", this._panel_changed, this);
@@ -513,31 +630,14 @@ class BlurPanels {
       // With this commented out, a panel with no effects applied (just made transparent) will still prevent
       // windows beneath the panels from being visible.
       //if (blurType > BlurType.None || saturation<100) {
-         let fx;
+         let blur;
+         let desat
          let background;
-         if (!Meta.is_wayland_compositor()) {
-            background = Meta.X11BackgroundActor.new_for_display(global.display);
-         } else {
-            background = new Clutter.Actor();
-         }
-         global.overlay_group.add_actor(background);
+         [background, blur, desat] = this._createBackgroundAndEffects(blurType, radius, saturation);
          blurredPanel.background = background;
          background.set_clip( panel.actor.x, panel.actor.y, panel.actor.width, panel.actor.height );
-         if (blurType === BlurType.Simple) {
-            fx =  new Clutter.BlurEffect();
-         } else if (blurType === BlurType.Gaussian) {
-            fx = new GaussianBlur.GaussianBlurEffect( {radius: radius, brightness: 1 , width: 0, height: 0} );
-         }
-         if (fx) {
-            background.add_effect_with_name( BLUR_EFFECT_NAME, fx );
-            //blurredPanel.effect = fx;
-         }
-         if (panel._hidden || global.display.get_monitor_in_fullscreen(panel.monitorIndex)) {
-            background.hide();
-         }
-         if (saturation<100) {
-            let desat = new Clutter.DesaturateEffect({factor: (100-saturation)/100});
-            blurredPanel.background.add_effect_with_name( DESAT_EFFECT_NAME, desat );
+         if (!panel._hidden && !global.display.get_monitor_in_fullscreen(panel.monitorIndex)) {
+            background.show();
          }
       //}
       blurredPanel.signalManager = new SignalManager.SignalManager(null);
@@ -725,6 +825,10 @@ class BlurPanels {
       }
    }
 
+   _getUniqueSettings() {
+      return [settings.panelsOpacity, settings.panelsBlendColor, settings.panelsBlurType, settings.panelsRadius, settings.panelsSaturation];
+   }
+
    // Determine the settings that should apply for the panel argument panel
    _getPanelSettings(panel) {
       if (settings.panelsOverride && settings.enablePanelUniqueSettings) {
@@ -750,12 +854,7 @@ class BlurPanels {
          }
          return null;
       } else {
-         let radius = (settings.panelsOverride) ? settings.panelsRadius : settings.radius;
-         let blurType = (settings.panelsOverride) ? settings.panelsBlurType : settings.blurType;
-         let blendColor = (settings.panelsOverride) ? settings.panelsBlendColor : settings.blendColor;
-         let opacity = (settings.panelsOverride) ? settings.panelsOpacity : settings.opacity;
-         let saturation = (settings.panelsOverride) ? settings.panelsSaturation : settings.saturation;
-         return [opacity, blendColor, blurType, radius, saturation];
+         return this._getSettings(settings.panelsOverride);
       }
    }
 
@@ -781,26 +880,20 @@ class BlurPanels {
    }
 }
 
-class BlurPopupMenus {
+class BlurPopupMenus extends BlurBase {
    constructor() {
+      super();
       blurPopupMenusThis = this; // Make "this" available to monkey patched functions
       this.original_popupmenu_open = PopupMenu.PopupMenu.prototype.open;
       PopupMenu.PopupMenu.prototype.open = this._popupMenuOpen;
-      //this.original_popupmenu_close = PopupMenu.PopupMenu.prototype.close;
-      //PopupMenu.PopupMenu.prototype.close = this._popupMenuClose;
 
-      this._blurEffect = new GaussianBlur.GaussianBlurEffect( {radius: 0, brightness: 1 , width: 0, height: 0} );
-      this._desatEffect = new Clutter.DesaturateEffect({factor: 1});
-      if (!Meta.is_wayland_compositor()) {
-         this._background = Meta.X11BackgroundActor.new_for_display(global.display);
-      } else {
-         this._background = new Clutter.Actor();
-      }
-      this._background.add_effect_with_name( BLUR_EFFECT_NAME, this._blurEffect );
-      this._background.add_effect_with_name( DESAT_EFFECT_NAME, this._desatEffect );
-      global.overlay_group.add_actor(this._background);
-      this._background.hide();
+      let [opacity, blendColor, blurType, radius, saturation] = this._getSettings(settings.popupOverride);
+      [this._background, this._blurEffect, this._desatEffect] = this._createBackgroundAndEffects(blurType, radius, saturation);
       debugMsg( "BlurPopupMenus initilized, actor hidden" );
+   }
+
+   _getUniqueSettings() {
+      return [settings.popupOpacity, settings.popupBlendColor, settings.popupBlurType, settings.popupRadius, settings.popupSaturation];
    }
 
    // Monkey patched over PupupMenu.open()
@@ -811,11 +904,6 @@ class BlurPopupMenus {
       }
       blurPopupMenusThis.original_popupmenu_open.call(this, animate);
    }
-
-   // Monkey patched over PopupMenu.close()
-   //_popupMenuClose(animate) {
-   //   blurPopupMenusThis.original_popupmenu_close.call(this, animate);
-   //}
 
    // Set the visible section of the background based on the size of the popup menu
    _setClip(menu){
@@ -833,12 +921,8 @@ class BlurPopupMenus {
    _onOpenStateChanged(menu, open) {
       if (open) {
          debugMsg( "Applying setting to new popup menu" )
-         let radius = (settings.popupOverride) ? settings.popupRadius : settings.radius;
-         let blurType = (settings.popupOverride) ? settings.popupBlurType : settings.blurType;
-         let blendColor = (settings.popupOverride) ? settings.popupBlendColor : settings.blendColor;
-         let opacity = (settings.popupOverride) ? settings.popupOpacity : settings.opacity;
-         let accentOpacity = (settings.popupOverride) ? settings.popupAccentOpacity : Math.min(settings.opacity+10, 100);
-         let saturation = (settings.popupOverride) ? settings.popupSaturation : settings.saturation;
+         let [opacity, blendColor, blurType, radius, saturation] = this._getSettings(settings.popupOverride);
+         let accentOpacity = (settings.popupOverride) ? settings.popupAccentOpacity : Math.min(opacity+10, 100);
 
          if (settings.allowTransparentColorPopup) {
             let box = menu.box;
@@ -864,32 +948,8 @@ class BlurPopupMenus {
             // Find all the accent actors and adjust their transparency and background color
             this._findAccentActors(menu, menu.actor);
          }
-         // Setup the blur effect properly
-         let curEffect = this._background.get_effect(BLUR_EFFECT_NAME);
-         if (blurType === BlurType.None && curEffect) {
-            this._background.remove_effect(curEffect);
-         } else if (blurType === BlurType.Simple && !(this._blurEffect instanceof Clutter.BlurEffect)) {
-            if (curEffect) {
-               this._background.remove_effect(curEffect);
-            }
-            this._blurEffect =  new Clutter.BlurEffect();
-            this._background.add_effect_with_name( BLUR_EFFECT_NAME, this._blurEffect );
-         } else if (blurType === BlurType.Gaussian && !(this._blurEffect instanceof GaussianBlur.GaussianBlurEffect)) {
-            if (curEffect) {
-               this._background.remove_effect(curEffect);
-            }
-            this._blurEffect = new GaussianBlur.GaussianBlurEffect( {radius: radius, brightness: 1, width: 0, height: 0} );
-            this._background.add_effect_with_name( BLUR_EFFECT_NAME, this._blurEffect );
-         } else if (blurType !== BlurType.None && curEffect === null) {
-            this._background.add_effect_with_name( BLUR_EFFECT_NAME, this._blurEffect );
-         }
-         // Adjust the effects
-         if (this._blurEffect instanceof GaussianBlur.GaussianBlurEffect && this._blurEffect.radius != radius) {
-            this._blurEffect.radius = radius;
-         }
-         if (this._desatEffect.factor !== (100-saturation)/100) {
-            this._desatEffect.set_factor((100-saturation)/100);
-         }
+
+         this._updateEffects(blurType, radius, saturation);
 
          this._currentMenu = menu;
          if (menu.animating) {
@@ -904,7 +964,7 @@ class BlurPopupMenus {
                                        actor.height-(margin.top+margin.bottom)-(bm.top+bm.bottom) );
          }
          this._background.show();
-         debugMsg( "Blurred actor is now visisble" );
+         debugMsg( "Blurred actor is now visible" );
          // Now that the menu is open we need to know if new actors are added so we can check for accent elements
          menu.blurCinnamonSignalManager.connect(menu.actor, "queue-relayout", () => {this._findAccentActors(menu, menu.actor);} );
       }
@@ -1019,11 +1079,10 @@ class BlurPopupMenus {
       PopupMenu.PopupMenu.prototype.open = this.original_popupmenu_open;
       global.overlay_group.remove_actor(this._background);
       this._background.destroy();
-      //PopupMenu.PopupMenu.prototype.close = this.original_popupmenu_close;
    }
 }
 
-class BlurDesktop {
+class BlurDesktop extends BlurBase {
    constructor() {
       this._signalManager = new SignalManager.SignalManager(null);
 
@@ -1041,12 +1100,12 @@ class BlurDesktop {
       this.updateEffects();
    }
 
+   _getUniqueSettings() {
+      return [settings.desktopOpacity, settings.desktopBlendColor, settings.desktopBlurType, settings.desktopRadius, settings.desktopSaturation];
+   }
+
    updateEffects() {
-      let blurType = (settings.desktopOverride) ? settings.desktopBlurType : settings.blurType;
-      let radius = (settings.desktopOverride) ? settings.desktopRadius : settings.radius;
-      let blendColor = (settings.desktopOverride) ? settings.desktopBlendColor : settings.blendColor;
-      let opacity = (settings.desktopOverride) ? settings.desktopOpacity : settings.opacity;
-      let saturation = (settings.desktopOverride) ? settings.desktopSaturation : settings.saturation;
+      let [opacity, blendColor, blurType, radius, saturation] = this._getSettings(settings.desktopOverride);
 
       this._withoutFocusSettings = {radius: radius, opacity: opacity, saturation: saturation};
       if (settings.desktopOverride && settings.desktopWithFocus) {
@@ -1140,8 +1199,9 @@ class BlurDesktop {
    }
 }
 
-class BlurNotifications {
+class BlurNotifications extends BlurBase {
    constructor() {
+      super();
       this._signalManager = new SignalManager.SignalManager(null);
       this.animation_time = 0.08; // seconds
       blurNotificationsThis = this; // Make "this" available to monkey patched functions
@@ -1152,56 +1212,23 @@ class BlurNotifications {
       MessageTray.MessageTray.prototype._hideNotification = this._hideNotification;
 
       // Create the effects and the background actor to apply to effects to
-      this._blurEffect = new GaussianBlur.GaussianBlurEffect( {radius: 20, brightness: 1 , width: 0, height: 0} );
-      this._desatEffect = new Clutter.DesaturateEffect({factor: 0});
-      if (!Meta.is_wayland_compositor()) {
-         this._background = Meta.X11BackgroundActor.new_for_display(global.display);
-      } else {
-         this._background = new Clutter.Actor();
-      }
-      this._background.add_effect_with_name( BLUR_EFFECT_NAME, this._blurEffect );
-      this._background.add_effect_with_name( DESAT_EFFECT_NAME, this._desatEffect );
-      global.overlay_group.add_actor(this._background);
-      this._background.hide();
+      let [opacity, blendColor, blurType, radius, saturation] = this._getSettings(settings.notificationOverride);
+      [this._background, this._blurEffect, this._desatEffect] = this._createBackgroundAndEffects(blurType, radius, saturation);
+
       this._activeNotificationData = null;
       this.updateEffects();
    }
 
-   updateEffects() {
-      let radius = (settings.notificationOverride) ? settings.notificationRadius : settings.radius;
-      let blurType = (settings.notificationOverride) ? settings.notificationBlurType : settings.blurType;
-      let saturation = (settings.notificationOverride) ? settings.notificationSaturation : settings.saturation;
+   _getUniqueSettings() {
+      return [settings.notificationOpacity, settings.notificationBlendColor, settings.notificationBlurType, settings.notificationRadius, settings.notificationSaturation];
+   }
 
-      // Setup the blur effect properly
-      let curEffect = this._background.get_effect(BLUR_EFFECT_NAME);
-      if (blurType === BlurType.None && curEffect) {
-         this._background.remove_effect(curEffect);
-      } else if (blurType === BlurType.Simple && !(this._blurEffect instanceof Clutter.BlurEffect)) {
-         if (curEffect) {
-            this._background.remove_effect(curEffect);
-         }
-         this._blurEffect =  new Clutter.BlurEffect();
-         this._background.add_effect_with_name( BLUR_EFFECT_NAME, this._blurEffect );
-      } else if (blurType === BlurType.Gaussian && !(this._blurEffect instanceof GaussianBlur.GaussianBlurEffect)) {
-         if (curEffect) {
-            this._background.remove_effect(curEffect);
-         }
-         this._blurEffect = new GaussianBlur.GaussianBlurEffect( {radius: radius, brightness: 1, width: 0, height: 0} );
-         this._background.add_effect_with_name( BLUR_EFFECT_NAME, this._blurEffect );
-      } else if (blurType !== BlurType.None && curEffect === null) {
-         this._background.add_effect_with_name( BLUR_EFFECT_NAME, this._blurEffect );
-      }
-      // Adjust the effects
-      if (this._blurEffect instanceof GaussianBlur.GaussianBlurEffect && this._blurEffect.radius != radius) {
-         this._blurEffect.radius = radius;
-      }
-      if (this._desatEffect.factor !== (100-saturation)/100) {
-         this._desatEffect.set_factor((100-saturation)/100);
-      }
+   updateEffects() {
+      let [opacity, blendColor, blurType, radius, saturation] = this._getSettings(settings.notificationOverride);
+
+      this._updateEffects(blurType, radius, saturation);
 
       if (this._activeNotificationData) {
-         let blendColor = (settings.notificationOverride) ? settings.notificationBlendColor : settings.blendColor;
-         let opacity = (settings.notificationOverride) ? settings.notificationOpacity : settings.opacity;
          let actor = this._activeNotificationData.actor;
          let button = actor.get_child();
          let table = button.get_child()
@@ -1224,30 +1251,6 @@ class BlurNotifications {
       blurNotificationsThis._blurNotification.call(blurNotificationsThis, this._notificationBin);
    }
 
-   /*
-   _printAll(actor) {
-      let themeNode = actor.get_theme_node();
-      let margins = actor.get_margin();
-      log( `Actor: ${actor}` );
-      log( `  Margin:  ${themeNode.get_margin(St.Side.LEFT)} ${themeNode.get_margin(St.Side.RIGHT)} ${themeNode.get_margin(St.Side.TOP)} ${themeNode.get_margin(St.Side.BOTTOM)}` );
-      log( `  Border:  ${themeNode.get_border_width(St.Side.LEFT)} ${themeNode.get_border_width(St.Side.RIGHT)} ${themeNode.get_border_width(St.Side.TOP)} ${themeNode.get_border_width(St.Side.BOTTOM)}` );
-      log( `  Padding: ${themeNode.get_padding(St.Side.LEFT)} ${themeNode.get_padding(St.Side.RIGHT)} ${themeNode.get_padding(St.Side.TOP)} ${themeNode.get_padding(St.Side.BOTTOM)}` );
-      log( `  Margin:  ${margins.left} ${margins.right} ${margins.top} ${margins.bottom}` );
-   }*/
-
-   _setClip(actor, table) {
-      if (actor.visible) {
-         let themeNode = table.get_theme_node();
-         let left   = themeNode.get_margin(St.Side.LEFT)   //+ themeNode.get_padding(St.Side.LEFT);
-         let right  = themeNode.get_margin(St.Side.RIGHT)  //+ themeNode.get_padding(St.Side.RIGHT);
-         let top    = themeNode.get_margin(St.Side.TOP)    //+ themeNode.get_padding(St.Side.TOP);
-         let bottom = themeNode.get_margin(St.Side.BOTTOM) //+ themeNode.get_padding(St.Side.BOTTOM);
-         this._background.set_clip( actor.x+left, actor.y+top, actor.width-(left+right), actor.height-(top+bottom) );
-      } else {
-         this._background.set_clip( 0, 0, 0, 0 );
-      }
-   }
-
    _blurNotification(actor) {
       let blendColor = (settings.notificationOverride) ? settings.notificationBlendColor : settings.blendColor;
       let opacity = (settings.notificationOverride) ? settings.notificationOpacity : settings.opacity;
@@ -1257,9 +1260,9 @@ class BlurNotifications {
       //log( `Bluring the notification bin actor: ${actor}` );
       //log( `   button ${actor.get_child()}` );
       //log( `   table  ${actor.get_child().get_child()}` );
-      //this._printAll(actor);
-      //this._printAll(button);
-      //this._printAll(table);
+      //this._printActor(actor);
+      //this._printActor(button);
+      //this._printActor(table);
 
 
       if (actor.visible) {
@@ -1314,6 +1317,78 @@ class BlurNotifications {
       MessageTray.MessageTray.prototype._hideNotification = this.original_hideNotification;
       global.overlay_group.remove_actor(this._background);
       this._background.destroy();
+   }
+}
+
+class BlurTooltips extends BlurBase {
+   constructor() {
+      super();
+      this._signalManager = new SignalManager.SignalManager(null);
+      blurTooltipsThis = this; // Make "this" available to monkey patched functions
+
+      // Monkey patch the Tooltip show and hide functions
+      this.original_PanelItemTooltip_show = Tooltips.PanelItemTooltip.prototype.show;
+      Tooltips.PanelItemTooltip.prototype.show = this._show_PanelItemTooltip;
+      this.original_Tooltip_hide = Tooltips.Tooltip.prototype.hide;
+      Tooltips.Tooltip.prototype.hide = this._hide_Tooltip;
+
+      let [opacity, blendColor, blurType, radius, saturation] = this._getSettings(settings.tooltipsOverride);
+      [this._background, this._blurEffect, this._desatEffect] = this._createBackgroundAndEffects(blurType, radius, saturation);
+   }
+
+   _getUniqueSettings() {
+      return [settings.tooltipOpacity, settings.tooltipBlendColor, settings.tooltipBlurType, settings.tooltipRadius, settings.tooltipSaturation];
+   }
+
+   _blurTooltip(actor) {
+      let [opacity, blendColor, blurType, radius, saturation] = this._getSettings(settings.tooltipsOverride);
+      this._updateEffects(blurType, radius, saturation);
+      // Set the tooltip color
+      let [ret,color] = Clutter.Color.from_string( blendColor );
+      if (!ret) { [ret,color] = Clutter.Color.from_string( "rgba(0,0,0,0)" ); }
+      color.alpha = opacity*2.55;
+      actor.set_background_color(color);
+      // Make the tooltip transparent and remove the rounded corners
+      this._originalStyle = actor.get_style();
+      actor.set_style(  "border-radius: 0px; " + //"border-image: none;  border-color: transparent;  box-shadow: 0 0 transparent; " +
+                        "background-gradient-direction: vertical; background-gradient-start: transparent; " +
+                        "background-gradient-end: transparent;    background: transparent;"  );
+      // Track the showing tooltip actor so we know which hide call to react to
+      this._tooltipActor = actor;
+      // Adapt to any future tooltip size changes
+      this._signalManager.connect(actor, 'notify::size', () => { if (actor.visible) { this._setClip(actor); } } );
+      // Show the blur actor only after all the pending actions are complete so that we have the correct tooltip size
+      Mainloop.idle_add( () => { this._setClip(actor); this._background.show(); } );
+   }
+
+   _unblurTooltip(actor) {
+      if (actor === this._tooltipActor) {
+         this._background.hide();
+         this._signalManager.disconnectAllSignals();
+         this._tooltipActor.set_style( this._originalStyle );
+         this._tooltipActor = null;
+      }
+   }
+
+   _show_PanelItemTooltip() {
+      blurTooltipsThis.original_PanelItemTooltip_show.call(this);
+      if (this._tooltip.visible) {
+         blurTooltipsThis._blurTooltip.call(blurTooltipsThis, this._tooltip);
+      }
+   }
+
+   _hide_Tooltip() {
+      blurTooltipsThis._unblurTooltip.call(blurTooltipsThis, this._tooltip);
+      blurTooltipsThis.original_Tooltip_hide.call(this);
+   }
+
+   destroy() {
+      // Undo Monkey patching the Tooltip show and hide functions
+      Tooltips.PanelItemTooltip.prototype.show = this.original_PanelItemTooltip_show;
+      Tooltips.Tooltip.prototype.hide = this.original_Tooltip_hide;
+
+      this._signalManager.disconnectAllSignals();
+      this._background.hide();
    }
 }
 
@@ -1373,6 +1448,12 @@ class BlurSettings {
       this.settings.bind('appswitcher-blendColor', 'appswitcherBlendColor');
       this.settings.bind('appswitcher-saturation', 'appswitcherSaturation');
 
+      this.settings.bind('tooltips-opacity',    'tooltipOpacity');
+      this.settings.bind('tooltips-blurType',   'tooltipBlurType');
+      this.settings.bind('tooltips-radius',     'tooltipRadius');
+      this.settings.bind('tooltips-blendColor', 'tooltipBlendColor');
+      this.settings.bind('tooltips-saturation', 'tooltipSaturation');
+
       this.settings.bind('enable-overview-override',     'overviewOverride');
       this.settings.bind('enable-expo-override',         'expoOverride');
       this.settings.bind('enable-panels-override',       'panelsOverride', panelsSettingsChangled);
@@ -1380,6 +1461,7 @@ class BlurSettings {
       this.settings.bind('enable-desktop-override',      'desktopOverride', updateDesktopEffects);
       this.settings.bind('enable-notification-override', 'notificationOverride', updateNotificationEffects);
       this.settings.bind('enable-appswitcher-override',  'appswitcherOverride');
+      this.settings.bind('enable-tooltips-override',     'tooltipsOverride');
 
       this.settings.bind('enable-overview-effects',      'enableOverviewEffects', enableOverviewChanged);
       this.settings.bind('enable-expo-effects',          'enableExpoEffects',     enableExpoChanged);
@@ -1388,6 +1470,7 @@ class BlurSettings {
       this.settings.bind('enable-desktop-effects',       'enableDesktopEffects',  enableDesktopChanged);
       this.settings.bind('enable-notification-effects',  'enableNotificationEffects', enableNotificationChanged);
       this.settings.bind('enable-appswitcher-effects',   'enableAppswitcherEffects', enableAppswitcherChanged);
+      this.settings.bind('enable-tooltips-effects',      'enableTooltipEffects',  enableTooltipsChanged);
 
       this.settings.bind('enable-panel-unique-settings', 'enablePanelUniqueSettings');
       this.settings.bind('panel-unique-settings', 'panelUniqueSettings', panelsSettingsChangled);
@@ -1488,7 +1571,7 @@ function enablePanelsChanged() {
    if (blurPanels && !settings.enablePanelsEffects) {
       blurPanels.destroy();
       blurPanels = null;
-   } else if (!blurPanels && settings.enablePanelsEffects ) {
+   } else if (!blurPanels && settings.enablePanelsEffects) {
       blurPanels = new BlurPanels();
    }
 }
@@ -1497,7 +1580,7 @@ function enablePopupChanged() {
    if (blurPopupMenus && !settings.enablePopupEffects) {
       blurPopupMenus.destroy();
       blurPopupMenus = null;
-   } else if (!blurPopupMenus && settings.enablePopupEffects ) {
+   } else if (!blurPopupMenus && settings.enablePopupEffects) {
       blurPopupMenus = new BlurPopupMenus();
    }
 }
@@ -1506,7 +1589,7 @@ function enableDesktopChanged() {
    if (blurDesktop && !settings.enableDesktopEffects) {
       blurDesktop.destroy();
       blurDesktop = null;
-   } else if (!blurDesktop && settings.enableDesktopEffects ) {
+   } else if (!blurDesktop && settings.enableDesktopEffects) {
       blurDesktop = new BlurDesktop();
    }
 }
@@ -1515,8 +1598,17 @@ function enableNotificationChanged() {
    if (blurNotifications && !settings.settings.enableNotificationEffects) {
       blurNotifications.destroy();
       blurNotifications = null;
-   } else if (!blurNotifications && settings.enableNotificationEffects ) {
+   } else if (!blurNotifications && settings.enableNotificationEffects) {
       blurNotifications = new BlurNotifications();
+   }
+}
+
+function enableTooltipsChanged() {
+   if (blurTooltips && !settings.settings.enableTooltipEffects) {
+      blurTooltips.destroy();
+      blurTooltips = null;
+   } else if (!blurTooltips && settings.enableTooltipEffects) {
+      blurTooltips = new BlurTooltips();
    }
 }
 
@@ -1565,6 +1657,10 @@ function enable() {
    // Create a Notification Effects class instance, the constructor will set everything up.
    if (settings.enableNotificationEffects) {
       blurNotifications = new BlurNotifications();
+   }
+   // Create a Tooltip Effects class instance, the constructor will set everything up.
+   if (settings.enableTooltipEffects) {
+      blurTooltips = new BlurTooltips();
    }
    // If this is the first time running Blur Cinnamon, sent a welcome notification message
    if (settings.newInstall) {
@@ -1618,6 +1714,12 @@ function disable() {
       blurNotifications.destroy();
       blurNotifications = null;
    }
+
+   if (blurTooltips) {
+      blurTooltips.destroy();
+      blurTooltips = null;
+   }
+
    settings.settings.setValue( "new-install", 1 );
 }
 

@@ -1,7 +1,7 @@
 {
    "layout" : {
       "type" : "layout",
-      "pages" : ["general-page", "overview-page", "expo-page", "panels-page", "popup-page", "desktop-page", "notification-page", "appswitcher-page"],
+      "pages" : ["general-page", "overview-page", "expo-page", "panels-page", "popup-page", "desktop-page", "notification-page", "appswitcher-page", "tooltips-page"],
 
       "general-page" : {
          "type" : "page",
@@ -25,12 +25,12 @@
       },
       "popup-page" : {
          "type" : "page",
-         "title" : "Popup Menus",
+         "title" : "Menus",
          "sections" : ["popup-override", "popup-effect-settings"]
       },
       "desktop-page" : {
          "type" : "page",
-         "title" : "Desktop Background",
+         "title" : "Desktop",
          "sections" : ["desktop-override", "desktop-effect-settings"]
       },
       "notification-page" : {
@@ -43,11 +43,16 @@
          "title" : "Alt-Tab",
          "sections" : ["appswitcher-override", "appswitcher-effect-settings"]
       },
+      "tooltips-page" : {
+         "type" : "page",
+         "title" : "Tooltips",
+         "sections" : ["tooltips-override", "tooltips-effect-settings"]
+      },
 
       "general-settings" : {
          "type" : "section",
          "title" : "Cinnamon components where effects will be applied",
-         "keys" : ["enable-overview-effects", "enable-expo-effects", "enable-panels-effects", "enable-popup-effects", "enable-desktop-effects", "enable-notification-effects", "enable-appswitcher-effects"]
+         "keys" : ["enable-overview-effects", "enable-expo-effects", "enable-panels-effects", "enable-popup-effects", "enable-desktop-effects", "enable-notification-effects", "enable-appswitcher-effects", "enable-tooltips-effects"]
       },
       "generic-effect-settings" : {
          "type" : "section",
@@ -137,6 +142,18 @@
          "title" : "Alt-Tab (Coverflow / Timeline) background effects settings",
          "dependency" : "enable-appswitcher-override",
          "keys" : ["appswitcher-opacity", "appswitcher-blendColor", "appswitcher-blurType", "appswitcher-radius", "appswitcher-saturation"]
+      },
+
+      "tooltips-override" : {
+         "type" : "section",
+         "title" : "Panel tooltips background settings",
+         "keys" : ["tooltips-info", "enable-tooltips-override"]
+      },
+      "tooltips-effect-settings" : {
+         "type" : "section",
+         "title" : "Panel tooltips background effects settings",
+         "dependency" : "enable-tooltips-override",
+         "keys" : ["tooltips-opacity", "tooltips-blendColor", "tooltips-blurType", "tooltips-radius", "tooltips-saturation"]
       }
 
    },
@@ -183,6 +200,12 @@
         "tooltip": "Apply effects to the Alt-Tab application switcher background when setup to use the Coverflow or Timeline styles",
         "default": true
     },
+    "enable-tooltips-effects" : {
+        "type": "switch",
+        "description": "Panel tooltips (Please read tooltip)",
+        "tooltip": "Apply effects to the panel tooltip backgrounds. It overrides some theme settings to achieve a (semi-)transparent tooltip so that the blurred background is visible. It also removes rounded corners so that the blurred background will not spill over the rounded edges.",
+        "default": false
+    },
 
     "overview-info" : {
         "type" : "label",
@@ -218,6 +241,11 @@
         "type" : "label",
         "description" : "Warning: Alt-Tab effects are currently disabled under the General tab.",
         "dependency" : "!enable-appswitcher-effects"
+    },
+    "tooltips-info" : {
+        "type" : "label",
+        "description" : "Warning: Panel tooltip effects are currently disabled under the General tab.",
+        "dependency" : "!enable-tooltips-effects"
     },
 
     "allow-transparent-color-panels" : {
@@ -266,6 +294,11 @@
     "enable-appswitcher-override" : {
         "type": "switch",
         "description": "Use unique effect settings for the Alt-Tab app switcher",
+        "default": false
+    },
+    "enable-tooltips-override" : {
+        "type": "switch",
+        "description": "Use unique effect settings for the panel tooltips",
         "default": false
     },
 
@@ -746,6 +779,55 @@
     },
 
     "appswitcher-saturation": {
+        "type": "scale",
+        "description" : "Background color saturation",
+        "min" : 0.0,
+        "max" : 100,
+        "step" : 0.1,
+        "tooltip": "Adjusts the color saturation of the background image.",
+        "default": 100
+    },
+
+    "tooltips-opacity" : {
+        "type": "scale",
+        "description": "Dim/Colorize Background (percentage)",
+        "min": 0,
+        "max": 100,
+        "default": 40,
+        "step": 1
+    },
+
+    "tooltips-blendColor": {
+        "type": "colorchooser",
+        "description" : "Dimming overlay color",
+        "default": "rgb(0,0,0)",
+        "tooltip": "Defines the color that is blended into the background based on the dimming control above. Use black for a normal dimming effect or some other color for a color blend effect"
+    },
+
+    "tooltips-blurType": {
+        "type": "combobox",
+        "default": 2,
+        "options": {
+            "None": 0,
+            "Simple": 1,
+            "Gaussian": 2
+        },
+        "description": "Type of blur effect",
+        "tooltip": "What type of blur algorithm should be used to blur the background"
+    },
+
+    "tooltips-radius": {
+        "type": "scale",
+        "description" : "Gaussian blur intensity",
+        "min" : 0.0,
+        "max" : 100,
+        "step" : 0.1,
+        "tooltip": "Adjusts the intensity of the blur effect by changing the radius use by the effect.",
+        "default": 9,
+        "dependency" : "expo-blurType=2"
+    },
+
+    "tooltips-saturation": {
         "type": "scale",
         "description" : "Background color saturation",
         "min" : 0.0,
