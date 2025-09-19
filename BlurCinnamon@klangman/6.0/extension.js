@@ -883,12 +883,28 @@ class BlurPanels extends BlurBase {
 class BlurPopupMenus extends BlurBase {
    constructor() {
       super();
+      this._menus = [];
       blurPopupMenusThis = this; // Make "this" available to monkey patched functions
       this.original_popupmenu_open = PopupMenu.PopupMenu.prototype.open;
       PopupMenu.PopupMenu.prototype.open = this._popupMenuOpen;
 
       let [opacity, blendColor, blurType, radius, saturation] = this._getSettings(settings.popupOverride);
       [this._background, this._blurEffect, this._desatEffect] = this._createBackgroundAndEffects(blurType, radius, saturation);
+
+      // Setup the popup menu box color
+      let [ret,color] = Clutter.Color.from_string( blendColor );
+      if (!ret) { [ret,color] = Clutter.Color.from_string( "rgba(0,0,0,0)" ); }
+      color.alpha = opacity*2.55;
+      this._boxColor = color;
+
+      // Setup the popup menu accent color
+      let accentOpacity = (settings.popupOverride) ? settings.popupAccentOpacity : Math.min(opacity+10, 100);
+      [ret,color] = Clutter.Color.from_string( blendColor );
+      if (!ret) { [ret,color] = Clutter.Color.from_string( "rgba(0,0,0,0)" ); }
+      color.alpha = (accentOpacity)*2.55;
+      this._accentColor = color;
+
+      this._changeCount = 0;
       debugMsg( "BlurPopupMenus initilized, actor hidden" );
    }
 
@@ -920,36 +936,30 @@ class BlurPopupMenus extends BlurBase {
 
    _onOpenStateChanged(menu, open) {
       if (open) {
-         debugMsg( "Applying setting to new popup menu" )
+         debugMsg( `Applying setting to new popup menu: ${menu}` )
          let [opacity, blendColor, blurType, radius, saturation] = this._getSettings(settings.popupOverride);
-         let accentOpacity = (settings.popupOverride) ? settings.popupAccentOpacity : Math.min(opacity+10, 100);
 
          if (settings.allowTransparentColorPopup) {
-            let box = menu.box;
-            menu.blurCinnamonData.push( {entry: box, original_entry_color: box.get_background_color(), original_entry_style: box.get_style(),
-                                 original_entry_class: box.get_style_class_name(), original_entry_pseudo_class: box.get_style_pseudo_class()} );
-            box.set_style( "border-radius: 0px; " + //"border-image: none;  border-color: transparent;  box-shadow: 0 0 transparent; " +
-                           "background-gradient-direction: vertical; background-gradient-start: transparent; " +
-                           "background-gradient-end: transparent;    background: transparent;" );
-            // Since menu.actor style is reset every time anyhow, we don't need to remember the style and restore it when the menu closes
+            // Has some Blur Cinnamon settings changed since we last opened this menu?
+            if (menu._blurCinnamonChangeCount != this._changeCount) {
+               debugMsg( "Applying new settings to menu" );
+               this._reapplyMenuStyle(menu, this._boxColor);
+            }
+            menu._blurCinnamonChangeCount = this._changeCount;
+
+            // Find all the accent actors and adjust their transparency and background color
+            this._findAccentActors(menu, menu.actor);
+
+            // Adjust the menu transparency and color for the menu box if required
+            if (!menu.box._blurCinnamonData) {
+               this._applyActorStyle(menu.box, this._boxColor);
+            }
+
+            // Since menu.actor style is reset every time anyhow, we don't need to remember it's style, but we do have to set it every time
             menu.actor.set_style(  "border-radius: 0px; " + //"border-image: none;  border-color: transparent;  box-shadow: 0 0 transparent; " +
                            "background-gradient-direction: vertical; background-gradient-start: transparent; " +
                            "background-gradient-end: transparent;    background: transparent;"  );
-
-            // Set the popup menu color
-            let [ret,color] = Clutter.Color.from_string( blendColor );
-            if (!ret) { [ret,color] = Clutter.Color.from_string( "rgba(0,0,0,0)" ); }
-            color.alpha = opacity*2.55;
-            menu.box.set_background_color(color);
-
-            // Setup the popup menu accent actor color
-            color.alpha = (accentOpacity)*2.55;
-            this._accentColor = color;
-            // Find all the accent actors and adjust their transparency and background color
-            this._findAccentActors(menu, menu.actor);
          }
-
-         this._updateEffects(blurType, radius, saturation);
 
          this._currentMenu = menu;
          if (menu.animating) {
@@ -966,7 +976,7 @@ class BlurPopupMenus extends BlurBase {
          this._background.show();
          debugMsg( "Blurred actor is now visible" );
          // Now that the menu is open we need to know if new actors are added so we can check for accent elements
-         menu.blurCinnamonSignalManager.connect(menu.actor, "queue-relayout", () => {this._findAccentActors(menu, menu.actor);} );
+         menu.blurCinnamonSignalManager.connect(menu.actor, 'queue-relayout', () => {this._findAccentActors(menu, menu.actor);} );
       }
    }
 
@@ -976,102 +986,149 @@ class BlurPopupMenus extends BlurBase {
       this._unblurPopupMenu(menu);
    }
 
-   _onDestroyed() {
-      if (this._background.is_visible()) {
+   _onDestroyed(menu) {
+      if (this._currentMenu === menu && this._background.is_visible()) {
          // In some cases the Tween for the popupMenu close animation will not call its onComplete function
          // and therefore no "menu-animated-closed" signal which would call _onClosed().
          // In those cases we must unblur the popup menu, but the menu is already gone so we just hide the background.
          debugMsg( "Unblurring on destroy" );
          this._background.hide();
       }
+      if (menu.blurCinnamonSignalManager) {
+         menu.blurCinnamonSignalManager.disconnectAllSignals();
+      }
+      let idx = this._menus.indexOf(menu);
+      if (idx !== -1) {
+         debugMsg( `Removing menu at index ${idx}` );
+         this._menus.splice( idx, 1 );
+      }
+   }
+
+   _reapplyMenuStyle(menu, color) {
+      if (menu.box._blurCinnamonData) {
+         this._applyActorStyle(menu.box, color);
+         this._reapplyActorChildrenStyle(menu.actor);
+      }
+   }
+
+   _reapplyActorChildrenStyle(actor) {
+      let children = actor.get_children();
+      for (let i=0 ; i < children.length ; i++ ) {
+         if (children[i]._blurCinnamonData) {
+            this._applyActorStyle(children[i], this._accentColor);
+         }
+         this._reapplyActorChildrenStyle(children[i]);
+      }
+   }
+
+   _applyActorStyle(actor, color) {
+      if (!actor._blurCinnamonData) {
+         actor._blurCinnamonData = {original_entry_color: actor.get_background_color(), original_entry_style: actor.get_style(),
+                                    original_entry_class: actor.get_style_class_name(), original_entry_pseudo_class: actor.get_style_pseudo_class()};
+      }
+      actor.set_style( "border-radius: 0px; " + //"border-image: none;  border-color: transparent;  box-shadow: 0 0 transparent; " +
+                       "background-gradient-direction: vertical; background-gradient-start: transparent; " +
+                       "background-gradient-end: transparent;    background: transparent;" );
+      actor.set_background_color(color);
+   }
+
+   _restoreMenuStyle(menu) {
+      if (menu.box._blurCinnamonData) {
+         this._restoreActorStyle(menu.box);
+         this._restoreActorChildrenStyle(menu.actor);
+      }
+   }
+
+   _restoreActorChildrenStyle(actor) {
+      let children = actor.get_children();
+      for (let i=0 ; i < children.length ; i++ ) {
+         if (children[i]._blurCinnamonData) {
+            this._restoreActorStyle(children[i]);
+         }
+         this._restoreActorChildrenStyle(children[i]);
+      }
+   }
+
+   _restoreActorStyle(actor) {
+      let orgStyleData = actor._blurCinnamonData;
+      actor.set_background_color(orgStyleData.original_entry_color);
+      actor.set_style(orgStyleData.original_entry_style);
+      actor.set_style_class_name(orgStyleData.original_entry_class);
+      actor.set_style_pseudo_class(orgStyleData.original_entry_pseudo_class);
+      delete actor._blurCinnamonData;
    }
 
    // Look for Popup menu accent actors
-   _findAccentActors(menu, actor, indent="") {
+   _findAccentActors(menu, actor /*,indent=""*/) {
       let children = actor.get_children();
       for (let i=0 ; i < children.length ; i++ ) {
          let child = children[i];
-         if (child instanceof St.Entry) {
-            if (!menu.blurCinnamonData.find( (element) => {return(element.entry === child);} )) {
-               menu.blurCinnamonData.push( {entry: child, original_entry_color: child.get_background_color(), original_entry_style: child.get_style(),
-                                original_entry_class: child.get_style_class_name(), original_entry_pseudo_class: child.get_style_pseudo_class()} );
-            }
-            child.set_style( "border-radius: 0px; " + //"border-image: none;  border-color: transparent;  box-shadow: 0 0 transparent; " +
-                             "background-gradient-direction: vertical; background-gradient-start: transparent; " +
-                             "background-gradient-end: transparent;    background: transparent;" );
-            child.set_background_color(this._accentColor);
-         } else if (child instanceof St.BoxLayout) {
-            let styleClassName = child.get_style_class_name();
-            if (styleClassName && styleClassName.indexOf("menu-favorites-box") !== -1) {
-               // This is for the menu@cinnamon.org applet
-               if (!menu.blurCinnamonData.find( (element) => {return(element.entry === child);} )) {
-                  menu.blurCinnamonData.push( {entry: child, original_entry_color: child.get_background_color(), original_entry_style: child.get_style(),
-                                original_entry_class: child.get_style_class_name(), original_entry_pseudo_class: child.get_style_pseudo_class()} );
+         if (child._blurCinnamonData === undefined) {
+            if (child instanceof St.Entry) {
+               debugMsg( "found new accent actor" );
+               this._applyActorStyle(child, this._accentColor);
+            } else if (child instanceof St.BoxLayout) {
+               let styleClassName = child.get_style_class_name();
+               if (styleClassName && styleClassName.indexOf("menu-favorites-box") !== -1) {
+                  debugMsg( "found new accent actor" );
+                  this._applyActorStyle(child, this._accentColor);
                }
-               child.set_style( "border-radius: 0px; transition-duration: 0;" + //"border-image: none;  border-color: transparent;  box-shadow: 0 0 transparent; " +
-                                "background-gradient-direction: vertical; background-gradient-start: transparent; " +
-                                "background-gradient-end: transparent;    background: transparent;" );
-               child.set_background_color(this._accentColor);
-            }
-         } else if (child instanceof St.Table) {
-            let name = child.get_name();
-            if (name && name.indexOf("notification") !== -1) {
-               // Notification messages in the Notifications applet, these messages can be removed by the user so we need to handle that case
-               if (!menu.blurCinnamonData.find( (element) => {return(element.entry === child);} )) {
-                  menu.blurCinnamonData.push( {entry: child, original_entry_color: child.get_background_color(), original_entry_style: child.get_style(),
-                                original_entry_class: child.get_style_class_name(), original_entry_pseudo_class: child.get_style_pseudo_class()} );
-                  menu.blurCinnamonSignalManager.connect(child, 'destroy', (actor) =>
-                     {
-                        // If the child is removed then remove the restore data to avoid errors
-                        let idx = menu.blurCinnamonData.findIndex( (element) => {return(element.entry === child);} )
-                        if (idx!=-1) {
-                           menu.blurCinnamonData.splice(idx,1);
-                        }
-                     } );
+            } else if (child instanceof St.Table) {
+               let name = child.get_name();
+               if (name && name.indexOf("notification") !== -1) {
+                  debugMsg( "found new accent actor" );
+                  this._applyActorStyle(child, this._accentColor);
                }
-               child.set_style( "border-radius: 0px; " + //"border-image: none;  border-color: transparent;  box-shadow: 0 0 transparent; " +
-                                "background-gradient-direction: vertical; background-gradient-start: transparent; " +
-                                "background-gradient-end: transparent;    background: transparent;" );
-               child.set_background_color(this._accentColor);
+            } else {
+               child._blurCinnamonData = null; // Used to signal that this actor is not an interesting one for future calls to this function
             }
          }
-         //if (child instanceof St.Widget) {
-         //   log( `Widget: ${indent}${child}` );
-         //}
-         this._findAccentActors(menu, child, indent+"  ");
+         this._findAccentActors(menu, child /*,indent+"  "*/);
       }
    }
 
    _blurPopupMenu(menu) {
-      menu.blurCinnamonData = [];
-      menu.blurCinnamonSignalManager = new SignalManager.SignalManager(null);
-      menu.blurCinnamonSignalManager.connect(menu, "open-state-changed", Lang.bind(this, this._onOpenStateChanged) );
-      menu.blurCinnamonSignalManager.connect(menu, "menu-animated-closed", Lang.bind(this, this._onClosed) );
-      menu.blurCinnamonSignalManager.connect(menu, "destroy", Lang.bind(this, this._onDestroyed) );
-      menu.blurCinnamonSignalManager.connect(menu.actor, 'notify::size', () => {this._setClip(menu);} );
-      menu.blurCinnamonSignalManager.connect(menu.actor, 'notify::position', () => {this._setClip(menu);} );
+      if (!menu.blurCinnamonSignalManager) {
+         menu.blurCinnamonSignalManager = new SignalManager.SignalManager(null);
+         menu.blurCinnamonSignalManager.connect(menu, "open-state-changed", Lang.bind(this, this._onOpenStateChanged) );
+         menu.blurCinnamonSignalManager.connect(menu, "menu-animated-closed", Lang.bind(this, this._onClosed) );
+         menu.blurCinnamonSignalManager.connect(menu, "destroy", () => {this._onDestroyed(menu)} );
+         menu.blurCinnamonSignalManager.connect(menu.actor, 'notify::size', () => {this._setClip(menu);} );
+         menu.blurCinnamonSignalManager.connect(menu.actor, 'notify::position', () => {this._setClip(menu);} );
+         this._menus.push(menu);
+      }
       debugMsg( "attach complete" );
    }
 
    _unblurPopupMenu(menu) {
-      menu.blurCinnamonSignalManager.disconnectAllSignals();
-      delete menu.blurCinnamonSignalManager;
-      let box = menu.box;
-      // Restore the menu to it's original state
-      for (let i=0 ; i < menu.blurCinnamonData.length ; i++) {
-         let entry = menu.blurCinnamonData[i];
-         entry.entry.set_background_color(entry.original_entry_color);
-         entry.entry.set_style(entry.original_entry_style);
-         entry.entry.set_style_class_name(entry.original_entry_class);
-         entry.entry.set_style_pseudo_class(entry.original_entry_pseudo_class);
-      }
-      delete menu.blurCinnamonData;
       if (this._currentMenu === menu) {
          this._background.hide();
          debugMsg( "blur actor hidden" );
          this._currentMenu = null;
       }
-      debugMsg( "unblur complete" );
+      debugMsg( "unblur complete\n" );
+   }
+
+   updateEffects() {
+      debugMsg("updateEffects for popup menus" );
+      this._changeCount++;
+
+      let [opacity, blendColor, blurType, radius, saturation] = this._getSettings(settings.popupOverride);
+      let accentOpacity = (settings.popupOverride) ? settings.popupAccentOpacity : Math.min(opacity+10, 100);
+
+      this._updateEffects(blurType, radius, saturation);
+
+      // Update the popup menu box dimming color
+      let [ret,color] = Clutter.Color.from_string( blendColor );
+      if (!ret) { [ret,color] = Clutter.Color.from_string( "rgba(0,0,0,0)" ); }
+      color.alpha = opacity*2.55;
+      this._boxColor = color;
+
+      // Update the accent dimming color
+      [ret,color] = Clutter.Color.from_string( blendColor );
+      if (!ret) { [ret,color] = Clutter.Color.from_string( "rgba(0,0,0,0)" ); }
+      color.alpha = (accentOpacity)*2.55;
+      this._accentColor = color;
    }
 
    destroy() {
@@ -1079,6 +1136,20 @@ class BlurPopupMenus extends BlurBase {
       PopupMenu.PopupMenu.prototype.open = this.original_popupmenu_open;
       global.overlay_group.remove_actor(this._background);
       this._background.destroy();
+      // Remove all data in the menus associated with blurCinnamon
+      let menus = this._menus;
+      debugMsg( `_menus is ${menus}` );
+      if (menus) {
+         for (let i=0 ; i < menus.length ; i++) {
+            if (menus[i].blurCinnamonSignalManager) {
+               menus[i].blurCinnamonSignalManager.disconnectAllSignals();
+               delete menus[i].blurCinnamonSignalManager;
+            }
+            if (menus[i].box._blurCinnamonData) {
+               this._restoreMenuStyle(menus[i]);
+            }
+         }
+      }
    }
 }
 
@@ -1420,12 +1491,12 @@ class BlurSettings {
       this.settings.bind('panels-saturation', 'panelsSaturation', saturationChanged);
       this.settings.bind('no-panel-effects-maximized', 'noPanelEffectsMaximized', maximizedOptionChanged );
 
-      this.settings.bind('popup-opacity',        'popupOpacity');
-      this.settings.bind('popup-accent-opacity', 'popupAccentOpacity');
-      this.settings.bind('popup-blurType',       'popupBlurType');
-      this.settings.bind('popup-radius',         'popupRadius');
-      this.settings.bind('popup-blendColor',     'popupBlendColor');
-      this.settings.bind('popup-saturation',     'popupSaturation');
+      this.settings.bind('popup-opacity',        'popupOpacity',       updatePopupEffects);
+      this.settings.bind('popup-accent-opacity', 'popupAccentOpacity', updatePopupEffects);
+      this.settings.bind('popup-blurType',       'popupBlurType',      updatePopupEffects);
+      this.settings.bind('popup-radius',         'popupRadius',        updatePopupEffects);
+      this.settings.bind('popup-blendColor',     'popupBlendColor',    updatePopupEffects);
+      this.settings.bind('popup-saturation',     'popupSaturation',    updatePopupEffects);
       this.settings.bind('allow-transparent-color-popup', 'allowTransparentColorPopup');
 
       this.settings.bind('desktop-opacity',       'desktopOpacity',      updateDesktopEffects);
@@ -1483,6 +1554,12 @@ class BlurSettings {
 function maximizedOptionChanged() {
    if (blurPanels) {
       blurPanels.setupMaximizeMonitoring();
+   }
+}
+
+function updatePopupEffects() {
+   if (blurPopupMenus && settings.enablePopupEffects) {
+      blurPopupMenus.updateEffects();
    }
 }
 
@@ -1667,7 +1744,7 @@ function enable() {
       settings.settings.setValue( "new-install", 0 );
       let source = new MessageTray.Source(metaData.name);
       let notification = new MessageTray.Notification(source, _("Welcome to Blur Cinnamon"),
-         _("Hope you are enjoying your new Panel, Expo and Overview effects.\n\nOpen the Blur Cinnamon Settings to enable additional effects on specific Cinnamon components (i.e. Popup Menus, Notification Popups and the Desktop background) or disable the Panel, Expo and/or Overview effects that are enabled by default. You can also make changes to the effect properties like blur intensity, color saturation and dimming."),
+         _("Hope you are enjoying your new Panel, Expo, Overview and Alt-Tab Coverflow/Timeline effects.\n\nOpen the Blur Cinnamon Settings to enable additional effects on several other Cinnamon components like menus and notifications, or disable effects on components that were enabled by default. You can also make changes to the effect properties like blur intensity, color saturation and dimming."),
          {icon: new St.Icon({icon_name: "blur-cinnamon", icon_type: St.IconType.FULLCOLOR, icon_size: source.ICON_SIZE })}
          );
       Main.messageTray.add(source);
@@ -1720,7 +1797,14 @@ function disable() {
       blurTooltips = null;
    }
 
-   settings.settings.setValue( "new-install", 1 );
+   // If disabled was called to remove the extension entirely rather than a reload
+   // we can reset the "new-install" value so that if the user adds the extension
+   // again in the future, we can show the welcome notification again!
+   let err = new Error();
+   if (err.stack.includes("unloadRemovedExtensions@")) {
+      log( "Resetting the new-install value" );
+      settings.settings.setValue( "new-install", 1 );
+   }
 }
 
 const Callbacks = {
