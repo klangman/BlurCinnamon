@@ -232,6 +232,13 @@ class BlurBase {
       log( "Error: Blur effect class does not implement _getUniqueSettings()!" );
    }
 
+   _getColor(colorString, opacity) {
+      let [ret,color] = Clutter.Color.from_string( colorString );
+      if (!ret) { [ret,color] = Clutter.Color.from_string( "rgba(0,0,0,0)" ); }
+      color.alpha = opacity*2.55;
+      return color;
+   }
+
    // Returns [opacity, blendColor, blurType, radius, saturation]
    _getSettings(override) {
       if (override) {
@@ -617,9 +624,7 @@ class BlurPanels extends BlurBase {
       }
       if (settings.allowTransparentColorPanels) {
          // Set the panels color
-         let [ret,color] = Clutter.Color.from_string( blendColor );
-         if (!ret) { [ret,color] = Clutter.Color.from_string( "rgba(0,0,0,0)" ); }
-         color.alpha = opacity*2.55;
+         let color = this._getColor( blendColor, opacity );
          actor.set_background_color(color);
          // Make the panel transparent
          actor.set_style( "border-image: none;  border-color: transparent;  box-shadow: 0 0 transparent; " +
@@ -707,9 +712,7 @@ class BlurPanels extends BlurBase {
             if (!panelSettings ) return;
             let [opacity, blendColor, blurType, radius, saturation] = panelSettings;
             // Set the panels color
-            let [ret,color] = Clutter.Color.from_string( blendColor );
-            if (!ret) { [ret,color] = Clutter.Color.from_string( "rgba(0,0,0,0)" ); }
-            color.alpha = opacity*2.55;
+            let color = this._getColor( blendColor, opacity );
             actor.set_background_color(color);
             // Make the panel transparent
             actor.set_style( "border-image: none;  border-color: transparent;  box-shadow: 0 0 transparent; " +
@@ -765,9 +768,7 @@ class BlurPanels extends BlurBase {
             let actor = panel.actor;
             let [opacity, blendColor, blurType, radius, saturation] = panelSettings;
             if (settings.allowTransparentColorPanels) {
-               let [ret,color] = Clutter.Color.from_string( blendColor );
-               if (!ret) { [ret,color] = Clutter.Color.from_string( "rgba(0,0,0,0)" ); }
-               color.alpha = opacity*2.55;
+               let color = this._getColor( blendColor, opacity );
                actor.set_background_color(color);
                // Make the panel transparent
                actor.set_style( "border-image: none;  border-color: transparent;  box-shadow: 0 0 transparent; " +
@@ -883,6 +884,7 @@ class BlurPanels extends BlurBase {
 class BlurPopupMenus extends BlurBase {
    constructor() {
       super();
+      debugMsg( "Constructing popup menu object" );
       this._menus = [];
       blurPopupMenusThis = this; // Make "this" available to monkey patched functions
       this.original_popupmenu_open = PopupMenu.PopupMenu.prototype.open;
@@ -892,17 +894,11 @@ class BlurPopupMenus extends BlurBase {
       [this._background, this._blurEffect, this._desatEffect] = this._createBackgroundAndEffects(blurType, radius, saturation);
 
       // Setup the popup menu box color
-      let [ret,color] = Clutter.Color.from_string( blendColor );
-      if (!ret) { [ret,color] = Clutter.Color.from_string( "rgba(0,0,0,0)" ); }
-      color.alpha = opacity*2.55;
-      this._boxColor = color;
+      this._boxColor = this._getColor( blendColor, opacity );
 
       // Setup the popup menu accent color
       let accentOpacity = (settings.popupOverride) ? settings.popupAccentOpacity : Math.min(opacity+10, 100);
-      [ret,color] = Clutter.Color.from_string( blendColor );
-      if (!ret) { [ret,color] = Clutter.Color.from_string( "rgba(0,0,0,0)" ); }
-      color.alpha = (accentOpacity)*2.55;
-      this._accentColor = color;
+      this._accentColor = this._getColor( blendColor, accentOpacity );
 
       this._changeCount = 0;
       debugMsg( "BlurPopupMenus initilized, actor hidden" );
@@ -1119,26 +1115,20 @@ class BlurPopupMenus extends BlurBase {
       this._updateEffects(blurType, radius, saturation);
 
       // Update the popup menu box dimming color
-      let [ret,color] = Clutter.Color.from_string( blendColor );
-      if (!ret) { [ret,color] = Clutter.Color.from_string( "rgba(0,0,0,0)" ); }
-      color.alpha = opacity*2.55;
-      this._boxColor = color;
+      this._boxColor = this._getColor( blendColor, opacity );
 
       // Update the accent dimming color
-      [ret,color] = Clutter.Color.from_string( blendColor );
-      if (!ret) { [ret,color] = Clutter.Color.from_string( "rgba(0,0,0,0)" ); }
-      color.alpha = (accentOpacity)*2.55;
-      this._accentColor = color;
+      this._accentColor = this._getColor( blendColor, accentOpacity );
    }
 
    destroy() {
       // Restore monkey patched PopupMenu open & close functions
+      debugMsg( "Destroying Popup Menu object" );
       PopupMenu.PopupMenu.prototype.open = this.original_popupmenu_open;
       global.overlay_group.remove_actor(this._background);
       this._background.destroy();
       // Remove all data in the menus associated with blurCinnamon
       let menus = this._menus;
-      debugMsg( `_menus is ${menus}` );
       if (menus) {
          for (let i=0 ; i < menus.length ; i++) {
             if (menus[i].blurCinnamonSignalManager) {
@@ -1155,6 +1145,7 @@ class BlurPopupMenus extends BlurBase {
 
 class BlurDesktop extends BlurBase {
    constructor() {
+      super();
       this._signalManager = new SignalManager.SignalManager(null);
 
       this._blurEffect = new GaussianBlur.GaussianBlurEffect( {radius: 0, brightness: 1, width: 0, height: 0} );
@@ -1303,9 +1294,7 @@ class BlurNotifications extends BlurBase {
          let actor = this._activeNotificationData.actor;
          let button = actor.get_child();
          let table = button.get_child()
-         let [ret,color] = Clutter.Color.from_string( blendColor );
-         if (!ret) { [ret,color] = Clutter.Color.from_string( "rgba(0,0,0,0)" ); }
-         color.alpha = opacity*2.55;
+         let color = this._getColor( blendColor, opacity );
          table.set_background_color(color);
          actor.set_style( "border-radius: 0px; background-gradient-direction: vertical; background-gradient-start: transparent; " +
                           "background-gradient-end: transparent; background: transparent;" );
@@ -1342,9 +1331,7 @@ class BlurNotifications extends BlurBase {
             this._activeNotificationData = {actor: actor, original_table_color: table.get_background_color(), original_actor_style: actor.get_style(),
                                             original_button_style: button.get_style(), original_table_style: table.get_style()};
             // Set the notification color and style
-            let [ret,color] = Clutter.Color.from_string( blendColor );
-            if (!ret) { [ret,color] = Clutter.Color.from_string( "rgba(0,0,0,0)" ); }
-            color.alpha = opacity*2.55;
+            let color = this._getColor( blendColor, opacity );
             table.set_background_color(color);
             actor.set_style( "border-radius: 0px; background-gradient-direction: vertical; background-gradient-start: transparent; " +
                              "background-gradient-end: transparent; background: transparent;" );
@@ -1415,9 +1402,7 @@ class BlurTooltips extends BlurBase {
       let [opacity, blendColor, blurType, radius, saturation] = this._getSettings(settings.tooltipsOverride);
       this._updateEffects(blurType, radius, saturation);
       // Set the tooltip color
-      let [ret,color] = Clutter.Color.from_string( blendColor );
-      if (!ret) { [ret,color] = Clutter.Color.from_string( "rgba(0,0,0,0)" ); }
-      color.alpha = opacity*2.55;
+      let color = this._getColor( blendColor, opacity);
       actor.set_background_color(color);
       // Make the tooltip transparent and remove the rounded corners
       this._originalStyle = actor.get_style();
@@ -1426,10 +1411,13 @@ class BlurTooltips extends BlurBase {
                         "background-gradient-end: transparent;    background: transparent;"  );
       // Track the showing tooltip actor so we know which hide call to react to
       this._tooltipActor = actor;
+      // Clip the background subtracting the actors margins since in some cases not doing so makes the background too large
+      this._setClip(actor, actor);
+      this._background.show();
       // Adapt to any future tooltip size changes
-      this._signalManager.connect(actor, 'notify::size', () => { if (actor.visible) { this._setClip(actor); } } );
-      // Show the blur actor only after all the pending actions are complete so that we have the correct tooltip size
-      Mainloop.idle_add( () => { this._setClip(actor); this._background.show(); } );
+      this._signalManager.connect(actor, 'notify::size', () => {this._setClip(actor);} );
+      // When idle, make sure the clip is set right, sometimes it's wrong on the outset
+      Mainloop.idle_add( () => {this._setClip(actor);} );
    }
 
    _unblurTooltip(actor) {
