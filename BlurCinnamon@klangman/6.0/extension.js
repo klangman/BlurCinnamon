@@ -1537,6 +1537,10 @@ class BlurSettings {
 
       this.settings.bind('new-install', 'newInstall');
    }
+
+   destroy() {
+      this.settings.finalize();
+   }
 }
 
 function maximizedOptionChanged() {
@@ -1793,6 +1797,8 @@ function disable() {
       log( "Resetting the new-install value" );
       settings.settings.setValue( "new-install", 1 );
    }
+   settings.destroy();
+   settings = null;
 }
 
 const Callbacks = {
