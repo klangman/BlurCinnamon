@@ -932,7 +932,7 @@ class BlurPopupMenus extends BlurBase {
 
    _onOpenStateChanged(menu, open) {
       if (open) {
-         debugMsg( `Applying setting to new popup menu: ${menu}` )
+         debugMsg( `Applying setting to new popup menu: ${menu}` );
          let [opacity, blendColor, blurType, radius, saturation] = this._getSettings(settings.popupOverride);
 
          if (settings.allowTransparentColorPopup) {
@@ -1293,7 +1293,7 @@ class BlurNotifications extends BlurBase {
       if (this._activeNotificationData) {
          let actor = this._activeNotificationData.actor;
          let button = actor.get_child();
-         let table = button.get_child()
+         let table = button.get_child();
          let color = this._getColor( blendColor, opacity );
          table.set_background_color(color);
          actor.set_style( "border-radius: 0px; background-gradient-direction: vertical; background-gradient-start: transparent; " +
@@ -1316,7 +1316,7 @@ class BlurNotifications extends BlurBase {
       let opacity = (settings.notificationOverride) ? settings.notificationOpacity : settings.opacity;
 
       let button = actor.get_child();
-      let table = button.get_child()
+      let table = button.get_child();
       //log( `Bluring the notification bin actor: ${actor}` );
       //log( `   button ${actor.get_child()}` );
       //log( `   table  ${actor.get_child().get_child()}` );
@@ -1361,7 +1361,7 @@ class BlurNotifications extends BlurBase {
       if (this._activeNotificationData) {
          let actor = this._activeNotificationData.actor;
          let button = actor.get_child();
-         let table = button.get_child()
+         let table = button.get_child();
          table.set_background_color( this._activeNotificationData.original_table_color );
          actor.set_style( this._activeNotificationData.original_actor_style );
          button.set_style( this._activeNotificationData.original_button_style );
@@ -1704,6 +1704,7 @@ function enable() {
       Expo.Expo.prototype._oldAnimateVisible = originalAnimateExpo;
    }
 
+   // Monkey patch to enable 3D AppSwitcher effects
    if (settings.enableAppswitcherEffects) {
       AppSwitcher3D.AppSwitcher3D.prototype._init = this._initAppSwitcher3D;
       AppSwitcher3D.AppSwitcher3D.prototype._oldInit = originalInitAppSwitcher3D;
