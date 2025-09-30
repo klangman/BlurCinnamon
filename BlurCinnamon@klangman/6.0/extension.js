@@ -1776,6 +1776,9 @@ function disable() {
    if (settings.enableAppswitcherEffects) {
       delete AppSwitcher3D.AppSwitcher3D.prototype._oldInit;
       AppSwitcher3D.AppSwitcher3D.prototype._init = originalInitAppSwitcher3D;
+      delete AppSwitcher3D.AppSwitcher3D.prototype._oldHide;
+      AppSwitcher3D.AppSwitcher3D.prototype._hide = originalHideAppSwitcher3D;
+
    }
 
    if (blurPanels) {
