@@ -37,6 +37,7 @@ const UPowerGlib    = imports.gi.UPowerGlib;
 const MessageTray   = imports.ui.messageTray;
 const Util          = imports.misc.util;
 const Tooltips      = imports.ui.tooltips;
+const WindowMenu    = imports.ui.windowMenu;
 
 // For PopupMenu effects
 const Applet        = imports.ui.applet;
@@ -910,9 +911,21 @@ class BlurPopupMenus extends BlurBase {
 
    // Monkey patched over PupupMenu.open()
    _popupMenuOpen(animate) {
-      if (this instanceof Applet.AppletPopupMenu || this instanceof Applet.AppletContextMenu || this instanceof Panel.PanelContextMenu) {
+      if ( (settings.popupAppletMenuEffects && (this instanceof Applet.AppletPopupMenu || this instanceof Applet.AppletContextMenu)) ||
+           (settings.popupPanelMenuEffects && this instanceof Panel.PanelContextMenu) ||
+           (settings.popupTitleMenuEffects && this instanceof WindowMenu.WindowMenu) )
+      {
          debugMsg( "Attaching to a new popup menu, _popupMenuOpen()" );
          blurPopupMenusThis._blurPopupMenu(this);
+      } else {
+         // If we applied effects to this menu in the past, remove the effects now
+         let idx = blurPopupMenusThis._menus.indexOf(this);
+         if (idx !== -1) {
+            this.blurCinnamonSignalManager.disconnectAllSignals();
+            delete this.blurCinnamonSignalManager;
+            blurPopupMenusThis._restoreMenuStyle(this);
+            blurPopupMenusThis._menus.splice( idx, 1 );
+         }
       }
       blurPopupMenusThis.original_popupmenu_open.call(this, animate);
    }
@@ -1430,7 +1443,11 @@ class BlurTooltips extends BlurBase {
       // Adapt to any future tooltip size changes
       this._signalManager.connect(actor, 'notify::size', () => {this._setClip(actor);} );
       // When idle, make sure the clip is set right, sometimes it's wrong on the outset
-      Mainloop.idle_add( () => {this._setClip(actor);} );
+      Mainloop.idle_add( () => {
+         this._setClip(actor);
+         // Try one more time
+         Mainloop.idle_add( () => {this._setClip(actor);} );
+         });
    }
 
    _unblurTooltip(actor) {
@@ -1499,6 +1516,9 @@ class BlurSettings {
       this.settings.bind('popup-blendColor',     'popupBlendColor',    updatePopupEffects);
       this.settings.bind('popup-saturation',     'popupSaturation',    updatePopupEffects);
       this.settings.bind('allow-transparent-color-popup', 'allowTransparentColorPopup', updatePopupEffects);
+      this.settings.bind('popup-applet-menu-effects', 'popupAppletMenuEffects');
+      this.settings.bind('popup-panel-menu-effects',  'popupPanelMenuEffects');
+      this.settings.bind('popup-title-menu-effects',  'popupTitleMenuEffects');
 
       this.settings.bind('desktop-opacity',       'desktopOpacity',      updateDesktopEffects);
       this.settings.bind('desktop-blurType',      'desktopBlurType',     updateDesktopEffects);
@@ -1778,7 +1798,6 @@ function disable() {
       AppSwitcher3D.AppSwitcher3D.prototype._init = originalInitAppSwitcher3D;
       delete AppSwitcher3D.AppSwitcher3D.prototype._oldHide;
       AppSwitcher3D.AppSwitcher3D.prototype._hide = originalHideAppSwitcher3D;
-
    }
 
    if (blurPanels) {

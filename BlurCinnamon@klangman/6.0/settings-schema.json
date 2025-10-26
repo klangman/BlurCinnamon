@@ -99,7 +99,7 @@
       "popup-override" : {
          "type" : "section",
          "title" : "Panels settings",
-         "keys" : [ "popup-info", "enable-popup-override", "allow-transparent-color-popup"]
+         "keys" : [ "popup-info", "enable-popup-override", "popup-applet-menu-effects", "popup-panel-menu-effects", "popup-title-menu-effects", "allow-transparent-color-popup"]
       },
       "popup-effect-settings" : {
          "type" : "section",
@@ -549,6 +549,24 @@
         "dependency" : "!enable-panel-unique-settings"
     },
 
+
+    "popup-applet-menu-effects" : {
+        "type": "switch",
+        "description": "Apply effects to applet popup menus",
+        "default": true
+    },
+
+    "popup-panel-menu-effects" : {
+        "type": "switch",
+        "description": "Apply effects to panel context menus",
+        "default": true
+    },
+
+    "popup-title-menu-effects" : {
+        "type": "switch",
+        "description": "Apply effects to window title bar context menus",
+        "default": true
+    },
 
     "popup-opacity" : {
         "type": "scale",
