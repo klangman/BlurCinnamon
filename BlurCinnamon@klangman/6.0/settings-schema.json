@@ -190,7 +190,7 @@
     "enable-popup-effects" : {
         "type": "switch",
         "description": "Popup Menus  (Please read tooltip)",
-        "tooltip": "Apply effects to panel popup menus. This option is intended for the Cinnamon (6.4) and Mint-Y dark desktop themes but might work well with other themes. Light themes are unlikely to give good results but might be made to work with some creative use of the dimming color settings and an appropriate background image. It overrides some theme settings to achieve a (semi-)transparent menu so that the blurred background is visible. It also removes rounded corners so that the blurred background will not spill over the rounded edges.",
+        "tooltip": "Apply effects to panel popup menus. This option is intended for the Cinnamon (6.4) and Mint-Y dark desktop themes but might work well with other themes. Light themes are unlikely to give good results but might be made to work with some creative use of the dimming color settings and an appropriate background image. It overrides some theme settings to achieve a (semi-)transparent menu so that the blurred background is visible.",
         "default": false
     },
     "enable-desktop-effects" : {
@@ -202,7 +202,7 @@
     "enable-notification-effects" : {
         "type": "switch",
         "description": "Notification popups (Please read tooltip)",
-        "tooltip": "Apply effects to the notification popups. This option has been tested with the Cinnamon (6.4) and Mint-Y dark desktop themes but might work will with other themes. It overrides some theme settings to achieve a (semi-)transparent window so that the blurred background is visible. It also removes rounded corners so that the blurred background will not spill over the rounded edges.",
+        "tooltip": "Apply effects to the notification popups. This option has been tested with the Cinnamon (6.4) and Mint-Y dark desktop themes but might work will with other themes. It overrides some theme settings to achieve a (semi-)transparent window so that the blurred background is visible.",
         "default": false
     },
     "enable-appswitcher-effects" : {
@@ -214,7 +214,7 @@
     "enable-tooltips-effects" : {
         "type": "switch",
         "description": "Panel tooltips (Please read tooltip)",
-        "tooltip": "Apply effects to the panel tooltip backgrounds. It overrides some theme settings to achieve a (semi-)transparent tooltip so that the blurred background is visible. It also removes rounded corners so that the blurred background will not spill over the rounded edges.",
+        "tooltip": "Apply effects to the panel tooltip backgrounds. It overrides some theme settings to achieve a (semi-)transparent tooltip so that the blurred background is visible.",
         "default": false
     },
     "enable-window-effects" : {
@@ -232,7 +232,7 @@
         "min" : 0.0,
         "max" : 100,
         "step" : 0.5,
-        "tooltip": "Apply a background image based backlight effect to the currently focused window. The effect spills over the focused windows borders making the window appear to glow around the edges. If the focused window is transparent, this effect will show a blurred background image behind the window.",
+        "tooltip": "Apply a background image based backlight effect to the currently focused window. The effect spills over the focused windows borders making the window appear to glow around the edges. If the focused window is transparent, this effect will also show a blurred background image behind the window.",
         "default": 0
     },
 
@@ -291,7 +291,7 @@
     "allow-transparent-color-popup" : {
         "type": "switch",
         "description": "Override some of the popup menu theme settings (recommended)",
-        "tooltip": "Allow this extension to modify the popup Menu transparency, background color and rounded corner settings. If this is disabled the extension will only apply a blur overlay under the popup menus. This setting should only be disabled when the theme already uses transparent popup menus and you want the themes setting to apply.",
+        "tooltip": "Allow this extension to modify the popup Menu transparency and background color settings. If this is disabled the extension will only apply a blur overlay under the popup menus. This setting should only be disabled when the theme already uses transparent popup menus and you want the themes setting to apply.",
         "default": true
     },
 

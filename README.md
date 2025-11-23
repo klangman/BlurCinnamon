@@ -12,7 +12,7 @@ Cinnamon components you can effect (currently):
 6. Notifications
 7. Alt-Tab (Coverflow & Timeline) switchers
 8. Panel Tooltips
-9. WIndows
+9. Appication Windows
 
 ![screen shot](BlurCinnamon@klangman/screenshot.png)
 
@@ -42,8 +42,11 @@ Using any of the above with Blur Cinnamon may have some odd side effects that wo
 ## Limitations
 
 1. Currently, any windows that are moved such that they overlap with a panel will not be visible beneath the panel as you might expect with a transparent panel. This is because the blur effect is applied to a user interface element that floats above all windows just like the panel floats above the windows. At some point I hope to look into making the blur element appear below all windows rather than above.
-2. The panel applet popup menu effects works for all the applets that I have tested except "Cinnamenu", which uses a bit of an odd way to activate the popup menu when clicked, making it more difficult to intercept the menu open process so that I can change the menu's transparency setting.
-3. If you disable effects for the Overview, Expo or Panels under the General tab of the setting dialog while any "Override the generic effect settings" options are enabled under the other tabs, the components "effect setting" options under the other tabs will still be visible, but changing those setting will have no effect until you re-enable the component under the General tab. Ideally those effect setting would only be visible when the component is enabled under the general tab but Cinnamon setting support is a bit limited in this way.
+2. The Applet popup-menu effects works for all the applets that I have tested except "Cinnamenu". Cinnamenu is preventing other code from receiving the "open-state-changed" event which BlurCinnamon uses to know when to apply popup-menu theme setting and when to resize and show the blur background element. This issue is fixed in the latest Cinnamenu from [Fredcw GitHub](https://github.com/fredcw/Cinnamenu) but you will need to manually fix the current Cinnamon Spices version of Cinnamenu (see [here](https://github.com/linuxmint/cinnamon-spices-extensions/issues/873))
+3. If you disable effects for a compoenent under the General tab of the setting dialog while the "Override the generic effect settings" option is enabled under the component tab, the components "effect setting" options under the component tab will still be visible, but changing those setting will have no effect until you re-enable the component under the General tab. Ideally those effect setting would only be visible when the component is enabled under the general tab but Cinnamon setting support is a bit limited in this way.
+4. When using "Application Window" effects or the "Focused window backlight effect", the Blur Cinnamon effect actor size does not immediatly follow the windows size. This casues a split second where the Blur Cinnamon effect actor is parly visible outside the window bounds when tiling, maximizing, unmaximizing or expanding the window size. Hopfully I can find a better way of tracking the window size in the future.
+5. If the "Compiz Windows Effect" extension is used with "Application window" effects applied to some window, the Blur Cinnamon actor will "wobble" along with the rest of the window elements. This means the windows blurred background will not match the background image while the "Compiz Windows Effect" animation is in action.
+6. This extension currently does not work under Wayland, it only works under X11. The extension automatically detects wayland and disables most of the features of the extension.
 
 ## Installation
 
