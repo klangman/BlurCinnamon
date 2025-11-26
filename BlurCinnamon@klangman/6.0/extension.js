@@ -1604,7 +1604,10 @@ class BlurApplications extends BlurBase {
       let compositor = metaWindow.get_compositor_private();
 
       // Get the effect setting that should apply to Application windows
-      let [enabled, opacity, blendColor, blurType, radius, saturation, corner_radius, top, bottom] = this._getSettings(metaWindow);
+      let [enabled, window_opacity, opacity, blendColor, blurType, radius, saturation, corner_radius, top, bottom] = this._getSettings(metaWindow);
+
+      // Setup the window opacity
+      metaWindow.set_opacity(window_opacity*2.55);
 
       // Create the effect and add it to the window
       let background, blur, desat;
@@ -1649,11 +1652,11 @@ class BlurApplications extends BlurBase {
       let element = settings.windowInclusionList.find( (element) => {if (element.application == appId || element.application == wmclass) {return true;}} );
       if (element) {
          if (element.override) {
-            return [element.enabled, element.opacity, element.color, element.blurtype, element.radius, element.saturation, element.corner_radius, element.corner_top, element.corner_bottom];
+            return [element.enabled, element.window_opacity, element.opacity, element.color, element.blurtype, element.radius, element.saturation, element.corner_radius, element.corner_top, element.corner_bottom];
          }
-         return [element.enabled, ...super._getSettings(false), element.corner_radius, element.corner_top, element.corner_bottom ];
+         return [element.enabled, element.window_opacity, ...super._getSettings(false), element.corner_radius, element.corner_top, element.corner_bottom ];
       }
-      return [false, 0, undefined, BlurType.None, 0, 100, 0, false, false]
+      return [false, 100, 0, undefined, BlurType.None, 0, 100, 0, false, false]
    }
 
    _setClip(compositor) {
@@ -1671,10 +1674,11 @@ class BlurApplications extends BlurBase {
          data.background.set_position( x-rx, y-ry );
 
          let cornerEffect = this._getCornerEffect(data.background);
-         if (cornerEffect)
-            cornerEffect.clip = [rect.x+2, rect.y+2, rect.width-3, rect.height-3];
-         else
+         if (cornerEffect) {
+            cornerEffect.clip = [rect.x+2, rect.y+2, rect.width-2, rect.height-2];
+         } else {
             data.background.set_clip( rect.x, rect.y, rect.width, rect.height );
+         }
       }
    }
 
@@ -1704,7 +1708,7 @@ class BlurApplications extends BlurBase {
       for (let i = 0; i < windows.length; i++) {
          let compositor = windows[i].get_compositor_private();
          let data = compositor._blurCinnamonDataWindow;
-         let [enabled, opacity, blendColor, blurType, radius, saturation, corner_radius, top, bottom] = this._getSettings(windows[i]);
+         let [enabled, window_opacity, opacity, blendColor, blurType, radius, saturation, corner_radius, top, bottom] = this._getSettings(windows[i]);
          if (compositor._blurCinnamonDataWindow) {
             if (!enabled) {
                this._unblurWindow(compositor);
@@ -1716,6 +1720,7 @@ class BlurApplications extends BlurBase {
                   cornerEffect.corners_top = top;
                   cornerEffect.corners_bottom = bottom;
                }
+               windows[i].set_opacity(window_opacity*2.55);
             }
          } else if (enabled) {
             this._blurWindow(windows[i]);
@@ -1778,7 +1783,7 @@ class BlurApplications extends BlurBase {
 class BlurFocusEffect extends BlurBase {
    constructor() {
       super();
-      // BlurApplication global listeners
+      // global listeners
       this._signalManager = new SignalManager.SignalManager(null);
       this._signalManager.connect(global.display, "notify::focus-window", this._onFocusChanged, this);
 
@@ -2226,7 +2231,7 @@ function enable() {
       notification.setUrgency( MessageTray.Urgency.CRITICAL );
       source.notify(notification);
    }
-   return Callbacks
+   return Callbacks;
 }
 
 function disable() {

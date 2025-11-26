@@ -951,6 +951,7 @@
         "columns" : [
             {"id": "enabled",       "title": "Enabled",      "type": "boolean", "default": true},
             {"id": "application",   "title": "Application",  "type": "string",  "default": ""},
+            {"id": "window_opacity","title": "Opacity",      "type": "integer", "default": 100,  "min": 10, "max": 100},
             {"id": "override",      "title": "Custom",       "type": "boolean", "default": true},
             {"id": "opacity",       "title": "Dim",          "type": "integer", "default": 0,  "min": 0, "max": 100},
             {"id": "color",         "title": "Color",        "type": "string",  "default": "rgb(0,0,0)"},
