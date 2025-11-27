@@ -1607,6 +1607,8 @@ class BlurApplications extends BlurBase {
       let [enabled, window_opacity, opacity, blendColor, blurType, radius, saturation, corner_radius, top, bottom] = this._getSettings(metaWindow);
 
       // Setup the window opacity
+      if (!window_opacity || window_opacity < 10 || window_opacity > 100 )
+         window_opacity = 100;
       metaWindow.set_opacity(window_opacity*2.55);
 
       // Create the effect and add it to the window
@@ -1621,7 +1623,8 @@ class BlurApplications extends BlurBase {
       //signalManager.connect(compositor, "destroy", () => this._unblurWindow(compositor) );
       //signalManager.connect(metaWindow, "notify::maximized-horizontally", () => this._maximized(metaWindow) );
       //signalManager.connect(metaWindow, "notify::maximized-vertically ",  () => this._maximized(metaWindow) );
-      signalManager.connect(metaWindow, "unmanaging", () => this._unblurWindow(compositor) );
+      //signalManager.connect(metaWindow, "unmanaged"/*"unmanaging"*/, () => this._unblurWindow(compositor) );
+      signalManager.connect(compositor, "destroy", () => this._unblurWindow(compositor) );
       signalManager.connect(compositor, "notify::allocation", () => this._setClip(compositor) );
       //signalManager.connect(metaWindow, "notify::maximized-horizontally", () => this._setClip(compositor) );
       //signalManager.connect(metaWindow, "notify::maximized-vertically", () => this._setClip(compositor) );
@@ -1675,7 +1678,7 @@ class BlurApplications extends BlurBase {
 
          let cornerEffect = this._getCornerEffect(data.background);
          if (cornerEffect) {
-            cornerEffect.clip = [rect.x+2, rect.y+2, rect.width-2, rect.height-2];
+            cornerEffect.clip = [rect.x+2, rect.y+2, rect.width-3, rect.height-3];
          } else {
             data.background.set_clip( rect.x, rect.y, rect.width, rect.height );
          }
@@ -1684,7 +1687,6 @@ class BlurApplications extends BlurBase {
 
    _unblurWindow(compositor) {
       if (compositor._blurCinnamonDataWindow) {
-         log( "_unblurWindow" );
          let data = compositor._blurCinnamonDataWindow;
          data.signalManager.disconnectAllSignals();
          compositor.remove_child(data.background);
@@ -1720,6 +1722,8 @@ class BlurApplications extends BlurBase {
                   cornerEffect.corners_top = top;
                   cornerEffect.corners_bottom = bottom;
                }
+               if (!window_opacity || window_opacity < 10 || window_opacity > 100 )
+                  window_opacity = 100;
                windows[i].set_opacity(window_opacity*2.55);
             }
          } else if (enabled) {
