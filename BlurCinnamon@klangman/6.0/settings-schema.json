@@ -164,7 +164,7 @@
       "windows-effect-settings" : {
          "type" : "section",
          "title" : "Application window background effects settings",
-         "keys" : ["windows-info", "windows-inclusion-list", "windows-add-button"]
+         "keys" : ["windows-info", "windows-inclusion-list", "windows-add-button", "compiz-mitigation"]
       }
 
    },
@@ -220,7 +220,7 @@
     "enable-window-effects" : {
         "type": "switch",
         "description": "Application windows (Please read tooltip)",
-        "tooltip": "Apply effects to application window backgrounds by adding an effect actor below all existing graphical elements of affected windows. This means effects will NOT be visible unless the application is setup to be transparent. An inclusion list on the \"Windows\" tab is used to determine which (if any) applications will have effects applied to its windows.",
+        "tooltip": "Apply effects to application window backgrounds by adding an effect actor below all existing graphical elements of affected windows. This means the effects will NOT be visible unless the application is setup to be transparent or the \"Opacity\" setting for the window is less than 100%. The application inclusion list on the \"Windows\" tab is used to determine which (if any) applications will have effects applied to its windows.",
         "default": false
     },
 
@@ -895,55 +895,6 @@
         "default": 100
     },
 
-    "windows-opacity" : {
-        "type": "scale",
-        "description": "Dim/Colorize Background (percentage)",
-        "min": 0,
-        "max": 100,
-        "default": 40,
-        "step": 1
-    },
-
-    "windows-blendColor": {
-        "type": "colorchooser",
-        "description" : "Dimming overlay color",
-        "default": "rgb(0,0,0)",
-        "tooltip": "Defines the color that is blended into the background based on the dimming control above. Use black for a normal dimming effect or some other color for a color blend effect"
-    },
-
-    "windows-blurType": {
-        "type": "combobox",
-        "default": 2,
-        "options": {
-            "None": 0,
-            "Simple": 1,
-            "Gaussian": 2
-        },
-        "description": "Type of blur effect",
-        "tooltip": "What type of blur algorithm should be used to blur the background"
-    },
-
-    "windows-radius": {
-        "type": "scale",
-        "description" : "Gaussian blur intensity",
-        "min" : 0.0,
-        "max" : 100,
-        "step" : 0.1,
-        "tooltip": "Adjusts the intensity of the blur effect by changing the radius use by the effect.",
-        "default": 9,
-        "dependency" : "windows-blurType=2"
-    },
-
-    "windows-saturation": {
-        "type": "scale",
-        "description" : "Background color saturation",
-        "min" : 0.0,
-        "max" : 100,
-        "step" : 0.1,
-        "tooltip": "Adjusts the color saturation of the background image.",
-        "default": 100
-    },
-
     "windows-inclusion-list" : {
         "type" : "list",
         "height" : 450,
@@ -977,6 +928,13 @@
       "description" : "Add entry for the application of the most recently focused window",
       "callback" : "on_window_add_button_pressed",
       "tooltip" : "Focus a window you want to enable window effects on then return here and press this button."
+    },
+
+    "compiz-mitigation": {
+        "type": "switch",
+        "default": true,
+        "description": "Disable \"Compiz\" effects for windows with Blur Cinnamon effects",
+        "tooltip": "When enabled, the window moving effect created by the \"Compiz windows effect\" extension will be disabled for windows with Blur Cinnamon effects applied. This option will have no effect unless the \"Compiz window effect\" extension is installed and active."
     },
 
     "new-install": {

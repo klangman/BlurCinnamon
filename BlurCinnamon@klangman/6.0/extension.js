@@ -231,7 +231,6 @@ function _sizeChangeWindowDoneWindowManager(cinnamonwm, actor) {
    originalSizeChangeWindowDone.apply(this, [cinnamonwm, actor]);
 }
 
-
 // This is an implementation of Panel._panelHasOpenMenus() that will be used in pre-Cinnamon 6.4 versions
 function panelHasOpenMenus() {
    return global.menuStackLength > 0;
@@ -269,6 +268,7 @@ class BlurBase {
       let blurEffect;
       let desatEffect;
       let cornerEffect;
+      //let dimmerCornerEffect;
       let background;
 
       // Create the effects
@@ -291,7 +291,13 @@ class BlurBase {
       // Add a dimmer child to the background so we can change the colorization and dimming of the background
       let dimmerColor = this._getColor( blendColor, opacity );
       let dimmer = new Clutter.Actor({x_expand: true, y_expand: true, width: background.width, height: background.height, background_color: dimmerColor});
+      //if (cornerRadius>0) {
+      //   dimmerCornerEffect = new CornerEffect.CornerEffect( metaData.uuid, {radius: cornerRadius, corners_top: top, corners_bottom: bottom} );
+      //   dimmer.add_effect_with_name( CORNER_EFFECT_NAME, dimmerCornerEffect );
+      //}
       background.add_child(dimmer);
+      // If the screen resolution changes we need to change the dimmer actor size to match
+      background.connect("notify::size", () => {dimmer.set_width(background.width); dimmer.set_height(background.height);} );
       background._blurCinnamonDimmer = dimmer;
 
       // Attach the effects. The cornerEffect needs to be first or else the blur effect will spill over the corner effect clip bounds.
@@ -357,6 +363,15 @@ class BlurBase {
       // Setup the colorization/dimming
       let dimmerColor = this._getColor( blendColor, opacity );
       background._blurCinnamonDimmer.set_background_color(dimmerColor);
+   }
+
+   _updateCornerRadius(background, radius) {
+      let ce = background.get_effect(CORNER_EFFECT_NAME);
+      if (ce)
+         ce.radius = radius;
+      //ce = background._blurCinnamonDimmer.get_effect(CORNER_EFFECT_NAME);
+      //if (ce)
+      //   ce.radius = radius;
    }
 
    _setClip(actor, marginsActor=null) {
@@ -992,7 +1007,7 @@ class BlurPopupMenus extends BlurBase {
          if (settings.allowTransparentColorPopup) {
             // Has some Blur Cinnamon settings changed since we last opened this menu?
             if (menu._blurCinnamonChangeCount != this._changeCount) {
-               debugMsg( `Applying new settings to menu to color: ${this._boxColor.to_string()}` );
+               debugMsg( "Applying new settings to menu" );
                this._reapplyMenuStyle(menu, this._boxColor);
             }
             menu._blurCinnamonChangeCount = this._changeCount;
@@ -1003,7 +1018,7 @@ class BlurPopupMenus extends BlurBase {
             // Adjust the menu transparency and color for the menu box if required
             if (!menu.box._blurCinnamonData) {
                let radius = this._applyActorStyle(menu.box, this._boxColor);
-               this._cornerEffect.radius = radius-5;
+               this._updateCornerRadius( this._background, radius-5 );
             }
 
             // The menu's rounded corners could be applied to the box or the menus actor, so we have to check both
@@ -1012,7 +1027,7 @@ class BlurPopupMenus extends BlurBase {
                // We are assuming that all corners have the same radius, hope that is true.
                let radius = themeNode.get_border_radius(St.Corner.TOPLEFT);
                if (radius != 0) {
-                  this._cornerEffect.radius = radius-5;
+                  this._updateCornerRadius( this._background, radius-5 );
                }
             }
 
@@ -1133,7 +1148,7 @@ class BlurPopupMenus extends BlurBase {
    }
 
    // Look for Popup menu accent actors
-   _findAccentActors(menu, actor /*,indent=""*/) {
+   _findAccentActors(menu, actor) {
       let children = actor.get_children();
       for (let i=0 ; i < children.length ; i++ ) {
          let child = children[i];
@@ -1157,7 +1172,7 @@ class BlurPopupMenus extends BlurBase {
                child._blurCinnamonData = null; // Used to signal that this actor is not an interesting one for future calls to this function
             }
          }
-         this._findAccentActors(menu, child /*,indent+"  "*/);
+         this._findAccentActors(menu, child);
       }
    }
 
@@ -1381,9 +1396,7 @@ class BlurNotifications extends BlurBase {
          if (themeNode) {
             // We are assuming that all corners have the same radius, hope that is true.
             let radius = themeNode.get_border_radius(St.Corner.TOPLEFT);
-            let cornerEffect = this._getCornerEffect(this._background);
-            if (cornerEffect)
-               cornerEffect.radius = radius;
+            this._updateCornerRadius(this._background, radius);
          }
 
          actor.set_style( /*"border-radius: 0px;*/ "background-gradient-direction: vertical; background-gradient-start: transparent; " +
@@ -1425,9 +1438,7 @@ class BlurNotifications extends BlurBase {
             if (themeNode) {
                // We are assuming that all corners have the same radius, hope that is true.
                let radius = themeNode.get_border_radius(St.Corner.TOPLEFT);
-               let cornerEffect = this._getCornerEffect(this._background);
-               if (cornerEffect)
-                  cornerEffect.radius = radius;
+               this._updateCornerRadius(this._background, radius);
             }
 
             actor.set_style( /*"border-radius: 0px;*/ "background-gradient-direction: vertical; background-gradient-start: transparent; " +
@@ -1505,9 +1516,7 @@ class BlurTooltips extends BlurBase {
       if (themeNode) {
          // We are assuming that all corners have the same radius, hope that is true.
          let radius = themeNode.get_border_radius(St.Corner.TOPLEFT);
-         let cornerEffect = this._getCornerEffect(this._background);
-         if (cornerEffect)
-            cornerEffect.radius = radius;
+         this._updateCornerRadius(this._background, radius);
       }
 
       actor.set_style(  "background-gradient-direction: vertical; background-gradient-start: transparent; " +
@@ -1568,6 +1577,7 @@ class BlurApplications extends BlurBase {
       this._signalManager = new SignalManager.SignalManager(null);
       this._signalManager.connect(global.screen, "window-added", this._windowAdded, this);
       this._signalManager.connect(global.display, "notify::focus-window", this._onFocusChanged, this);
+      this._signalManager.connect(global.display, "grab-op-begin", this._onWindowGrabbed, this);
 
       // WindowTracker so we can map windows to application
       this._windowTracker = Cinnamon.WindowTracker.get_default();
@@ -1581,7 +1591,31 @@ class BlurApplications extends BlurBase {
       }
    }
 
-   _windowAdded(workspace, metaWindow){
+   _onWindowGrabbed(display, screen, window, op) {
+      if (op !== Meta.GrabOp.MOVING) {
+         return;
+      }
+      let compositor = (window) ? window.get_compositor_private() : null;
+      if (compositor && compositor._blurCinnamonDataWindow) {
+         let compizMitigation = settings.settings.getValue("compiz-mitigation");
+         if (compizMitigation) {
+            let effect = compositor.get_effect('wobbly-compiz-effect');
+            if (effect) {
+               effect.on_end_event(compositor);
+            } else {
+               // Give the "Compiz windows effect" time to attach the effect, then we disable the effect if the Compiz effect is active.
+               Mainloop.idle_add( () => {
+                  let effect = compositor.get_effect('wobbly-compiz-effect');
+                  if (effect) {
+                     effect.on_end_event(compositor);
+                  }
+               });
+            }
+         }
+      }
+   }
+
+   _windowAdded(workspace, metaWindow) {
       if (this._windowShouldBeBlurred(metaWindow)) {
          this._blurWindow(metaWindow);
       }
@@ -1620,7 +1654,6 @@ class BlurApplications extends BlurBase {
       compositor._blurCinnamonDataWindow = { effectThis: this, background: background, metaWindow: metaWindow, signalManager: signalManager };
 
       // Add listeners for this window's compositor
-      //signalManager.connect(compositor, "destroy", () => this._unblurWindow(compositor) );
       //signalManager.connect(metaWindow, "notify::maximized-horizontally", () => this._maximized(metaWindow) );
       //signalManager.connect(metaWindow, "notify::maximized-vertically ",  () => this._maximized(metaWindow) );
       //signalManager.connect(metaWindow, "unmanaged"/*"unmanaging"*/, () => this._unblurWindow(compositor) );
@@ -1718,10 +1751,10 @@ class BlurApplications extends BlurBase {
                this._updateEffects(data.background, opacity, blendColor, blurType, radius, saturation);
                let cornerEffect = this._getCornerEffect(data.background);
                if (cornerEffect) {
-                  cornerEffect.radius = corner_radius;
                   cornerEffect.corners_top = top;
                   cornerEffect.corners_bottom = bottom;
                }
+               this._updateCornerRadius(data.background, corner_radius);
                if (!window_opacity || window_opacity < 10 || window_opacity > 100 )
                   window_opacity = 100;
                windows[i].set_opacity(window_opacity*2.55);
@@ -1790,6 +1823,9 @@ class BlurFocusEffect extends BlurBase {
       // global listeners
       this._signalManager = new SignalManager.SignalManager(null);
       this._signalManager.connect(global.display, "notify::focus-window", this._onFocusChanged, this);
+      this._signalManager.connect(global.display, "grab-op-begin", this._onWindowGrabbed, this);
+      this._signalManager.connect(global.display, "grab-op-end", this._onFocusChanged ,this);
+
 
       if (!Meta.is_wayland_compositor()) {
          this._background = Meta.X11BackgroundActor.new_for_display(global.display);
@@ -1806,6 +1842,16 @@ class BlurFocusEffect extends BlurBase {
       this._background.add_effect_with_name( CORNER_EFFECT_NAME, this._cornerEffect );
       this._background.hide();
       this._onFocusChanged();
+   }
+
+   _onWindowGrabbed() {
+      // Give the "Compiz windows effect" time to attach the effect, then we remove the backlight effect if the Compiz effect is active.
+      // The Compiz effect clips the backlight effect to the compositor actor bounds making for a bad visual result
+      Mainloop.idle_add( () => {
+         if (this._focusedCompositor && this._focusedCompositor.get_effect('wobbly-compiz-effect')) {
+            this._removeEffect();
+         }
+      });
    }
 
    _onFocusChanged() {
