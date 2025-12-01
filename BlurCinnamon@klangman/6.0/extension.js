@@ -994,7 +994,11 @@ class BlurPopupMenus extends BlurBase {
                this._background.set_clip( actor.x+bm.left, actor.y+bm.top, actor.width-(bm.left+bm.right), actor.height-(bm.top+bm.bottom) );
             }
          } else {
-            this._background.set_clip( 0, 0, 0, 0 );
+            if (this._cornerEffect) {
+               this._cornerEffect.clip = [ 0,0,0,0 ];
+            } else {
+               this._background.set_clip( 0, 0, 0, 0 );
+            }
          }
       }
    }
@@ -1039,7 +1043,11 @@ class BlurPopupMenus extends BlurBase {
          this._currentMenu = menu;
          if (menu.animating) {
             // Make the background visible but zero size initially, let the paint signal re-clip the background as needed
-            this._background.set_clip( 0, 0, 0, 0 );
+            if (this._cornerEffect) {
+               this._cornerEffect.clip = [ 0,0,0,0 ];
+            } else {
+               this._background.set_clip( 0, 0, 0, 0 );
+            }
          } else {
             let actor = menu.actor;
             let margin = actor.get_margin();
@@ -1182,8 +1190,9 @@ class BlurPopupMenus extends BlurBase {
          menu.blurCinnamonSignalManager.connect(menu, "open-state-changed", Lang.bind(this, this._onOpenStateChanged) );
          menu.blurCinnamonSignalManager.connect(menu, "menu-animated-closed", Lang.bind(this, this._onClosed) );
          menu.blurCinnamonSignalManager.connect(menu, "destroy", () => {this._onDestroyed(menu)} );
-         menu.blurCinnamonSignalManager.connect(menu.actor, 'notify::size', () => {this._setClip(menu);} );
-         menu.blurCinnamonSignalManager.connect(menu.actor, 'notify::position', () => {this._setClip(menu);} );
+         //menu.blurCinnamonSignalManager.connect(menu.actor, 'notify::size', () => {this._setClip(menu);} );
+         //menu.blurCinnamonSignalManager.connect(menu.actor, 'notify::position', () => {this._setClip(menu);} );
+         menu.blurCinnamonSignalManager.connect(menu.actor, "notify::allocation", () => this._setClip(menu) );
          this._menus.push(menu);
       }
       debugMsg( "attach complete" );
@@ -1733,6 +1742,7 @@ class BlurApplications extends BlurBase {
          if (cornerEffect)
             data.background.remove_effect(cornerEffect);
          data.background.destroy();
+         data.metaWindow.set_opacity(255);
          compositor._blurCinnamonDataWindow = undefined;
       }
    }
