@@ -650,10 +650,17 @@ class BlurPanels extends BlurBase {
    _setClip(panel){
       if (panel && panel.__blurredPanel && panel.__blurredPanel.background) {
          let actor = panel.actor;
+         let cornerEffect = this._getCornerEffect(panel.__blurredPanel.background);
          if (actor.is_visible()) {
-            panel.__blurredPanel.background.set_clip( actor.x, actor.y, actor.width, actor.height );
+            if (cornerEffect)
+               cornerEffect.clip = [actor.x+2, actor.y+2, actor.width-3, actor.height-3];
+            else
+               panel.__blurredPanel.background.set_clip( actor.x, actor.y, actor.width, actor.height );
          } else {
-            panel.__blurredPanel.background.set_clip( 0, 0, 0, 0 );
+            if (cornerEffect)
+               cornerEffect.clip = [0, 0, 0, 0];
+            else
+               panel.__blurredPanel.background.set_clip( 0, 0, 0, 0 );
          }
          if (panel._hidden || panel._disabled || global.display.get_monitor_in_fullscreen(panel.monitorIndex)) {
             panel.__blurredPanel.background.hide();
@@ -679,6 +686,9 @@ class BlurPanels extends BlurBase {
 
    // Create a new blur effect for the panel argument.
    _blurPanel(panel) {
+      let topRadius = 0;
+      let bottomRadius = 0;
+      let cornerRadius = 0;
       let panelSettings = this._getPanelSettings(panel);
       if (!panelSettings ) return;
       let [opacity, blendColor, blurType, radius, saturation] = panelSettings;
@@ -704,13 +714,27 @@ class BlurPanels extends BlurBase {
                           "background-gradient-direction: vertical; background-gradient-start: transparent; " +
                           "background-gradient-end: transparent;    background: transparent;" );
       }
+
+      // Determine the corner radius
+      let themeNode = actor.get_theme_node();
+      if (themeNode) {
+         // TODO: Need to be able to independently round all four corners, needs improvements to the corner effect code!
+         topRadius = themeNode.get_border_radius(St.Corner.TOPLEFT);
+         bottomRadius = themeNode.get_border_radius(St.Corner.BOTTOMLEFT);
+         cornerRadius = Math.max(topRadius, bottomRadius);
+      }
+
       // If blurring is required, create a background, create effect, clip background to cover the panel only
       // With this commented out, a panel with no effects applied (just made transparent) will still prevent
       // windows beneath the panels from being visible.
       //if (blurType > BlurType.None || saturation<100) {
-         let background = this._createBackgroundAndEffects(opacity, blendColor, blurType, radius, saturation);
+         let background = this._createBackgroundAndEffects(opacity, blendColor, blurType, radius, saturation, global.overlay_group, cornerRadius, topRadius!==0, bottomRadius!==0);
          blurredPanel.background = background;
-         background.set_clip( panel.actor.x, panel.actor.y, panel.actor.width, panel.actor.height );
+         let cornerEffect = this._getCornerEffect(background);
+         if (cornerEffect)
+            cornerEffect.clip = [panel.actor.x+2, panel.actor.y+2, panel.actor.width-3, panel.actor.height-3];
+         else
+            background.set_clip( panel.actor.x, panel.actor.y, panel.actor.width, panel.actor.height );
          if (!panel._hidden && !global.display.get_monitor_in_fullscreen(panel.monitorIndex)) {
             background.show();
          }
