@@ -70,7 +70,10 @@ def customRevealerKeyChanged(self, key, value):
          evaluate.append( element )
       elif element in OPERATIONS:  # ... x op y ...
          lhs = get_value(self.settings, self.expression[idx-1])
-         rhs = get_value(self.settings, self.expression[idx+1])
+         if idx+1 < count:
+            rhs = get_value(self.settings, self.expression[idx+1])
+         else: # If the operator is the last element in the expression, then we are comparing the lhs with False
+            rhs = False
          #print( f"operation: {self.expression[idx-1]}/{lhs} {OPERATIONS_MAP[element]} {self.expression[idx+1]}/{rhs}" )
          evaluate.append( OPERATIONS_MAP[element](lhs, rhs) )
       elif element[0] == '!':      # ... !key ...

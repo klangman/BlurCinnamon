@@ -947,7 +947,11 @@ class BlurPanels extends BlurBase {
                      continue;
                   }
                }
-               return [uniqueSetting.opacity, uniqueSetting.color, uniqueSetting.blurtype, uniqueSetting.radius, uniqueSetting.saturation];
+               if (uniqueSetting.override) {
+                  return [uniqueSetting.opacity, uniqueSetting.color, uniqueSetting.blurtype, uniqueSetting.radius, uniqueSetting.saturation];
+               } else {
+                  return this._getGenericSettings();
+               }
             }
          }
          return null;
@@ -2067,13 +2071,10 @@ class BlurDesklets extends BlurBase {
       let found = deskletList.find((element) => element.instance == instance );
       // It should always be found!! We add entries for new Desklet elsewhere
       if (found) {
-         let enabled = found.enabled;
-         let deskletEffectsList = settings.deskletEffectsList;
-         found = deskletEffectsList.find((element) => element.instance == instance);
-         if (found) {
-            return [enabled, found.opacity, found.color, found.blurtype, found.radius, found.saturation];
+         if (found.override) {
+            return [found.enabled, found.opacity, found.color, found.blurtype, found.radius, found.saturation];
          } else {
-            return [enabled, ...this._getGenericSettings()];
+            return [found.enabled, ...this._getGenericSettings()];
          }
       } else {
          log( `Blur Cinnamon error: Unable to locate Desklet list entry for ${uuid} / ${instance}` );
@@ -2242,8 +2243,8 @@ class BlurSettings {
       this.bind('desklets-blendColor', 'deskletsBlendColor', updateDeskletEffects);
       this.bind('desklets-saturation', 'deskletsSaturation', updateDeskletEffects);
 
-      //this.bind('desklets-list',    'deskletList',        updateDeskletEffects);
-      this.bind('desklets-effects', 'deskletEffectsList', updateDeskletEffects);
+      this.bind('desklets-list',    'deskletList',        updateDeskletEffects);
+      //this.bind('desklets-effects', 'deskletEffectsList', updateDeskletEffects);
       this.bind('desklets-auto',    'autoDeskletAdd',     updateDeskletEffects);
       this.bind('enable-desklets-unique-settings', 'enableDeskletsUniqueSettings');
 

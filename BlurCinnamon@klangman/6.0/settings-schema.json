@@ -26,7 +26,7 @@
 
       "general-settings" : {
          "type" : "section",
-         "title" : "Desktop elements where effects will be applied",
+         "title" : "Cinnamon desktop components where effects will be applied",
          "keys" : ["enable-appswitcher-effects", "enable-desklet-effects", "enable-desktop-effects", "enable-expo-effects", "enable-popup-effects", "enable-notification-effects", "enable-overview-effects", "enable-panels-effects", "enable-tooltips-effects", "enable-window-effects", "focused-window-backlight"]
       },
 
@@ -54,7 +54,7 @@
                     "appswitcher-warning", "enable-appswitcher-override", "appswitcher-info", "window-settings-button", "appswitcher-opacity", "appswitcher-blendColor", "appswitcher-blurType", "appswitcher-radius", "appswitcher-saturation",
                     "tooltips-warning", "enable-tooltips-override", "tooltips-opacity", "tooltips-blendColor", "tooltips-blurType", "tooltips-radius", "tooltips-saturation",
                     "windows-warning", "windows-inclusion-list", "windows-add-button", "windows-compiz-mitigation",
-                    "desklets-warning", "enable-desklets-override", "enable-desklets-unique-settings", "desklets-opacity", "desklets-blendColor", "desklets-blurType", "desklets-radius", "desklets-saturation", "desklets-auto", "desklets-list", "desklets-effects",
+                    "desklets-warning", "enable-desklets-override", "enable-desklets-unique-settings", "desklets-opacity", "desklets-blendColor", "desklets-blurType", "desklets-radius", "desklets-saturation", "desklets-list", "desklets-auto",
                     "info-label"
                   ]
       },
@@ -294,7 +294,7 @@
     "enable-desklets-unique-settings" : {
         "type": "switch",
         "description": "Enable advanced options to apply unique settings for each Desklet",
-        "tooltip": "With this option enabled you can have each Desklet use different settings or disable effects completely for some Desklets.",
+        "tooltip": "With this option enabled each Desklet can use different settings or you can disable effects completely for some Desklets.",
         "dependency" : "enable-desklet-effects & component-selector=1 & enable-desklets-override",
         "default": false
     },
@@ -308,7 +308,8 @@
 
     "enable-panel-unique-settings" : {
         "type": "switch",
-        "description": "Use unique effect settings for each panel",
+        "description": "Enable advanced options to apply unique settings for each panel",
+        "tooltip": "With this option enabled each panel can use different settings or you can disable effects completely for some panels.",
         "dependency" : "enable-panels-effects & component-selector=7 & enable-panels-override",
         "default": false
     },
@@ -321,13 +322,14 @@
             {"id": "enabled",   "title": "Enabled",   "type": "boolean", "default": true},
             {"id": "panels",    "title": "Panel",     "type": "integer", "default": 0, "options": { "All" : 0, "Top" : 1, "Bottom" : 2, "Left" : 3, "Right" : 4 } },
             {"id": "monitors",  "title": "Monitor",   "type": "integer", "default": 0, "options": { "All" : 100, "1" : 0, "2" : 1, "3" : 2, "4" : 3 } },
-            {"id": "opacity",   "title": "Dimming",   "type": "integer", "default": 40,  "min": 0, "max": 100},
+            {"id": "override",  "title": "Custom",    "type": "boolean", "default": true},
+            {"id": "opacity",   "title": "Dim",       "type": "integer", "default": 40,  "min": 0, "max": 100},
             {"id": "color",     "title": "Color",     "type": "string",  "default": "rgb(0,0,0)"},
             {"id": "blurtype",  "title": "Blur",      "type": "integer", "default": 2, "options": { "None": 0, "Simple": 1, "Gaussian": 2 } },
             {"id": "radius",    "title": "Intensity", "type": "integer", "default": 10,  "min": 0, "max": 100},
             {"id": "saturation","title": "Saturation","type": "integer", "default": 100, "min": 0, "max": 100}
         ],
-        "tooltip": "Defines the effects applied to different panels. If a panel does not meet the criteria of any enabled entry in this list, it will have no effects applied. The settings of the first entry in this list that can apply to a given panel will take effect. The color field is in the rgb(#,#,#) syntax and black will be used when a color is not provided or is in an incorrect syntax",
+        "tooltip": "Defines the effects applied to different panels. If a panel does not meet the criteria of any enabled entry in this list, it will have no effects applied. The settings of the first entry in this list that can apply to a given panel will take effect. The \"Custom\" check box determines if the generic effect settings are uses or this tables custom settings. The color field is in the rgb(#,#,#) syntax and black will be used when a color is not provided or is in an incorrect syntax",
         "default" : [
             { "enabled": true, "panels": 1, "monitors": 100, "opacity": 40, "color": "rgb(0,0,0)", "blurtype": 2, "radius": 10, "saturation": 100 },
             { "enabled": true, "panels": 2, "monitors": 100, "opacity": 40, "color": "rgb(0,0,0)", "blurtype": 2, "radius": 10, "saturation": 100 },
@@ -1023,7 +1025,7 @@
         "default" : [
             { "enabled": false, "application": "Alacritty.desktop",          "override": true, "opacity": 0, "color": "rgb(0,0,0)", "blurtype": 2, "radius": 10, "saturation": 100, "corner_radius": 10, "corner_top": true, "corner_bottom": false },
             { "enabled": false, "application": "com.gexperts.Tilix.desktop", "override": true, "opacity": 0, "color": "rgb(0,0,0)", "blurtype": 2, "radius": 10, "saturation": 100, "corner_radius": 10, "corner_top": true, "corner_bottom": false },
-            { "enabled": false, "application": "org.gnome.Ptyxis.desktop",   "override": true, "opacity": 0, "color": "rgb(0,0,0)", "blurtype": 2, "radius": 10, "saturation": 100, "corner_radius": 12, "corner_top": true, "corner_bottom": true  },
+            { "enabled": false, "application": "org.gnome.Ptyxis.desktop",   "override": true, "opacity": 0, "color": "rgb(0,0,0)", "blurtype": 2, "radius": 10, "saturation": 100, "corner_radius": 16, "corner_top": true, "corner_bottom": true  },
             { "enabled": false, "application": "kitty.desktop",              "override": true, "opacity": 0, "color": "rgb(0,0,0)", "blurtype": 2, "radius": 10, "saturation": 100, "corner_radius": 10, "corner_top": true, "corner_bottom": false },
             { "enabled": false, "application": "org.kde.konsole.desktop",    "override": true, "opacity": 0, "color": "rgb(0,0,0)", "blurtype": 2, "radius": 10, "saturation": 100, "corner_radius": 10, "corner_top": true, "corner_bottom": false }
         ]
@@ -1060,29 +1062,17 @@
         "dependency" : "enable-desklet-effects & component-selector=1 & enable-desklets-unique-settings & enable-desklets-override",
         "show-buttons" : false,
         "columns" : [
-            {"id": "enabled", "title": "Enabled",      "type": "boolean", "default": true},
-            {"id": "name",    "title": "Desklet Name", "type": "string",  "default": ""},
-            {"id": "uuid",    "title": "Desklet UUID", "type": "string",  "default": ""},
-            {"id": "instance","title": "Instance",     "type": "string", "default": ""}
+            {"id": "enabled",    "title": "Enabled",    "type": "boolean", "default": true},
+            {"id": "name",       "title": "Name",       "type": "string",  "default": ""},
+            {"id": "instance",   "title": "ID",         "type": "string",  "default": ""},
+            {"id": "override",   "title": "Custom",     "type": "boolean", "default": true},
+            {"id": "opacity",    "title": "Dim",        "type": "integer", "default": 0,  "min": 0, "max": 100},
+            {"id": "color",      "title": "Color",      "type": "string",  "default": "rgb(0,0,0)"},
+            {"id": "blurtype",   "title": "Blur",       "type": "integer", "default": 2, "options": { "None": 0, "Simple": 1, "Gaussian": 2 } },
+            {"id": "radius",     "title": "Intensity",  "type": "integer", "default": 10,  "min": 0, "max": 100},
+            {"id": "saturation", "title": "Saturation", "type": "integer", "default": 100, "min": 0, "max": 100}
         ],
-        "tooltip": "The \"Enabled\" check box in this table controls which Desklets will have effects applied. A Desklet will use the generic effect settings unless an entry is made in the table below this one.",
-        "default" : [ ]
-    },
-
-    "desklets-effects": {
-        "type" : "list",
-        "height" : 175,
-        "description" : "Desklets with unique effect settings (Desklet must be enabled in the above list!)",
-        "dependency" : "enable-desklet-effects & component-selector=1 & enable-desklets-unique-settings & enable-desklets-override",
-        "columns" : [
-            {"id": "instance",        "title": "Instance",      "type": "string",  "default": ""},
-            {"id": "opacity",         "title": "Dim",           "type": "integer", "default": 0,  "min": 0, "max": 100},
-            {"id": "color",           "title": "Color",         "type": "string",  "default": "rgb(0,0,0)"},
-            {"id": "blurtype",        "title": "Blur",          "type": "integer", "default": 2, "options": { "None": 0, "Simple": 1, "Gaussian": 2 } },
-            {"id": "radius",          "title": "Intensity",     "type": "integer", "default": 10,  "min": 0, "max": 100},
-            {"id": "saturation",      "title": "Saturation",    "type": "integer", "default": 100, "min": 0, "max": 100}
-        ],
-        "tooltip": "Adding an entry to this table allows you to define Desklet specific effect settings. Desklets not entered in this table will have the generic effect settings applied. A Desklet must be enabled in the above table in order for this tables setting to apply.",
+        "tooltip": "The \"Enabled\" check box controls which Desklets will have effects applied. The \"Custom\" check box controls if a Desklet will use the generic effect settings or the custom settings defined in this table. The custom settings can be modified by double clicking on a table row.",
         "default" : [ ]
     },
 
