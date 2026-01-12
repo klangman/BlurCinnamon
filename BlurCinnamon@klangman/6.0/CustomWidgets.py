@@ -70,9 +70,9 @@ def customRevealerKeyChanged(self, key, value):
          evaluate.append( element )
       elif element in OPERATIONS:  # ... x op y ...
          lhs = get_value(self.settings, self.expression[idx-1])
-         if idx+1 < count:
+         if idx+1 < count and self.expression[idx+1] != '&' and self.expression[idx+1] != '|':
             rhs = get_value(self.settings, self.expression[idx+1])
-         else: # If the operator is the last element in the expression, then we are comparing the lhs with False
+         else: # We were not provided with a valid rhs, set rhs to False
             rhs = False
          #print( f"operation: {self.expression[idx-1]}/{lhs} {OPERATIONS_MAP[element]} {self.expression[idx+1]}/{rhs}" )
          evaluate.append( OPERATIONS_MAP[element](lhs, rhs) )
@@ -108,6 +108,18 @@ def customRevealerKeyChanged(self, key, value):
    #print( f"Showing widget: {evaluate[0]}" )
    self.set_reveal_child(evaluate[0])
 
+
+class LabelWithTooltip(SettingsWidget):
+   def __init__(self, info, key, settings):
+      SettingsWidget.__init__(self)
+      self.label = Gtk.Label("", xalign=0.5, justify=Gtk.Justification.CENTER, expand=True)
+      self.label.set_markup(info["description"])
+
+      self.label.set_alignment(0.0, 0.5)
+      self.label.set_line_wrap(True)
+      self.pack_start(self.label, True, True, 0)
+      if "tooltip" in info:
+         self.label.set_tooltip_text(info["tooltip"])
 
 # An About page Widget with an image and a centered label that supports markup
 class About(SettingsWidget):

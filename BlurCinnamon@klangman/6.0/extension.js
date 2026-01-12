@@ -41,7 +41,6 @@ const Tooltips       = imports.ui.tooltips;
 const WindowMenu     = imports.ui.windowMenu;
 const Cinnamon       = imports.gi.Cinnamon;
 const DeskletManager = imports.ui.deskletManager;
-const Gio            = imports.gi.Gio;
 
 // For PopupMenu effects
 const Applet        = imports.ui.applet;
@@ -1501,7 +1500,6 @@ class BlurNotifications extends BlurBase {
             if (themeNode) {
                // We are assuming that all corners have the same radius, hope that is true.
                let radius = themeNode.get_border_radius(St.Corner.TOPLEFT);
-               log( `Notification radius: ${radius}` );
                this._updateCornerRadius(this._background, radius+6);
             }
 
@@ -2246,7 +2244,7 @@ class BlurSettings {
       this.bind('desklets-list',    'deskletList',        updateDeskletEffects);
       //this.bind('desklets-effects', 'deskletEffectsList', updateDeskletEffects);
       this.bind('desklets-auto',    'autoDeskletAdd',     updateDeskletEffects);
-      this.bind('enable-desklets-unique-settings', 'enableDeskletsUniqueSettings');
+      this.bind('enable-desklets-unique-settings', 'enableDeskletsUniqueSettings', updateDeskletEffects);
 
       this.bind('windows-inclusion-list', 'windowInclusionList', updateWindowEffects);
 
@@ -2352,7 +2350,6 @@ function updateNotificationEffects() {
       blurNotifications.updateEffects();
    }
 }
-
 
 function saturationChanged() {
    if (blurPanels) {

@@ -54,7 +54,7 @@
                     "appswitcher-warning", "enable-appswitcher-override", "appswitcher-info", "window-settings-button", "appswitcher-opacity", "appswitcher-blendColor", "appswitcher-blurType", "appswitcher-radius", "appswitcher-saturation",
                     "tooltips-warning", "enable-tooltips-override", "tooltips-opacity", "tooltips-blendColor", "tooltips-blurType", "tooltips-radius", "tooltips-saturation",
                     "windows-warning", "windows-inclusion-list", "windows-add-button", "windows-compiz-mitigation",
-                    "desklets-warning", "enable-desklets-override", "enable-desklets-unique-settings", "desklets-opacity", "desklets-blendColor", "desklets-blurType", "desklets-radius", "desklets-saturation", "desklets-list", "desklets-auto",
+                    "desklets-warning", "enable-desklets-override", "enable-desklets-unique-settings", "desklets-opacity", "desklets-blendColor", "desklets-blurType", "desklets-radius", "desklets-saturation", "desklets-list", "desklets-auto", "desklets-label",
                     "info-label"
                   ]
       },
@@ -115,6 +115,15 @@
       "type" : "label",
       "description" : "Note: The Window effects are currently disabled under the \"General setup\" tab.",
       "dependency" : "!enable-window-effects & component-selector=9"
+   },
+
+   "desklets-label": {
+      "type" : "custom",
+      "file" : "CustomWidgets.py",
+      "widget" : "LabelWithTooltip",
+      "description" : "<b>Note:</b> You must configure your Desklets to be transparent! (see tooltip)",
+      "tooltip": "In order for Blur Cinnamon Desklet effects to be visible, a Desklets background must be transparent. This allows the blur effect to be visible below the Desklet. Most Desklets can be configured to have transparent backgrounds. On the Desktop, right-click on a Desklet, select the \"Configure...\" menu item to open a Desklet's configuration window.",
+      "dependency" : "enable-desklet-effects & component-selector=1"
    },
 
    "info-label": {
