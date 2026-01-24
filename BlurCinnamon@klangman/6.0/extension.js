@@ -748,7 +748,7 @@ class BlurPanels extends BlurBase {
       let cornerRadius = 0;
       let panelSettings = this._getPanelSettings(panel);
       if (!panelSettings ) return;
-      let [opacity, blendColor, blurType, radius, saturation] = panelSettings;
+      let [opacity, blendColor, blurType, radius, saturation, customCSS] = panelSettings;
 
       let actor = panel.actor;
       let blurredPanel = panel.__blurredPanel;
@@ -769,7 +769,7 @@ class BlurPanels extends BlurBase {
          // Make the panel transparent
          actor.set_style( "border-image: none;  border-color: transparent;  box-shadow: 0 0 transparent; " +
                           "background-gradient-direction: vertical; background-gradient-start: transparent; " +
-                          "background-gradient-end: transparent;    background: transparent;" );
+                          "background-gradient-end: transparent;    background: transparent; " + customCSS );
       }
       // Determine the corner radius
       let themeNode = actor.get_theme_node();
@@ -852,12 +852,13 @@ class BlurPanels extends BlurBase {
          if (settings.allowTransparentColorPanels) {
             let panelSettings = this._getPanelSettings(panel);
             if (!panelSettings ) return;
-            let [opacity, blendColor, blurType, radius, saturation] = panelSettings;
+            let [opacity, blendColor, blurType, radius, saturation, customCSS] = panelSettings;
             // Make the panel transparent
             actor.set_style( "border-image: none;  border-color: transparent;  box-shadow: 0 0 transparent; " +
                              "background-gradient-direction: vertical; background-gradient-start: transparent; " +
-                             "background-gradient-end: transparent;    background: transparent;" );
+                             "background-gradient-end: transparent;    background: transparent; " + customCSS);
          }
+         Mainloop.idle_add( () => { this._setClip(panel) } );
       } else {
          actor.set_background_color(blurredPanel.original_color);
          actor.set_style(blurredPanel.original_style);
@@ -873,10 +874,13 @@ class BlurPanels extends BlurBase {
          if (panels[i]) {
             let panelSettings = this._getPanelSettings(panels[i]);
             if (panelSettings) {
-               let [opacity, blendColor, blurType, radius, saturation] = panelSettings;
+               let [opacity, blendColor, blurType, radius, saturation, customCSS] = panelSettings;
                let blurredPanel = panels[i].__blurredPanel;
                if (blurredPanel) {
                   blurredPanel.background = this._updateEffects(blurredPanel.background, opacity, blendColor, blurType, radius, saturation);
+                  if (!settings.noPanelEffectsMaximized) {
+                     this._setPanelTransparency(blurredPanel, true);
+                  }
                   this._setClip(panels[i]);
                } else {
                   this._blurPanel(panels[i]);
@@ -886,6 +890,9 @@ class BlurPanels extends BlurBase {
                this._unblurPanel(panels[i])
             }
          }
+      }
+      if (settings.noPanelEffectsMaximized) {
+         this._setupPanelTransparencyOnAllMonitors();
       }
    }
 
@@ -914,15 +921,15 @@ class BlurPanels extends BlurBase {
                   }
                }
                if (uniqueSetting.override) {
-                  return [uniqueSetting.opacity, uniqueSetting.color, uniqueSetting.blurtype, uniqueSetting.radius, uniqueSetting.saturation];
+                  return [uniqueSetting.opacity, uniqueSetting.color, uniqueSetting.blurtype, uniqueSetting.radius, uniqueSetting.saturation, uniqueSetting.customCSS];
                } else {
-                  return this._getGenericSettings();
+                  return [...this._getGenericSettings(), ""]
                }
             }
          }
          return null;
       } else {
-         return this._getSettings(settings.panelsOverride);
+         return [...this._getSettings(settings.panelsOverride), ""];
       }
    }
 
@@ -1922,10 +1929,6 @@ class BlurFocusEffect extends BlurBase {
       let window = global.display.get_focus_window();
       if (this._focusedWindow !== window) {
          this._removeEffect();
-         if (window) {
-            Mainloop.idle_add( () => this._addEffect(window) );
-         }
-         return;
       }
       if (window && this._focusedWindow !== window && window.get_window_type() !== Meta.WindowType.DESKTOP) {
          this._addEffect(window);

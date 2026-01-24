@@ -345,7 +345,8 @@
             {"id": "color",     "title": "Color",     "type": "string",  "default": "rgb(0,0,0)"},
             {"id": "blurtype",  "title": "Blur",      "type": "integer", "default": 2, "options": { "None": 0, "Simple": 1, "Gaussian": 2 } },
             {"id": "radius",    "title": "Intensity", "type": "integer", "default": 10,  "min": 0, "max": 100},
-            {"id": "saturation","title": "Saturation","type": "integer", "default": 100, "min": 0, "max": 100}
+            {"id": "saturation","title": "Saturation","type": "integer", "default": 100, "min": 0, "max": 100},
+            {"id": "customCSS", "title": "Custom CSS","type": "string",  "default": ""}
         ],
         "tooltip": "Defines the effects applied to different panels. If a panel does not meet the criteria of any enabled entry in this list, it will have no effects applied. The settings of the first entry in this list that can apply to a given panel will take effect. The \"Custom\" check box determines if the generic effect settings are uses or this tables custom settings. The color field is in the rgb(#,#,#) syntax and black will be used when a color is not provided or is in an incorrect syntax",
         "default" : [
