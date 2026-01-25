@@ -1202,18 +1202,18 @@ class BlurPopupMenus extends BlurBase {
          let child = children[i];
          if (child._blurCinnamonData === undefined) {
             if (child instanceof St.Entry) {
-               debugMsg( "found new accent actor" );
+               debugMsg( "found new entry accent actor" );
                this._applyActorStyle(child, this._accentColor);
             } else if (child instanceof St.BoxLayout) {
                let styleClassName = child.get_style_class_name();
-               if (styleClassName && styleClassName.indexOf("menu-favorites-box") !== -1) {
-                  debugMsg( "found new accent actor" );
+               if (styleClassName && (styleClassName == "menu-favorites-box" || styleClassName == "appmenu-sidebar")) {
+                  debugMsg( `found new menu accent actor: ${styleClassName}` );
                   this._applyActorStyle(child, this._accentColor);
                }
             } else if (child instanceof St.Table) {
                let name = child.get_name();
                if (name && name.indexOf("notification") !== -1) {
-                  debugMsg( "found new accent actor" );
+                  debugMsg( "found new notification accent actor" );
                   this._applyActorStyle(child, this._accentColor);
                }
             } else {
