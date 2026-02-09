@@ -670,7 +670,8 @@
             "Transparent": 3,
             "Transparent to Background": 0,
             "Simple static blur": 1,
-            "Gaussian static blur": 2
+            "Gaussian static blur": 2,
+            "Gaussian dynamic blur": 4
         },
         "description": "Type of background effect",
         "tooltip": "What type of background effect should be applied",
@@ -687,7 +688,7 @@
         "step" : 0.1,
         "tooltip": "Adjusts the intensity of the blur effect by changing the radius use by the effect.",
         "default": 20,
-        "dependency" : "enable-popup-effects & component-selector=4 & popup-blurType=2 & enable-popup-override"
+        "dependency" : "enable-popup-effects & component-selector=4 & popup-blurType>1 & popup-blurType!=3 & enable-popup-override"
     },
 
     "popup-saturation": {
@@ -807,7 +808,8 @@
             "Transparent": 3,
             "Transparent to Background": 0,
             "Simple static blur": 1,
-            "Gaussian static blur": 2
+            "Gaussian static blur": 2,
+            "Gaussian dynamic blur": 4
         },
         "description": "Type of background effect",
         "dependency" : "enable-notification-effects & component-selector=5 & enable-notification-override",
@@ -824,7 +826,7 @@
         "step" : 0.1,
         "tooltip": "Adjusts the intensity of the blur effect by changing the radius use by the effect.",
         "default": 9,
-        "dependency" : "enable-notification-effects & component-selector=5 & notification-blurType=2 & enable-notification-override"
+        "dependency" : "enable-notification-effects & component-selector=5 & notification-blurType>1 & notification-blurType!=3 & enable-notification-override"
     },
 
     "notification-saturation": {
@@ -940,7 +942,8 @@
             "Transparent": 3,
             "Transparent to Background": 0,
             "Simple static blur": 1,
-            "Gaussian static blur": 2
+            "Gaussian static blur": 2,
+            "Gaussian dynamic blur": 4
         },
         "description": "Type of background effect",
         "dependency" : "enable-tooltips-effects & component-selector=8 & enable-tooltips-override",
@@ -957,7 +960,7 @@
         "step" : 0.1,
         "tooltip": "Adjusts the intensity of the blur effect by changing the radius use by the effect.",
         "default": 9,
-        "dependency" : "enable-tooltips-effects & component-selector=8 & tooltips-blurType=2 & enable-tooltips-override"
+        "dependency" : "enable-tooltips-effects & component-selector=8 & tooltips-blurType>1 & tooltips-blurType!=3 & enable-tooltips-override"
     },
 
     "tooltips-saturation": {
