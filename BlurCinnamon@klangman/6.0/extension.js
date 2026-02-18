@@ -423,7 +423,7 @@ class CloneManager {
       this._backgrounds.push(background);
       background._blurCinnamonWinClones = [];
       let deskletClone = new Clutter.Clone({source : Main.deskletContainer.actor});
-      background._blurCinnamonGroup.add_child(deskletClone);
+      background._blurCinnamonGroup.insert_child_below(deskletClone, background._blurCinnamonDimmer);
       background._blurCinnamonDeskletClone = deskletClone;
       background._blurCinnamonMetaWindowOwner = metaWindowOwner
       cloneWindowsForBackground(background);
@@ -455,37 +455,45 @@ class CloneManager {
       windows.forEach( (window) => {
          let metaWindow = window.get_meta_window();
          let compositor = metaWindow.get_compositor_private();
+         if (!metaWindow._blurCinnamonWSChangeEventID)
+            metaWindow._blurCinnamonWSChangeEventID = metaWindow.connect("workspace-changed", () => this._onWindowsWorkspaceChanged(metaWindow) );
          if (metaWindow && metaWindow.get_workspace() &&
             (metaWindow.get_workspace().index() === this._activeWorkspaceIdx || metaWindow.is_on_all_workspaces()) &&
             !metaWindow.minimized && metaWindow.get_window_type() !== Meta.WindowType.DESKTOP)
          {
             if (!metaWindow._blurCinnamonAllocEventID)
                metaWindow._blurCinnamonAllocEventID = compositor.connect("notify::allocation", () => this._allocationChanged(metaWindow) );
-            if (!metaWindow._blurCinnamonWSChangeEventID)
-               metaWindow._blurCinnamonWSChangeEventID = metaWindow.connect("workspace-changed", () => this._onWindowDisappeared(metaWindow) );
          } else if(metaWindow) {
             if (metaWindow._blurCinnamonAllocEventID) {
                compositor.disconnect(metaWindow._blurCinnamonAllocEventID);
                delete metaWindow._blurCinnamonAllocEventID;
             }
-            if (metaWindow._blurCinnamonWSChangeEventID) {
-               metaWindow.disconnect(metaWindow._blurCinnamonWSChangeEventID);
-               delete metaWindow._blurCinnamonWSChangeEventID;
-            }
          }
       });
    }
 
+   _onWindowsWorkspaceChanged(metaWindow) {
+      debugMsg( "_onWindowsWorkspaceChanged" );
+      if (!metaWindow.get_workspace())
+         return;
+      if (metaWindow.get_workspace().index() === this._activeWorkspaceIdx) {
+         this._onWindowAppeared(metaWindow);
+      } else {
+         this._onWindowDisappeared(metaWindow);
+      }
+   }
+
    _onWindowAppeared(metaWindow) {
+      if (!metaWindow._blurCinnamonWSChangeEventID)
+         metaWindow._blurCinnamonWSChangeEventID = metaWindow.connect("workspace-changed", () => this._onWindowsWorkspaceChanged(metaWindow) );
       if (metaWindow.get_workspace().index() === this._activeWorkspaceIdx) {
          let compositor = metaWindow.get_compositor_private();
          let winRect = metaWindow.get_buffer_rect();
-         let winX = winRect.X;
+         let winX = winRect.x;
          let winY = winRect.y;
          let winX2 = winRect.x + winRect.width;
          let winY2 = winRect.y + winRect.height;
          metaWindow._blurCinnamonAllocEventID = compositor.connect("notify::allocation", () => this._allocationChanged(metaWindow) );
-         metaWindow._blurCinnamonWSChangeEventID = metaWindow.connect("workspace-changed", () => this._onWindowDisappeared(metaWindow) );
 
          this._backgrounds.forEach( (background) => {
             if (!background._blurCinnamonMetaWindowOwner || background._blurCinnamonMetaWindowOwner.get_user_time() > metaWindow.get_user_time() ) {
@@ -508,10 +516,10 @@ class CloneManager {
          compositor.disconnect(metaWindow._blurCinnamonAllocEventID);
          delete metaWindow._blurCinnamonAllocEventID;
       }
-      if (metaWindow._blurCinnamonWSChangeEventID) {
-         metaWindow.disconnect(metaWindow._blurCinnamonWSChangeEventID);
-         delete metaWindow._blurCinnamonWSChangeEventID;
-      }
+      //if (metaWindow._blurCinnamonWSChangeEventID) {
+      //   metaWindow.disconnect(metaWindow._blurCinnamonWSChangeEventID);
+      //   delete metaWindow._blurCinnamonWSChangeEventID;
+      //}
       // Remove windowClones for this window from each background
       this._backgrounds.forEach( (background) => {
          if (background._blurCinnamonWinClones) {
