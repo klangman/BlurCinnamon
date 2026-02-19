@@ -279,16 +279,20 @@ function getBackgroundClip(background) {
 }
 
 function createWindowClone(metaWindow, background) {
-   debugMsg( `Creating clone for ${metaWindow.get_title()}  --  ${metaWindow.get_user_time()} -- type=${metaWindow.get_window_type()}` );
-   let rect = metaWindow.get_buffer_rect();
-   let compositor = metaWindow.get_compositor_private();
-   let windowClone = new Clutter.Clone({source: compositor, reactive: false, x: rect.x, y: rect.y });
-   let dimmer = background._blurCinnamonDimmer;
-   let group = background._blurCinnamonGroup
-   group.insert_child_below(windowClone, dimmer);
-   background._blurCinnamonWinClones.push(windowClone);
-   windowClone._metaWindow = metaWindow;
-   return windowClone;
+   if (background.is_mapped()) {
+      debugMsg( `Creating clone for ${metaWindow.get_title()}  --  ${metaWindow.get_user_time()} -- type=${metaWindow.get_window_type()}` );
+      let rect = metaWindow.get_buffer_rect();
+      let compositor = metaWindow.get_compositor_private();
+      let windowClone = new Clutter.Clone({source: compositor, reactive: false, x: rect.x, y: rect.y });
+      let dimmer = background._blurCinnamonDimmer;
+      let group = background._blurCinnamonGroup
+      group.insert_child_below(windowClone, dimmer);
+      background._blurCinnamonWinClones.push(windowClone);
+      windowClone._metaWindow = metaWindow;
+      return windowClone;
+   } else {
+      debugMsg( "Not creating a clone because the background is not mapped!" );
+   }
 }
 
 function destroyWindowClone(windowClone, background) {
@@ -316,8 +320,8 @@ function destroyAllWindowsClones(background) {
 function cloneWindowsForBackground(background) {
    let currentWs = global.screen.get_active_workspace_index();
    let [blurX, blurY, blurWidth, blurHeight] = getBackgroundClip(background);
-   if (blurWidth===0 || blurHeight===0) {
-      debugMsg( `Blurred background is too small to worry about` );
+   if (blurWidth===0 || blurHeight===0 || !background.is_mapped()) {
+      debugMsg( `Blurred background is zero size or unmapped` );
       return;
    }
    let blurX2 = blurX + blurWidth;
@@ -328,7 +332,7 @@ function cloneWindowsForBackground(background) {
    if (metaWindowOwner) {
       debugMsg( `Only considering windows under ${metaWindowOwner.get_title()}` );
    }
-   
+
    // Find all windows that are visible and overlap with the passed in background
    let windows = global.get_window_actors();
    windows.forEach( (window) => {
