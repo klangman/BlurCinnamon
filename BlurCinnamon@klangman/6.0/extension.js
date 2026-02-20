@@ -401,7 +401,13 @@ class CloneManager {
       this._signalManager.connect(global.window_manager, "minimize", (wm, win) => this._onWindowDisappeared(win.get_meta_window()) );
       this._signalManager.connect(global.window_manager, "unminimize", (wm, win) => this._onWindowAppeared(win.get_meta_window()) );
       this._signalManager.connect(global.display, "notify::focus-window", () => this._onFocusChanged() );
+      this._signalManager.connect(global, 'scale-changed', () => this._uiScaleChanged());
       this._setupWindowListeners();
+   }
+
+   _uiScaleChanged() {
+      this._backgrounds.forEach( (background) => destroyAllWindowsClones(background) );
+      Mainloop.idle_add( () => { this._backgrounds.forEach( (background) => cloneWindowsForBackground(background) ); } );
    }
 
    getBackgroundCount() {
@@ -431,6 +437,7 @@ class CloneManager {
       background._blurCinnamonDeskletClone = deskletClone;
       background._blurCinnamonMetaWindowOwner = metaWindowOwner
       cloneWindowsForBackground(background);
+      this._signalManager.connect(background, "notify::mapped", () => this._onBackgroundMapped(background));
    }
 
    removeBackground(background) {
@@ -438,6 +445,7 @@ class CloneManager {
       if (idx === -1) {
          return;
       }
+      this._signalManager.disconnect( "notify::mapped", background );
       destroyAllWindowsClones(background);
       delete background._blurCinnamonWinClones;
       if (background._blurCinnamonDeskletClone) {
@@ -453,6 +461,16 @@ class CloneManager {
       let idx = this._backgrounds.indexOf(background);
       return (idx!==-1);
    }
+
+   _onBackgroundMapped(background) {
+      debugMsg( `Background mapped for ${background._blurCinnamonName}` );
+      if (background.mapped === true) {
+         cloneWindowsForBackground(background);
+      } else {
+         destroyAllWindowsClones(background);
+      }
+   }
+
    // Globally setup window listeners, add listeners that are required, remove listeners that are no longer needed
    _setupWindowListeners() {
       let windows = global.get_window_actors();
@@ -2035,7 +2053,8 @@ class BlurNotifications extends BlurBase {
          this._createDynamicEffect(this._background);
       }
       // The notification window size can change after being shown, so we need to adjust the background when that happens
-      this._signalManager.connect(actor, 'notify::size', () => {this._setClip(actor, table);} );
+      //this._signalManager.connect(actor, 'notify::size',       () => this._setClip(actor, table) );
+      this._signalManager.connect(  actor, "notify::allocation", () => this._setClip(actor, table) );
       // Delay showing the blurred background until the notification tween is well underway.
       Mainloop.timeout_add(this.animation_time * 1000, () => this._background.show() );
    }
