@@ -1572,13 +1572,13 @@ class BlurPopupMenus extends BlurBase {
             let themeNode = menu.box.get_theme_node();
             if (themeNode) {
                let radius = themeNode.get_border_radius(St.Corner.TOPLEFT);
-               this._updateCornerRadius( this._background, radius );
+               this._updateCornerRadius( this._background, radius/global.ui_scale );
             }
             themeNode = menu.actor.get_theme_node();
             if (themeNode) {
                let radius = themeNode.get_border_radius(St.Corner.TOPLEFT);
                if (radius != 0)
-                  this._updateCornerRadius( this._background, radius );
+                  this._updateCornerRadius( this._background, radius/global.ui_scale );
             }
 
             // Since menu.actor style is reset every time anyhow, we don't need to remember it's style, but we do have to set it every time
@@ -1985,7 +1985,7 @@ class BlurNotifications extends BlurBase {
          if (themeNode) {
             // We are assuming that all corners have the same radius, hope that is true.
             let radius = themeNode.get_border_radius(St.Corner.TOPLEFT);
-            this._updateCornerRadius(this._background, radius+6);
+            this._updateCornerRadius(this._background, (radius+6)/global.ui_scale);
          }
 
          actor.set_style( /*"border-radius: 0px;*/ "background-gradient-direction: vertical; background-gradient-start: transparent; " +
@@ -2034,7 +2034,7 @@ class BlurNotifications extends BlurBase {
             if (themeNode) {
                // We are assuming that all corners have the same radius, hope that is true.
                let radius = themeNode.get_border_radius(St.Corner.TOPLEFT);
-               this._updateCornerRadius(this._background, radius+6);
+               this._updateCornerRadius(this._background, (radius+6)/global.ui_scale);
             }
 
             actor.set_style( /*"border-radius: 0px;*/ "background-gradient-direction: vertical; background-gradient-start: transparent; " +
@@ -2127,7 +2127,7 @@ class BlurTooltips extends BlurBase {
       if (themeNode) {
          // We are assuming that all corners have the same radius, hope that is true.
          let radius = themeNode.get_border_radius(St.Corner.TOPLEFT);
-         this._updateCornerRadius(this._background, radius+6);
+         this._updateCornerRadius(this._background, (radius+6)/global.ui_scale);
       }
 
       actor.set_style(  "background-gradient-direction: vertical; background-gradient-start: transparent; " +
