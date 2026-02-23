@@ -1050,7 +1050,7 @@
             {"id": "override",      "title": "Custom",       "type": "boolean", "default": true},
             {"id": "opacity",       "title": "Dim",          "type": "integer", "default": 0,  "min": 0, "max": 100},
             {"id": "color",         "title": "Color",        "type": "string",  "default": "rgb(0,0,0)"},
-            {"id": "blurtype",      "title": "Blur",         "type": "integer", "default": 2, "options": {"Transparent to Background": 0, "Simple static blur": 1, "Gaussian static blur": 2} },
+            {"id": "blurtype",      "title": "Blur",         "type": "integer", "default": 2, "options": {"Transparent to Background": 0, "Simple static blur": 1, "Gaussian static blur": 2, "Gaussian dynamic blur (experimental)": 4} },
             {"id": "radius",        "title": "Intensity",    "type": "integer", "default": 10,  "min": 0, "max": 100},
             {"id": "saturation",    "title": "Saturation",   "type": "integer", "default": 100, "min": 0, "max": 100},
             {"id": "corner_radius", "title": "Corner Radius","type": "integer", "default": 10, "min": 0, "max": 25},
