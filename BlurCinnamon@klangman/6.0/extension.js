@@ -279,7 +279,7 @@ function getBackgroundClip(background) {
 }
 
 function createWindowClone(metaWindow, background) {
-   if (background.is_mapped()) {
+   if (background.is_mapped() && background._blurCinnamonMetaWindowOwner !== metaWindow) {
       let rect = metaWindow.get_buffer_rect();
       let compositor = metaWindow.get_compositor_private();
       let windowClone = new Clutter.Clone({source: compositor, reactive: false, x: rect.x, y: rect.y });
@@ -291,17 +291,19 @@ function createWindowClone(metaWindow, background) {
       windowClone._metaWindow = metaWindow;
       return windowClone;
    } else {
-      debugMsg( "Not creating a clone because the background is not mapped!" );
+      debugMsg( "Not creating a clone. Background is not mapped or a self clone attempt." );
    }
 }
 
 function destroyWindowClone(windowClone, background) {
-   debugMsg( `Removing clone ${windowClone} of "${windowClone._metaWindow.get_title()}" from background ${background._blurCinnamonName}` );
-   windowClone.hide();
+   debugMsg( `Removing clone ${windowClone} of "${windowClone._metaWindow.get_title()}" from background ${background._blurCinnamonName} with ${background._blurCinnamonWinClones.length} clones` );
+   background._blurCinnamonGroup.remove_child(windowClone);
    windowClone.destroy();
    let idx = background._blurCinnamonWinClones.indexOf(windowClone);
-   if (idx != -1 )
+   if (idx != -1 ) {
       background._blurCinnamonWinClones.splice(idx, 1);
+      debugMsg( `Removed clone array element idx ${idx} leaving ${background._blurCinnamonWinClones.length} clones in the array` );
+   }
 }
 
 function destroyAllWindowsClones(background) {
@@ -329,18 +331,14 @@ function cloneWindowsForBackground(background) {
    let windowsToClone = [];
    let metaWindowOwner = background._blurCinnamonMetaWindowOwner;
 
-   if (metaWindowOwner) {
-      debugMsg( `Only considering windows under ${metaWindowOwner.get_title()}` );
-   }
-
    // Find all windows that are visible and overlap with the passed in background
    let windows = global.get_window_actors();
    windows.forEach( (window) => {
       let metaWindow = window.get_meta_window();
       if (metaWindow && metaWindow.get_workspace() &&
-         (!metaWindowOwner || metaWindowOwner.get_user_time() > metaWindow.get_user_time()) &&
+         (!metaWindowOwner || metaWindow.get_window_type() === Meta.WindowType.DESKTOP || metaWindowOwner.get_user_time() > metaWindow.get_user_time()) &&
          (metaWindow.get_workspace().index() === currentWs || metaWindow.is_on_all_workspaces()) &&
-         !metaWindow.minimized && metaWindow.get_window_type() !== Meta.WindowType.DESKTOP)
+         !metaWindow.minimized && metaWindow.get_window_type() !== Meta.WindowType.OVERRIDE_OTHER)
       {
          let compositor = metaWindow.get_compositor_private();
          let winRect = metaWindow.get_buffer_rect();
@@ -357,7 +355,7 @@ function cloneWindowsForBackground(background) {
    let clones = background._blurCinnamonWinClones;
 
    // Sort the windows by least recently interacted with
-   windowsToClone.sort( (a,b) => (a.get_user_time() - b.get_user_time()) );
+   windowsToClone = global.display.sort_windows_by_stacking(windowsToClone);
 
    // Deal with the existing clones
    if (clones.length > 0) {
@@ -382,7 +380,7 @@ function cloneWindowsForBackground(background) {
       
       // There are changes to the set of clones needed, so clear all existing clones
       destroyAllWindowsClones(background);
-      if (metaWindowOwner) {
+      if (metaWindowOwner && windowsToClone.length > 0) {
          // Adding clones immediately after removing all the clones causes bad things for windows
          // so we do it after all the events are processed. This results an annoying flash when
          // new windows are added to the clone list.
@@ -530,9 +528,10 @@ class CloneManager {
          let winY = winRect.y;
          let winX2 = winRect.x + winRect.width;
          let winY2 = winRect.y + winRect.height;
-         metaWindow._blurCinnamonAllocEventID = compositor.connect("notify::allocation", () => this._allocationChanged(metaWindow) );
+         if (!metaWindow._blurCinnamonAllocEventID)
+            metaWindow._blurCinnamonAllocEventID = compositor.connect("notify::allocation", () => this._allocationChanged(metaWindow) );
 
-         debugMsg( `Creating clones for appeared window` );
+         debugMsg( `Checking if clones are needed for appeared window: "${metaWindow.get_title()}"` );
          this._backgrounds.forEach( (background) => {
             if (!background._blurCinnamonMetaWindowOwner || background._blurCinnamonMetaWindowOwner.get_user_time() > metaWindow.get_user_time() ) {
                let [blurX, blurY, blurWidth, blurHeight] = getBackgroundClip(background);
@@ -606,8 +605,12 @@ class CloneManager {
    _updateCurrentWorkspace() {
       let currentWs = global.screen.get_active_workspace_index();
       if (currentWs !== this._activeWorkspaceIdx) {
-         debugMsg( "Creating clones after workspace switch" );
+         debugMsg( `Creating clones after workspace switch from ${this._activeWorkspaceIdx} to ${currentWs}` );
          this._activeWorkspaceIdx = currentWs;
+         // Workaround for a bug
+         if (blurApplications) {
+            blurApplications.reapplyEffects();
+         }
          // Make sure we are listening for changes to windows on this (And only this) workspace
          this._setupWindowListeners();
          // Add new clones for windows on the new workspace
@@ -616,8 +619,8 @@ class CloneManager {
    }
 
    // The metaWindow has moved, so we need to move it's clones.
-   // Also we check if the window no longer overlaps with the blurred background
-   // and remove the clone is there is no overlap
+   // Also we check if we need to add or remove clones based on
+   // the window overlap state of the new size/location of a window
    _allocationChanged(metaWindow) {
       let rect = metaWindow.get_buffer_rect();
       let compositor = metaWindow.get_compositor_private();
@@ -2246,7 +2249,11 @@ class BlurApplications extends BlurBase {
    }
 
    _supportsDynamicBlur() {
-      return true;
+      // Since support for Dynamic blur for Application windows is "experimental", we return false here.
+      // It's used to choose between static and dynamic when the generic setting is set to dynamic
+      // so by returning false, the default will be Gaussian static when dynamic is selected.
+      // The only way to enable dynamic is to use custom settings for the specific window!
+      return false;
    }
 
    _onWindowGrabbed(display, screen, window, op) {
@@ -2415,6 +2422,21 @@ class BlurApplications extends BlurBase {
          data.metaWindow.set_opacity(255);
          compositor._blurCinnamonDataWindow = undefined;
          this._destroyDynamicEffect(data.background);
+      }
+   }
+
+   // This is a work-around for some issues with Dynamic Blurring after switching workspaces
+   reapplyEffects() {
+      // Go through all windows and update/apply/remove effects
+      let windows = global.display.list_windows(0);
+      for (let i = 0; i < windows.length; i++) {
+         let compositor = windows[i].get_compositor_private();
+         let data = compositor._blurCinnamonDataWindow;
+         if (data) {
+            debugMsg( "Reapplying effects to window" );
+            this._unblurWindow(compositor);
+            Mainloop.idle_add( () =>  this._blurWindow(windows[i]) );
+         }
       }
    }
 
