@@ -2038,10 +2038,10 @@ class BlurNotifications extends BlurBase {
    _showNotification() {
       // Call the original function then call the function to setup the effect
       blurNotificationsThis.original_showNotification.call(this);
-      blurNotificationsThis._blurNotification.call(blurNotificationsThis, this._notificationBin);
+      blurNotificationsThis._blurNotification.call(blurNotificationsThis, this._notificationBin, this._showFullscreenNotifications);
    }
 
-   _blurNotification(actor) {
+   _blurNotification(actor, showFullscreenNotifications) {
       let blendColor = (settings.notificationOverride) ? settings.notificationBlendColor : settings.blendColor;
       let opacity = (settings.notificationOverride) ? settings.notificationOpacity : settings.opacity;
 
@@ -2084,10 +2084,26 @@ class BlurNotifications extends BlurBase {
          this._createDynamicEffect(this._background);
       }
       // The notification window size can change after being shown, so we need to adjust the background when that happens
-      //this._signalManager.connect(actor, 'notify::size',       () => this._setClip(actor, table) );
-      this._signalManager.connect(  actor, "notify::allocation", () => this._setClip(actor, table) );
-      // Delay showing the blurred background until the notification tween is well underway.
-      Mainloop.timeout_add(this.animation_time * 1000, () => this._background.show() );
+      this._signalManager.connect(actor, "notify::allocation", () => this._setClip(actor, table) );
+      if (!showFullscreenNotifications) {
+         this._signalManager.connect(global.display, "in-fullscreen-changed", this._fullscreen_changed, this);
+      }
+      let monitor = Main.layoutManager.findMonitorForActor(this._background);
+      let idx = Main.layoutManager.monitors.indexOf(monitor);
+      if (showFullscreenNotifications || !global.display.get_monitor_in_fullscreen(idx)) {
+         // Delay showing the blurred background until the notification tween is well underway.
+         Mainloop.timeout_add(this.animation_time * 1000, () => this._background.show() );
+      }
+   }
+
+   _fullscreen_changed() {
+      let monitor = Main.layoutManager.findMonitorForActor(this._background);
+      let idx = Main.layoutManager.monitors.indexOf(monitor);
+      if (global.display.get_monitor_in_fullscreen(idx)) {
+         this._background.hide()
+      } else {
+         this._background.show()
+      }
    }
 
    _hideNotification() {
