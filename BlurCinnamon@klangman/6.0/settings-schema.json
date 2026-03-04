@@ -343,7 +343,7 @@
             {"id": "override",  "title": "Custom",    "type": "boolean", "default": true},
             {"id": "opacity",   "title": "Dim",       "type": "integer", "default": 40,  "min": 0, "max": 100},
             {"id": "color",     "title": "Color",     "type": "string",  "default": "rgb(0,0,0)"},
-            {"id": "blurtype",  "title": "Blur",      "type": "integer", "default": 4, "options": { "Transparent": 3, "Transparent to Background": 0, "Simple static blur": 1, "Gaussian static blur": 2, "Gaussian dynamic blur": 4 } },
+            {"id": "blurtype",  "title": "Background","type": "integer", "default": 4, "options": { "Transparent": 3, "Transparent to wallpaper": 0, "Simple static blur": 1, "Gaussian static blur": 2, "Gaussian dynamic blur": 4 } },
             {"id": "radius",    "title": "Intensity", "type": "integer", "default": 10,  "min": 0, "max": 100},
             {"id": "saturation","title": "Saturation","type": "integer", "default": 100, "min": 0, "max": 100},
             {"id": "customCSS", "title": "Custom CSS","type": "string",  "default": ""}
@@ -395,7 +395,7 @@
         "type": "combobox",
         "default": 4,
         "options": {
-            "None / Transparent to Background": 0,
+            "None / Transparent to wallpaper": 0,
             "Simple static blur": 1,
             "Gaussian static blur": 2,
             "Gaussian dynamic blur (if applicable)": 4
@@ -574,7 +574,7 @@
         "default": 4,
         "options": {
             "Transparent": 3,
-            "Transparent to Background": 0,
+            "Transparent to wallpaper": 0,
             "Simple static blur": 1,
             "Gaussian static blur": 2,
             "Gaussian dynamic blur": 4
@@ -670,7 +670,7 @@
         "default": 4,
         "options": {
             "Transparent": 3,
-            "Transparent to Background": 0,
+            "Transparent to wallpaper": 0,
             "Simple static blur": 1,
             "Gaussian static blur": 2,
             "Gaussian dynamic blur": 4
@@ -808,7 +808,7 @@
         "default": 4,
         "options": {
             "Transparent": 3,
-            "Transparent to Background": 0,
+            "Transparent to wallpaper": 0,
             "Simple static blur": 1,
             "Gaussian static blur": 2,
             "Gaussian dynamic blur": 4
@@ -942,7 +942,7 @@
         "default": 4,
         "options": {
             "Transparent": 3,
-            "Transparent to Background": 0,
+            "Transparent to wallpaper": 0,
             "Simple static blur": 1,
             "Gaussian static blur": 2,
             "Gaussian dynamic blur": 4
@@ -1050,7 +1050,7 @@
             {"id": "override",      "title": "Custom",       "type": "boolean", "default": true},
             {"id": "opacity",       "title": "Dim",          "type": "integer", "default": 0,  "min": 0, "max": 100},
             {"id": "color",         "title": "Color",        "type": "string",  "default": "rgb(0,0,0)"},
-            {"id": "blurtype",      "title": "Blur",         "type": "integer", "default": 2, "options": {"Transparent to Background": 0, "Simple static blur": 1, "Gaussian static blur": 2, "Gaussian dynamic blur (experimental)": 4} },
+            {"id": "blurtype",      "title": "Background",   "type": "integer", "default": 2, "options": {"Transparent to wallpaper": 0, "Simple static blur": 1, "Gaussian static blur": 2, "Gaussian dynamic blur (experimental)": 4} },
             {"id": "radius",        "title": "Intensity",    "type": "integer", "default": 10,  "min": 0, "max": 100},
             {"id": "saturation",    "title": "Saturation",   "type": "integer", "default": 100, "min": 0, "max": 100},
             {"id": "corner_radius", "title": "Corner Radius","type": "integer", "default": 10, "min": 0, "max": 25},
@@ -1059,11 +1059,13 @@
         ],
         "tooltip": "This table controls which application windows will have effects applied and the effect settings. When \"Custom\" is enabled the setting defined by this table will apply, otherwise the \"Generic effect settings\" will apply. The \"Application\" field can be a WM_CLASS or a desktop file name.",
         "default" : [
-            { "enabled": false, "application": "Alacritty.desktop",          "override": true, "opacity": 0, "color": "rgb(0,0,0)", "blurtype": 2, "radius": 10, "saturation": 100, "corner_radius": 10, "corner_top": true, "corner_bottom": false },
-            { "enabled": false, "application": "com.gexperts.Tilix.desktop", "override": true, "opacity": 0, "color": "rgb(0,0,0)", "blurtype": 2, "radius": 10, "saturation": 100, "corner_radius": 10, "corner_top": true, "corner_bottom": false },
-            { "enabled": false, "application": "org.gnome.Ptyxis.desktop",   "override": true, "opacity": 0, "color": "rgb(0,0,0)", "blurtype": 2, "radius": 10, "saturation": 100, "corner_radius": 16, "corner_top": true, "corner_bottom": true  },
-            { "enabled": false, "application": "kitty.desktop",              "override": true, "opacity": 0, "color": "rgb(0,0,0)", "blurtype": 2, "radius": 10, "saturation": 100, "corner_radius": 10, "corner_top": true, "corner_bottom": false },
-            { "enabled": false, "application": "org.kde.konsole.desktop",    "override": true, "opacity": 0, "color": "rgb(0,0,0)", "blurtype": 2, "radius": 10, "saturation": 100, "corner_radius": 10, "corner_top": true, "corner_bottom": false }
+            { "enabled": false, "application": "Alacritty.desktop",          "override": false, "opacity": 0, "color": "rgb(0,0,0)", "blurtype": 2, "radius": 10, "saturation": 100, "corner_radius": 10, "corner_top": true, "corner_bottom": false },
+            { "enabled": false, "application": "com.gexperts.Tilix.desktop", "override": false, "opacity": 0, "color": "rgb(0,0,0)", "blurtype": 2, "radius": 10, "saturation": 100, "corner_radius": 10, "corner_top": true, "corner_bottom": false },
+            { "enabled": false, "application": "org.gnome.Terminal.desktop", "override": false, "opacity": 0, "color": "rgb(0,0,0)", "blurtype": 2, "radius": 10, "saturation": 100, "corner_radius": 10, "corner_top": true, "corner_bottom": false },
+            { "enabled": false, "application": "org.gnome.Ptyxis.desktop",   "override": false, "opacity": 0, "color": "rgb(0,0,0)", "blurtype": 2, "radius": 10, "saturation": 100, "corner_radius": 16, "corner_top": true, "corner_bottom": true  },
+            { "enabled": false, "application": "kitty.desktop",              "override": false, "opacity": 0, "color": "rgb(0,0,0)", "blurtype": 2, "radius": 10, "saturation": 100, "corner_radius": 10, "corner_top": true, "corner_bottom": false },
+            { "enabled": false, "application": "org.kde.konsole.desktop",    "override": false, "opacity": 0, "color": "rgb(0,0,0)", "blurtype": 2, "radius": 10, "saturation": 100, "corner_radius": 10, "corner_top": true, "corner_bottom": false },
+            { "enabled": false, "application": "conky",                      "override": false, "opacity": 0, "color": "rgb(0,0,0)", "blurtype": 2, "radius": 10, "saturation": 100, "corner_radius": 10, "corner_top": true, "corner_bottom": false }
         ]
     },
 
