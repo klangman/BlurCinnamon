@@ -2733,7 +2733,8 @@ class BlurDesklets extends BlurBase {
       }
       let [enabled, opacity, blendColor, blurType, radius, saturation] = this._getDeskletSettings(desklet);
       if (enabled) {
-         let background = this._createBackgroundAndEffects(opacity, blendColor, blurType, radius, saturation, global.bottom_window_group, cornerRadius, topRadius!==0, bottomRadius!==0);
+         let background = this._createBackgroundAndEffects(opacity, blendColor, blurType, radius, saturation, null, cornerRadius, topRadius!==0, bottomRadius!==0);
+         global.desklet_container.insert_child_at_index(background, 0);
          background._blurCinnamonName = "Desklet";
          desklet._blurCinnamonBackground = background;
          this._setClip(desklet);
