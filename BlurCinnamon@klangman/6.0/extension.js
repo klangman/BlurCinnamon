@@ -1821,6 +1821,7 @@ class BlurPopupMenus extends BlurBase {
          // In case we are using Dynamic Blur, destroy it
          this._destroyDynamicEffect(this._background);
       }
+      menu.blurCinnamonSignalManager.disconnect("queue-relayout", menu.actor);
       debugMsg( "unblur complete\n" );
    }
 
