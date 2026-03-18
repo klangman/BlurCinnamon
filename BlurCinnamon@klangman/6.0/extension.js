@@ -118,6 +118,13 @@ function debugMsg(...params) {
    //log(...params);
 }
 
+function printStackTrace(header) {
+   log( header );
+   var err = new Error();
+   log( "Stack:\n"+err.stack );
+}
+
+
 function _animateVisibleOverview() {
    if (this.visible || this.animationInProgress)
       return;
@@ -278,7 +285,7 @@ function getBackgroundClip(background) {
 }
 
 function createWindowClone(metaWindow, background) {
-   if (background.is_mapped() && background._blurCinnamonMetaWindowOwner !== metaWindow) {
+   if (background.is_mapped() && background._blurCinnamonMetaWindowOwner !== metaWindow && (!background._blurCinnamonDesktopOnly || metaWindow.get_window_type() === Meta.WindowType.DESKTOP)) {
       let rect = metaWindow.get_buffer_rect();
       let compositor = metaWindow.get_compositor_private();
       let windowClone = new Clutter.Clone({source: compositor, reactive: false, x: rect.x, y: rect.y });
@@ -314,6 +321,18 @@ function destroyAllWindowsClones(background) {
    background._blurCinnamonWinClones = [];
 }
 
+function destroyAllNonDesktopClones(background) {
+   for (let i=background._blurCinnamonWinClones.length-1 ; i >= 0 ; i--) {
+      let windowClone = background._blurCinnamonWinClones[i];
+      if (windowClone._metaWindow.get_window_type() !== Meta.WindowType.DESKTOP) {
+         debugMsg( `Removing clone ${windowClone} of '${windowClone._metaWindow.get_title()}' from background ${background._blurCinnamonName}` );
+         windowClone.hide();
+         windowClone.destroy();
+         background._blurCinnamonWinClones.splice(i, 1);
+      }
+   }
+}
+
 // Find windows that need to be cloned for the background passed in.
 // metaWindowOwner is the window that owns the background and therefore
 // only windows with a z-order below that window should be included.
@@ -329,29 +348,30 @@ function cloneWindowsForBackground(background, showingDesktop) {
    let blurY2 = blurY + blurHeight;
    let windowsToClone = [];
    let metaWindowOwner = background._blurCinnamonMetaWindowOwner;
+   let desktopOnly = background._blurCinnamonDesktopOnly;
 
-   if (!showingDesktop) {
-      // Find all windows that are visible and overlap with the passed in background
-      let windows = global.get_window_actors();
-      windows.forEach( (window) => {
-         let metaWindow = window.get_meta_window();
-         if (metaWindow && metaWindow.get_workspace() &&
-            (!metaWindowOwner || metaWindow.get_window_type() === Meta.WindowType.DESKTOP || metaWindowOwner.get_user_time() > metaWindow.get_user_time()) &&
-            (metaWindow.get_workspace().index() === currentWs || metaWindow.is_on_all_workspaces()) &&
-            !metaWindow.minimized && metaWindow.get_window_type() !== Meta.WindowType.OVERRIDE_OTHER)
-         {
-            let compositor = metaWindow.get_compositor_private();
-            let winRect = metaWindow.get_buffer_rect();
-            let winX = winRect.x;
-            let winY = winRect.y;
-            let winX2 = winRect.x + winRect.width;
-            let winY2 = winRect.y + winRect.height;
-            if (rectOverlap(winX, winY, winX2, winY2, blurX, blurY, blurX2, blurY2)) {
-               windowsToClone.push(metaWindow);
-            }
+   // Find all windows that are visible and overlap with the passed in background
+   let windows = global.get_window_actors();
+   windows.forEach( (window) => {
+      let metaWindow = window.get_meta_window();
+      if (metaWindow && metaWindow.get_workspace() &&
+         (!showingDesktop || metaWindow.get_window_type() === Meta.WindowType.DESKTOP) &&
+         (!metaWindowOwner || metaWindow.get_window_type() === Meta.WindowType.DESKTOP || metaWindowOwner.get_user_time() > metaWindow.get_user_time()) &&
+         (!desktopOnly || metaWindow.get_window_type() === Meta.WindowType.DESKTOP) &&
+         (metaWindow.get_workspace().index() === currentWs || metaWindow.is_on_all_workspaces()) &&
+         !metaWindow.minimized && metaWindow.get_window_type() !== Meta.WindowType.OVERRIDE_OTHER)
+      {
+         let compositor = metaWindow.get_compositor_private();
+         let winRect = metaWindow.get_buffer_rect();
+         let winX = winRect.x;
+         let winY = winRect.y;
+         let winX2 = winRect.x + winRect.width;
+         let winY2 = winRect.y + winRect.height;
+         if (rectOverlap(winX, winY, winX2, winY2, blurX, blurY, blurX2, blurY2)) {
+            windowsToClone.push(metaWindow);
          }
-      });
-   }
+      }
+   });
 
    let clones = background._blurCinnamonWinClones;
 
@@ -423,7 +443,7 @@ class CloneManager {
       this.desktop_showing = !this.desktop_showing;
       if (this.desktop_showing) {
          log( "Showing Desktop" );
-         this._backgrounds.forEach( (background) => destroyAllWindowsClones(background) );
+         this._backgrounds.forEach( (background) => destroyAllNonDesktopClones(background) );
       } else {
          log( "Showing windows" );
          this._backgrounds.forEach( (background) => cloneWindowsForBackground(background, this.desktop_showing) );
@@ -461,7 +481,7 @@ class CloneManager {
       }
    }
 
-   addBackground(background, metaWindowOwner) {
+   addBackground(background, owner, desktopOnly) {
       let idx = this._backgrounds.indexOf(background);
       if (idx !== -1) {
          debugMsg( `Not adding existing background "${background._blurCinnamonName}"` );
@@ -472,10 +492,20 @@ class CloneManager {
       debugMsg( `Adding background "${background}", children ${background._blurCinnamonGroup.get_n_children()}` );
       this._backgrounds.push(background);
       background._blurCinnamonWinClones = [];
-      let deskletClone = new Clutter.Clone({source : Main.deskletContainer.actor});
-      background._blurCinnamonGroup.insert_child_below(deskletClone, background._blurCinnamonDimmer);
-      background._blurCinnamonDeskletClone = deskletClone;
-      background._blurCinnamonMetaWindowOwner = metaWindowOwner
+      //let backgroundActor = Meta.get_x11_background_actor_for_display(global.display);
+      //let bgaClone = new Clutter.Clone({source : backgroundActor});
+      //background._blurCinnamonGroup.insert_child_below(bgaClone, background._blurCinnamonDimmer);
+      if (owner !== global.desklet_container) {
+         let deskletClone = new Clutter.Clone({source : Main.deskletContainer.actor});
+         background._blurCinnamonGroup.insert_child_below(deskletClone, background._blurCinnamonDimmer);
+         background._blurCinnamonDeskletClone = deskletClone;
+      }
+      if (owner instanceof Meta.Window) {
+         background._blurCinnamonMetaWindowOwner = owner;
+      } else {
+         background._blurCinnamonMetaWindowOwner = null;
+      }
+      background._blurCinnamonDesktopOnly = desktopOnly;
       cloneWindowsForBackground(background, this.desktop_showing);
       this._signalManager.connect(background, "notify::mapped", () => this._onBackgroundMapped(background));
    }
@@ -640,7 +670,7 @@ class CloneManager {
          if (blurApplications) {
             blurApplications.reapplyEffects();
          }
-         // Make sure we are listening for changes to windows on this (And only this) workspace
+         // Make sure we are listening for changes to windows on this (and only this) workspace
          this._setupWindowListeners();
          // Add new clones for windows on the new workspace
          this._backgrounds.forEach( (background) => cloneWindowsForBackground(background, this.desktop_showing) );
@@ -742,11 +772,11 @@ class BlurBase {
       return false;
    }
 
-   _createDynamicEffect(background, metaWindowOwner=null) {
+   _createDynamicEffect(background, owner=null, desktopOnly=false) {
       if (!cloneManager) {
          cloneManager = new CloneManager();
       }
-      cloneManager.addBackground(background, metaWindowOwner);
+      cloneManager.addBackground(background, owner, desktopOnly);
    }
 
    _destroyDynamicEffect(background) {
@@ -834,7 +864,6 @@ class BlurBase {
       let dynamicEffectActive = this._isDynamicEffectActive(background);
       // Remove any dynamic blurring if enabled
       if (dynamicEffectActive) {
-         log( "Removing dynamic effect on effects update" );
          this._destroyDynamicEffect(background);
       }
       // Create the background actor and attach the corner & desat effects
@@ -2077,7 +2106,7 @@ class BlurNotifications extends BlurBase {
 
 
       if (actor.visible) {
-         if (settings.allowTransparentColorPanels) {
+         //if (settings.allowTransparentColorPanels) {
             // Save the current settings so we can restore it if need be.
             this._activeNotificationData = {actor: actor, original_table_color: table.get_background_color(), original_actor_style: actor.get_style(),
                                             original_button_style: button.get_style(), original_table_style: table.get_style()};
@@ -2095,7 +2124,7 @@ class BlurNotifications extends BlurBase {
                              "background-gradient-end: transparent; background: transparent;" );
             table.set_style( /*"border-radius: 0px;*/ "background-gradient-direction: vertical; background-gradient-start: transparent; " +
                              "background-gradient-end: transparent; background: transparent;" );
-         }
+         //}
       }
       // Resize the background to match the size of the notification window
       this._setClip(actor, table);
@@ -2701,7 +2730,6 @@ class BlurDesklets extends BlurBase {
          let desklet = desklets[i].desklet;
          if (desklet && uuid) {
             this._addDeskletToList(desklet);
-            this._blurDesklet(desklet);
          }
       }
 
@@ -2712,8 +2740,23 @@ class BlurDesklets extends BlurBase {
             deskletList.splice(i, 1);
          }
       }
+
       // Save desklets-list just in case we removed anything
       settings.settings.setValue("desklets-list", deskletList);
+
+      // See if any desklets need to be blurred now that we have the desklets-list all setup right
+      desklets = DeskletManager.getDefinitions();
+      for (let i=0 ; i<desklets.length ; i++) {
+         let {uuid, desklet_id} = desklets[i];
+         let desklet = desklets[i].desklet;
+         if (desklet && uuid) {
+            this._blurDesklet(desklet);
+         }
+      }
+   }
+
+   _supportsDynamicBlur() {
+      return true;
    }
 
    _blurDesklet(desklet) {
@@ -2731,17 +2774,22 @@ class BlurDesklets extends BlurBase {
          bottomRadius = themeNode.get_border_radius(St.Corner.BOTTOMLEFT);
          cornerRadius = Math.max(topRadius, bottomRadius);
       }
-      let [enabled, opacity, blendColor, blurType, radius, saturation] = this._getDeskletSettings(desklet);
+      let deskletSettings = this._getDeskletSettings(desklet);
+      let [enabled, opacity, blendColor, blurType, radius, saturation] = deskletSettings;
       if (enabled) {
          let background = this._createBackgroundAndEffects(opacity, blendColor, blurType, radius, saturation, null, cornerRadius, topRadius!==0, bottomRadius!==0);
          global.desklet_container.insert_child_at_index(background, 0);
          background._blurCinnamonName = "Desklet";
          desklet._blurCinnamonBackground = background;
+         background._blurCinnamonSettings = deskletSettings;
          this._setClip(desklet);
          background.show();
          desklet._blurCinnamonSignalManager = new SignalManager.SignalManager(null);
          desklet._blurCinnamonSignalManager.connect(desklet.actor, "notify::allocation", () => this._setClip(desklet) );
          //desklet._blurCinnamonSignalManager.connect(desklet, "destroy", () => this._deskletRemoved(desklet) );
+         if (blurType === BlurType.DynamicBlur) {
+            this._createDynamicEffect(background, global.desklet_container, true);
+         }
       }
    }
 
@@ -2806,15 +2854,22 @@ class BlurDesklets extends BlurBase {
          let desklet =  DeskletManager.get_object_for_instance(element.instance);
          if (desklet) {
             //log( `Updating ${desklet.metadata.name} / ${desklet._uuid} / ${desklet.instance_id} / ${(desklet._blurCinnamonBackground!==undefined)}` );
-            let [enabled, opacity, blendColor, blurType, radius, saturation] = this._getDeskletSettings(desklet);
-            if (desklet._blurCinnamonBackground) {
-               if (enabled) {
-                  this._updateEffects( desklet._blurCinnamonBackground, opacity, blendColor, blurType, radius, saturation );
-               } else {
-                  this._deskletDestroy(desklet);
+            let deskletSettings = this._getDeskletSettings(desklet);
+            // If desklet was never blurred in the past, or any of the desklets blur settings have changed
+            if (!desklet._blurCinnamonBackground || !deskletSettings.every( (e, i) => e == desklet._blurCinnamonBackground._blurCinnamonSettings[i] )) {
+               let [enabled, opacity, blendColor, blurType, radius, saturation] = deskletSettings;
+               if (desklet._blurCinnamonBackground) {
+                  if (enabled) {
+                     this._updateEffects( desklet._blurCinnamonBackground, opacity, blendColor, blurType, radius, saturation );
+                     if (blurType === BlurType.DynamicBlur && !this._isDynamicEffectActive(desklet._blurCinnamonBackground)) {
+                        this._createDynamicEffect(desklet._blurCinnamonBackground, global.desklet_container, true);
+                     }
+                  } else {
+                     this._deskletDestroy(desklet);
+                  }
+               } else if (enabled) {
+                  this._blurDesklet(desklet)
                }
-            } else if (enabled) {
-               this._blurDesklet(desklet)
             }
          }
       });
@@ -2965,7 +3020,7 @@ class BlurSettings {
       this.bind('enable-notification-override', 'notificationOverride', updateNotificationEffects);
       this.bind('enable-appswitcher-override',  'appswitcherOverride');
       this.bind('enable-tooltips-override',     'tooltipsOverride');
-      this.bind('enable-desklets-override',     'deskletsOverride');
+      this.bind('enable-desklets-override',     'deskletsOverride', updateDeskletEffects);
 
       this.bind('enable-overview-effects',      'enableOverviewEffects', enableOverviewChanged);
       this.bind('enable-expo-effects',          'enableExpoEffects',     enableExpoChanged);
