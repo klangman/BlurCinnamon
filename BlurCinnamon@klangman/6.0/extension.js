@@ -284,8 +284,8 @@ function getBackgroundClip(background) {
    return clip;
 }
 
-function createWindowClone(metaWindow, background) {
-   if (background.is_mapped() && background._blurCinnamonMetaWindowOwner !== metaWindow && (!background._blurCinnamonDesktopOnly || metaWindow.get_window_type() === Meta.WindowType.DESKTOP)) {
+function createWindowClone(metaWindow, background, desktopOnly) {
+   if (background.is_mapped() && background._blurCinnamonMetaWindowOwner !== metaWindow && (!desktopOnly || metaWindow.get_window_type() === Meta.WindowType.DESKTOP)) {
       let rect = metaWindow.get_buffer_rect();
       let compositor = metaWindow.get_compositor_private();
       let windowClone = new Clutter.Clone({source: compositor, reactive: false, x: rect.x, y: rect.y });
@@ -297,7 +297,7 @@ function createWindowClone(metaWindow, background) {
       windowClone._metaWindow = metaWindow;
       return windowClone;
    } else {
-      debugMsg( "Not creating a clone. Background is not mapped or a self clone attempt." );
+      debugMsg( "Not creating a clone unnecessary cone." );
    }
 }
 
@@ -337,7 +337,7 @@ function destroyAllNonDesktopClones(background) {
 // metaWindowOwner is the window that owns the background and therefore
 // only windows with a z-order below that window should be included.
 // If metaWindowOwner is null, all overlapping windows will be cloned
-function cloneWindowsForBackground(background, showingDesktop) {
+function cloneWindowsForBackground(background, showingDesktop, desktopOnly) {
    let currentWs = global.workspace_manager.get_active_workspace_index();
    let [blurX, blurY, blurWidth, blurHeight] = getBackgroundClip(background);
    if (blurWidth===0 || blurHeight===0 || !background.is_mapped()) {
@@ -348,7 +348,7 @@ function cloneWindowsForBackground(background, showingDesktop) {
    let blurY2 = blurY + blurHeight;
    let windowsToClone = [];
    let metaWindowOwner = background._blurCinnamonMetaWindowOwner;
-   let desktopOnly = background._blurCinnamonDesktopOnly;
+   //let desktopOnly = background._blurCinnamonDesktopOnly;
 
    // Find all windows that are visible and overlap with the passed in background
    let windows = global.get_window_actors();
@@ -401,13 +401,13 @@ function cloneWindowsForBackground(background, showingDesktop) {
          // so we do it after all the events are processed. This results an annoying flash when
          // new windows are added to the clone list.
          debugMsg( "Creating clones for Background after removing all clones" );
-         Mainloop.idle_add( () => windowsToClone.forEach( (window) => createWindowClone(window, background) ) );
+         Mainloop.idle_add( () => windowsToClone.forEach( (window) => createWindowClone(window, background, desktopOnly) ) );
          return;
       }
    }
    // Create all the needed clones
-   debugMsg( "Creating clones for Background" );
-   windowsToClone.forEach( (window) => createWindowClone(window, background) );
+   debugMsg( `Creating ${windowsToClone.length} clones for Background of ${background._blurCinnamonName}` );
+   windowsToClone.forEach( (window) => createWindowClone(window, background, desktopOnly) );
 
    return;
 }
@@ -446,7 +446,7 @@ class CloneManager {
          this._backgrounds.forEach( (background) => destroyAllNonDesktopClones(background) );
       } else {
          log( "Showing windows" );
-         this._backgrounds.forEach( (background) => cloneWindowsForBackground(background, this.desktop_showing) );
+         this._backgrounds.forEach( (background) => cloneWindowsForBackground(background, this.desktop_showing, background._blurCinnamonDesktopOnly) );
       }
    }
 
@@ -467,7 +467,7 @@ class CloneManager {
    _uiScaleChanged() {
       this._backgrounds.forEach( (background) => destroyAllWindowsClones(background) );
       // Delay creating closes to avoid issues with an instance destroy/create sequence
-      Mainloop.idle_add( () => { this._backgrounds.forEach( (background) => cloneWindowsForBackground(background, this.desktop_showing) ); } );
+      Mainloop.idle_add( () => { this._backgrounds.forEach( (background) => cloneWindowsForBackground(background, this.desktop_showing, background._blurCinnamonDesktopOnly) ); } );
    }
 
    getBackgroundCount() {
@@ -477,7 +477,7 @@ class CloneManager {
    backgroundClipChanged(background) {
       let idx = this._backgrounds.indexOf(background);
       if (idx!==-1) {
-         cloneWindowsForBackground(this._backgrounds[idx], this.desktop_showing);
+         cloneWindowsForBackground(background, this.desktop_showing, background._blurCinnamonDesktopOnly);
       }
    }
 
@@ -506,7 +506,7 @@ class CloneManager {
          background._blurCinnamonMetaWindowOwner = null;
       }
       background._blurCinnamonDesktopOnly = desktopOnly;
-      cloneWindowsForBackground(background, this.desktop_showing);
+      cloneWindowsForBackground(background, this.desktop_showing, background._blurCinnamonDesktopOnly);
       this._signalManager.connect(background, "notify::mapped", () => this._onBackgroundMapped(background));
    }
 
@@ -532,10 +532,33 @@ class CloneManager {
       return (idx!==-1);
    }
 
+   raiseDeskletBackground(background) {
+      debugMsg( "Raising desklet background" );
+      // Hide the desklet container from all backgrounds to avoid an endless loop while painting
+      // The desklets are not under of any backgrounds anymore since it's been raised to the top
+      this._backgrounds.forEach( (background) => {
+         if (background._blurCinnamonDeskletClone) {
+            background._blurCinnamonDeskletClone.hide();
+         }
+      });
+      cloneWindowsForBackground(background, this.desktop_showing, false);
+   }
+
+   lowerDeskletBackground(background) {
+      debugMsg( "Lowering desklet background" );
+      // Show the desklet containter for all backgrounds since the desklets are now lowered again
+      this._backgrounds.forEach( (background) => {
+         if (background._blurCinnamonDeskletClone) {
+            background._blurCinnamonDeskletClone.show();
+         }
+      });
+      cloneWindowsForBackground(background, this.desktop_showing, background._blurCinnamonDesktopOnly);
+   }
+
    _onBackgroundMapped(background) {
       debugMsg( `Background ${(background.mapped)?"mapped":"unmapped"} for ${background._blurCinnamonName}` );
       if (background.mapped === true) {
-         cloneWindowsForBackground(background, this.desktop_showing);
+         cloneWindowsForBackground(background, this.desktop_showing, background._blurCinnamonDesktopOnly);
       } else {
          destroyAllWindowsClones(background);
       }
@@ -596,7 +619,7 @@ class CloneManager {
                let blurY2 = blurY + blurHeight;
                if ( rectOverlap(winX, winY, winX2, winY2, blurX, blurY, blurX2, blurY2) )
                {
-                  createWindowClone(metaWindow, background)
+                  createWindowClone(metaWindow, background, background._blurCinnamonDesktopOnly)
                }
             }
          });
@@ -637,7 +660,7 @@ class CloneManager {
       this._backgrounds.forEach( (background) => {
          if (background._blurCinnamonMetaWindowOwner === window) {
             debugMsg( "Cloning windows because a blurred window has received the focus" );
-            cloneWindowsForBackground(background, this.desktop_showing);
+            cloneWindowsForBackground(background, this.desktop_showing, background._blurCinnamonDesktopOnly);
          }
          if (background._blurCinnamonWinClones) {
             let dimmer = background._blurCinnamonDimmer;
@@ -673,7 +696,7 @@ class CloneManager {
          // Make sure we are listening for changes to windows on this (and only this) workspace
          this._setupWindowListeners();
          // Add new clones for windows on the new workspace
-         this._backgrounds.forEach( (background) => cloneWindowsForBackground(background, this.desktop_showing) );
+         this._backgrounds.forEach( (background) => cloneWindowsForBackground(background, this.desktop_showing, background._blurCinnamonDesktopOnly) );
       }
    }
 
@@ -706,7 +729,7 @@ class CloneManager {
          }
          if (!found && overlap && underOwner) {
             debugMsg( `Adding clone on allocation event` );
-            createWindowClone(metaWindow, background)
+            createWindowClone(metaWindow, background, background._blurCinnamonDesktopOnly)
          }
       });
    }
@@ -786,6 +809,18 @@ class BlurBase {
             cloneManager.destroy();
             cloneManager = null;
          }
+      }
+   }
+
+   _raiseDeskletDynamicBackground(background) {
+      if (cloneManager) {
+         cloneManager.raiseDeskletBackground(background);
+      }
+   }
+
+   _lowerDeskletDynamicBackground(background) {
+      if (cloneManager) {
+         cloneManager.lowerDeskletBackground(background);
       }
    }
 
@@ -2723,6 +2758,11 @@ class BlurDesklets extends BlurBase {
       this.original_unloadDesklet = DeskletManager._unloadDesklet;
       DeskletManager._unloadDesklet = this._unloadDesklet;
 
+      this.origianl_raise = DeskletManager.DeskletContainer.prototype.raise;
+      DeskletManager.DeskletContainer.prototype.raise = this._raise;
+      this.origianl_lower = DeskletManager.DeskletContainer.prototype.lower;
+      DeskletManager.DeskletContainer.prototype.lower = this._lower;
+
       // Make sure all the Desklets are defined in the deskletList
       let desklets = DeskletManager.getDefinitions();
       for (let i=0 ; i<desklets.length ; i++) {
@@ -2757,6 +2797,48 @@ class BlurDesklets extends BlurBase {
 
    _supportsDynamicBlur() {
       return true;
+   }
+
+   // Monkey patched function to raise the desklets
+   _raise() {
+      blurDeskletsThis.origianl_raise.call(this);
+      blurDeskletsThis._deskletsRaised.call(blurDeskletsThis);
+   }
+
+   _deskletsRaised() {
+      log( "Desklets raised" );
+      let desklets = DeskletManager.getDefinitions();
+      for (let i=0 ; i<desklets.length ; i++) {
+         let {uuid, desklet_id} = desklets[i];
+         let desklet = desklets[i].desklet;
+         if (desklet._blurCinnamonBackground) {
+            settings = desklet._blurCinnamonBackground._blurCinnamonSettings;
+            if(settings[3] === BlurType.DynamicBlur) {
+               this._raiseDeskletDynamicBackground(desklet._blurCinnamonBackground);
+            }
+         }
+      }
+   }
+
+   // Monkey patched function to lower the deskelts
+   _lower() {
+      blurDeskletsThis.origianl_lower.call(this);
+      blurDeskletsThis._deskletsLowered.call(blurDeskletsThis);
+   }
+
+   _deskletsLowered() {
+      log( "Desklets lowered" );
+      let desklets = DeskletManager.getDefinitions();
+      for (let i=0 ; i<desklets.length ; i++) {
+         let {uuid, desklet_id} = desklets[i];
+         let desklet = desklets[i].desklet;
+         if (desklet._blurCinnamonBackground) {
+            settings = desklet._blurCinnamonBackground._blurCinnamonSettings;
+            if(settings[3] === BlurType.DynamicBlur) {
+               this._lowerDeskletDynamicBackground(desklet._blurCinnamonBackground);
+            }
+         }
+      }
    }
 
    _blurDesklet(desklet) {
@@ -2861,6 +2943,7 @@ class BlurDesklets extends BlurBase {
                if (desklet._blurCinnamonBackground) {
                   if (enabled) {
                      this._updateEffects( desklet._blurCinnamonBackground, opacity, blendColor, blurType, radius, saturation );
+                     desklet._blurCinnamonBackground._blurCinnamonSettings = deskletSettings;
                      if (blurType === BlurType.DynamicBlur && !this._isDynamicEffectActive(desklet._blurCinnamonBackground)) {
                         this._createDynamicEffect(desklet._blurCinnamonBackground, global.desklet_container, true);
                      }
@@ -2869,6 +2952,7 @@ class BlurDesklets extends BlurBase {
                   }
                } else if (enabled) {
                   this._blurDesklet(desklet)
+                  desklet._blurCinnamonBackground._blurCinnamonSettings = deskletSettings;
                }
             }
          }
@@ -2927,6 +3011,9 @@ class BlurDesklets extends BlurBase {
       }
       DeskletManager._createDesklets = this.original_createDesklets;
       DeskletManager._unloadDesklet = this.original_unloadDesklet;
+
+      DeskletManager.DeskletContainer.prototype.raise = this.origianl_raise;
+      DeskletManager.DeskletContainer.prototype.lower = this.origianl_lower;
    }
 }
 
