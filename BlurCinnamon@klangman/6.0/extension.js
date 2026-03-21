@@ -2145,13 +2145,18 @@ class BlurNotifications extends BlurBase {
             let radius = themeNode.get_border_radius(St.Corner.TOPLEFT);
             this._updateCornerRadius(this._background, (radius+6)/global.ui_scale);
          }
-
-         actor.set_style( /*"border-radius: 0px;*/ "background-gradient-direction: vertical; background-gradient-start: transparent; " +
-                          "background-gradient-end: transparent; background: transparent;" );
-         button.set_style( /*"border-radius: 0px;*/ "background-gradient-direction: vertical; background-gradient-start: transparent; " +
-                          "background-gradient-end: transparent; background: transparent;" );
-         table.set_style( /*"border-radius: 0px;*/ "background-gradient-direction: vertical; background-gradient-start: transparent; " +
-                          "background-gradient-end: transparent; background: transparent;" );
+         if (settings.allowTransparentColorNotifications) {
+            actor.set_style( /*"border-radius: 0px;*/ "background-gradient-direction: vertical; background-gradient-start: transparent; " +
+                             "background-gradient-end: transparent; background: transparent;" );
+            button.set_style( /*"border-radius: 0px;*/ "background-gradient-direction: vertical; background-gradient-start: transparent; " +
+                             "background-gradient-end: transparent; background: transparent;" );
+            table.set_style( /*"border-radius: 0px;*/ "background-gradient-direction: vertical; background-gradient-start: transparent; " +
+                             "background-gradient-end: transparent; background: transparent;" );
+         } else {
+            actor.set_style( this._activeNotificationData.original_actor_style );
+            button.set_style( this._activeNotificationData.original_button_style );
+            table.set_style( this._activeNotificationData.original_table_style );
+         }
          this._setClip(actor, table);
          if (this._blurType === BlurType.DynamicBlur && !this._isDynamicEffectActive(this._background)) {
             this._createDynamicEffect(this._background);
@@ -2182,17 +2187,16 @@ class BlurNotifications extends BlurBase {
 
 
       if (actor.visible) {
-         //if (settings.allowTransparentColorPanels) {
+         let themeNode = table.get_theme_node();
+         if (themeNode) {
+            // We are assuming that all corners have the same radius, hope that is true.
+            let radius = themeNode.get_border_radius(St.Corner.TOPLEFT);
+            this._updateCornerRadius(this._background, (radius+6)/global.ui_scale);
+         }
+         if (settings.allowTransparentColorNotifications) {
             // Save the current settings so we can restore it if need be.
-            this._activeNotificationData = {actor: actor, original_table_color: table.get_background_color(), original_actor_style: actor.get_style(),
+            this._activeNotificationData = {actor: actor, original_actor_style: actor.get_style(),
                                             original_button_style: button.get_style(), original_table_style: table.get_style()};
-
-            let themeNode = table.get_theme_node();
-            if (themeNode) {
-               // We are assuming that all corners have the same radius, hope that is true.
-               let radius = themeNode.get_border_radius(St.Corner.TOPLEFT);
-               this._updateCornerRadius(this._background, (radius+6)/global.ui_scale);
-            }
 
             actor.set_style( /*"border-radius: 0px;*/ "background-gradient-direction: vertical; background-gradient-start: transparent; " +
                              "background-gradient-end: transparent; background: transparent;" );
@@ -2200,7 +2204,7 @@ class BlurNotifications extends BlurBase {
                              "background-gradient-end: transparent; background: transparent;" );
             table.set_style( /*"border-radius: 0px;*/ "background-gradient-direction: vertical; background-gradient-start: transparent; " +
                              "background-gradient-end: transparent; background: transparent;" );
-         //}
+         }
       }
       // Resize the background to match the size of the notification window
       this._setClip(actor, table);
@@ -2245,7 +2249,6 @@ class BlurNotifications extends BlurBase {
          let actor = this._activeNotificationData.actor;
          let button = actor.get_child();
          let table = button.get_child();
-         table.set_background_color( this._activeNotificationData.original_table_color );
          actor.set_style( this._activeNotificationData.original_actor_style );
          button.set_style( this._activeNotificationData.original_button_style );
          table.set_style( this._activeNotificationData.original_table_style );
@@ -2301,8 +2304,10 @@ class BlurTooltips extends BlurBase {
          this._updateCornerRadius(this._background, (radius+6)/global.ui_scale);
       }
 
-      actor.set_style(  "background-gradient-direction: vertical; background-gradient-start: transparent; " +
-                        "background-gradient-end: transparent;    background: transparent;"  );
+      if (settings.allowTransparentColorTooltips) {
+         actor.set_style(  "background-gradient-direction: vertical; background-gradient-start: transparent; " +
+                           "background-gradient-end: transparent;    background: transparent;"  );
+      }
       // Track the showing tooltip actor so we know which hide call to react to
       this._tooltipActor = actor;
       // Clip the background subtracting the actors margins since in some cases not doing so makes the background too large
@@ -3112,6 +3117,7 @@ class BlurSettings {
       this.bind('notification-radius',     'notificationRadius',     updateNotificationEffects);
       this.bind('notification-blendColor', 'notificationBlendColor', updateNotificationEffects);
       this.bind('notification-saturation', 'notificationSaturation', updateNotificationEffects);
+      this.bind('allow-transparent-color-notifications', 'allowTransparentColorNotifications', updateNotificationEffects);
 
       this.bind('appswitcher-opacity',    'appswitcherOpacity');
       this.bind('appswitcher-blurType',   'appswitcherBlurType');
@@ -3124,6 +3130,7 @@ class BlurSettings {
       this.bind('tooltips-radius',     'tooltipRadius');
       this.bind('tooltips-blendColor', 'tooltipBlendColor');
       this.bind('tooltips-saturation', 'tooltipSaturation');
+      this.bind('allow-transparent-color-tooltips', 'allowTransparentColorTooltips');
 
       this.bind('desklets-opacity',    'deskletsOpacity',    updateDeskletEffects);
       this.bind('desklets-blurType',   'deskletsBlurType',   updateDeskletEffects);
