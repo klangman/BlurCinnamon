@@ -290,9 +290,11 @@ function createWindowClone(metaWindow, background, desktopOnly) {
       let compositor = metaWindow.get_compositor_private();
       let windowClone = new Clutter.Clone({source: compositor, reactive: false, x: rect.x, y: rect.y });
       debugMsg( `Created clone ${windowClone} of ${metaWindow.get_title()} for background ${background._blurCinnamonName}` );
-      let dimmer = background._blurCinnamonDimmer;
-      let group = background._blurCinnamonGroup
-      group.insert_child_below(windowClone, dimmer);
+      if (metaWindow.get_window_type() === Meta.WindowType.DESKTOP && background._blurCinnamonDeskletClone) {
+         background._blurCinnamonGroup.insert_child_below(windowClone, background._blurCinnamonDeskletClone);
+      } else {
+         background._blurCinnamonGroup.insert_child_below(windowClone, background._blurCinnamonDimmer);
+      }
       background._blurCinnamonWinClones.push(windowClone);
       windowClone._metaWindow = metaWindow;
       return windowClone;
@@ -319,6 +321,43 @@ function destroyAllWindowsClones(background) {
       windowClone.destroy();
    });
    background._blurCinnamonWinClones = [];
+}
+
+// Remove clones not in the new list of clones, add clones for windows not in the existing list of clones
+function applyNewCloneList(background, windowsToClone, desktopOnly) {
+   // This is the simple way, delete all clones and then make all the new clones
+   destroyAllWindowsClones(background);
+   windowsToClone.forEach( (window) => createWindowClone(window, background, desktopOnly) );
+   return;
+
+   // Hide all clones that are no longer needed
+   let clones = background._blurCinnamonWinClones;
+   clones.forEach( (clone) => {
+      if (!windowsToClone.includes(clone._metaWindow)) {
+         clone.hide();
+      }
+   });
+   // Reorder and/or add any missing clones.
+   windowsToClone.forEach( (metaWindow) => {
+      if (background.is_mapped() && background._blurCinnamonMetaWindowOwner !== metaWindow && (!desktopOnly || metaWindow.get_window_type() === Meta.WindowType.DESKTOP)) {
+         let idx = clones.findIndex( (clone) => clone._metaWindow === metaWindow );
+         if (idx !==-1) {
+            if (metaWindow.get_window_type() === Meta.WindowType.DESKTOP && background._blurCinnamonDeskletClone) {
+               background._blurCinnamonGroup.insert_child_below(clones[idx], background._blurCinnamonDeskletClone);
+            } else {
+               background._blurCinnamonGroup.insert_child_below(clones[idx], background._blurCinnamonDimmer);
+            }
+         } else {
+            createWindowClone(metaWindow, background, desktopOnly);
+         }
+      }
+   });
+   // Remove all hidden clones on idle to avoid issues (does we really need to do it at idle??)
+   Mainloop.idle_add( () => background._blurCinnamonWinClones.forEach( (clone) => {
+      if (!clone.is_visible()) {
+         destroyWindowClone(clone, background);
+      }
+   }));
 }
 
 function destroyAllNonDesktopClones(background) {
@@ -348,7 +387,6 @@ function cloneWindowsForBackground(background, showingDesktop, desktopOnly) {
    let blurY2 = blurY + blurHeight;
    let windowsToClone = [];
    let metaWindowOwner = background._blurCinnamonMetaWindowOwner;
-   //let desktopOnly = background._blurCinnamonDesktopOnly;
 
    // Find all windows that are visible and overlap with the passed in background
    let windows = global.get_window_actors();
@@ -394,16 +432,18 @@ function cloneWindowsForBackground(background, showingDesktop, desktopOnly) {
          }
       }
 
-      // There are changes to the set of clones needed, so clear all existing clones
-      destroyAllWindowsClones(background);
       if (metaWindowOwner && windowsToClone.length > 0) {
-         // Adding clones immediately after removing all the clones causes bad things for windows
-         // so we do it after all the events are processed. This results an annoying flash when
-         // new windows are added to the clone list.
-         debugMsg( "Creating clones for Background after removing all clones" );
-         Mainloop.idle_add( () => windowsToClone.forEach( (window) => createWindowClone(window, background, desktopOnly) ) );
+         // For Application windows, if we mess with the clones wight now it causes problems, so make the changes at idle
+         debugMsg( "Creating clones for window Background on idle" );
+         Mainloop.idle_add( () => { destroyAllWindowsClones(background); windowsToClone.forEach( (window) => createWindowClone(window, background, desktopOnly) ); } );
          return;
       }
+      // Remove/Add clones
+      //applyNewCloneList(background, windowsToClone, desktopOnly);
+      //return;
+
+      // There are changes to the set of clones needed, so clear all existing clones
+      destroyAllWindowsClones(background);
    }
    // Create all the needed clones
    debugMsg( `Creating ${windowsToClone.length} clones for Background of ${background._blurCinnamonName}` );
@@ -465,6 +505,7 @@ class CloneManager {
    }
 
    _uiScaleChanged() {
+      debugMsg( "UI Scale Changed" );
       this._backgrounds.forEach( (background) => destroyAllWindowsClones(background) );
       // Delay creating closes to avoid issues with an instance destroy/create sequence
       Mainloop.idle_add( () => { this._backgrounds.forEach( (background) => cloneWindowsForBackground(background, this.desktop_showing, background._blurCinnamonDesktopOnly) ); } );
@@ -613,7 +654,7 @@ class CloneManager {
 
          debugMsg( `Checking if clones are needed for appeared window: "${metaWindow.get_title()}"` );
          this._backgrounds.forEach( (background) => {
-            if (!background._blurCinnamonMetaWindowOwner || background._blurCinnamonMetaWindowOwner.get_user_time() > metaWindow.get_user_time() ) {
+            if (!background._blurCinnamonMetaWindowOwner || metaWindow.get_window_type() === Meta.WindowType.DESKTOP || background._blurCinnamonMetaWindowOwner.get_user_time() > metaWindow.get_user_time() ) {
                let [blurX, blurY, blurWidth, blurHeight] = getBackgroundClip(background);
                let blurX2 = blurX + blurWidth;
                let blurY2 = blurY + blurHeight;
@@ -654,7 +695,7 @@ class CloneManager {
 
    _onFocusChanged() {
       let window = global.display.get_focus_window();
-      if (!window)
+      if (!window || window.get_window_type() === Meta.WindowType.DESKTOP)
          return;
       let compositor = window.get_compositor_private();
       this._backgrounds.forEach( (background) => {
@@ -711,7 +752,7 @@ class CloneManager {
          let blurX2 = blurX + blurWidth;
          let blurY2 = blurY + blurHeight;
          let overlap = rectOverlap(rect.x, rect.y, rect.x+rect.width, rect.y+rect.height, blurX, blurY, blurX+blurWidth, blurY+blurHeight);
-         let underOwner = (!background._blurCinnamonMetaWindowOwner || background._blurCinnamonMetaWindowOwner.get_user_time() > metaWindow.get_user_time() );
+         let underOwner = (!background._blurCinnamonMetaWindowOwner || metaWindow.get_window_type() === Meta.WindowType.DESKTOP || background._blurCinnamonMetaWindowOwner.get_user_time() > metaWindow.get_user_time() );
          let found = false;
          for (let idx=background._blurCinnamonWinClones.length-1 ; idx >= 0 ; idx-- ) {
             let windowClone = background._blurCinnamonWinClones[idx];
