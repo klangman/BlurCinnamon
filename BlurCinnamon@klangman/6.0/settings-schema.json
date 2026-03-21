@@ -270,56 +270,65 @@
 
     "enable-overview-override" : {
         "type": "switch",
-        "description": "Use unique effect settings for the Overview",
+        "description": "Override the generic effect settings for the Overview",
         "dependency" : "enable-overview-effects & component-selector=6",
+        "tooltip": "Override the settings found on the \"Generic effect settings\" tab with unique settings for this cinnamon component.",
         "default": false
     },
     "enable-expo-override" : {
         "type": "switch",
-        "description": "Use unique effect settings for the Expo",
+        "description": "Override the generic effect settings for the Expo",
         "dependency" : "enable-expo-effects & component-selector=3",
+        "tooltip": "Override the settings found on the \"Generic effect settings\" tab with unique settings for this cinnamon component.",
         "default": false
     },
     "enable-panels-override" : {
         "type": "switch",
-        "description": "Use unique effect settings for the Panels",
+        "description": "Override the generic effect settings for the Panels",
         "dependency" : "enable-panels-effects & component-selector=7",
+        "tooltip": "Override the settings found on the \"Generic effect settings\" tab with unique settings for this cinnamon component.",
         "default": false
     },
     "enable-popup-override" : {
         "type": "switch",
-        "description": "Use unique effect settings for the popup menus",
+        "description": "Override the generic effect settings for popup menus",
         "dependency" : "enable-popup-effects & component-selector=4",
+        "tooltip": "Override the settings found on the \"Generic effect settings\" tab with unique settings for this cinnamon component.",
         "default": false
     },
     "enable-desktop-override" : {
         "type": "switch",
-        "description": "Use unique effect settings for the desktop background",
+        "description": "Override the generic effect settings for the desktop background",
         "dependency" : "enable-desktop-effects & component-selector=2",
+        "tooltip": "Override the settings found on the \"Generic effect settings\" tab with unique settings for this cinnamon component.",
         "default": false
     },
     "enable-notification-override" : {
         "type": "switch",
-        "description": "Use unique effect settings for the notification popups",
+        "description": "Override the generic effect settings for notification popups",
         "dependency" : "enable-notification-effects & component-selector=5",
+        "tooltip": "Override the settings found on the \"Generic effect settings\" tab with unique settings for this cinnamon component.",
         "default": false
     },
     "enable-appswitcher-override" : {
         "type": "switch",
-        "description": "Use unique effect settings for the Alt-Tab app switcher",
+        "description": "Override the generic effect settings for the Alt-Tab app switcher",
         "dependency" : "enable-appswitcher-effects & component-selector=0",
+        "tooltip": "Override the settings found on the \"Generic effect settings\" tab with unique settings for this cinnamon component.",
         "default": false
     },
     "enable-tooltips-override" : {
         "type": "switch",
-        "description": "Use unique effect settings for the panel tooltips",
+        "description": "Override the generic effect settings for panel tooltips",
         "dependency" : "enable-tooltips-effects & component-selector=8",
+        "tooltip": "Override the settings found on the \"Generic effect settings\" tab with unique settings for this cinnamon component.",
         "default": false
     },
     "enable-desklets-override" : {
         "type": "switch",
-        "description": "Use unique effect settings for the Desklets",
+        "description": "Override the generic effect settings for Desklets",
         "dependency" : "enable-desklet-effects & component-selector=1",
+        "tooltip": "Override the settings found on the \"Generic effect settings\" tab with unique settings for this cinnamon component.",
         "default": false
     },
 
