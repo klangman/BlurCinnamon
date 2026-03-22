@@ -890,7 +890,7 @@ class BlurBase {
 
       // Add a dimmer child to the background so we can change the colorization and dimming of the background
       let dimmerColor = this._getColor( blendColor, opacity );
-      let dimmer = new Clutter.Actor({x_expand: true, y_expand: true, width: background.width, height: background.height, background_color: dimmerColor});
+      let dimmer = new Clutter.Actor({width: background.width, height: background.height, background_color: dimmerColor});
       let group = new St.Group({clip_to_allocation: true});
       group.set_size( background.width, background.height);
 
@@ -898,7 +898,12 @@ class BlurBase {
       background.add_child(group);
 
       // If the screen resolution changes we need to change the dimmer actor size to match
-      background.connect("notify::size", () => {dimmer.set_width(background.width); dimmer.set_height(background.height);} );
+      background.connect("notify::size", () => {
+         group.set_width(background.width);
+         group.set_height(background.height);
+         dimmer.set_width(background.width);
+         dimmer.set_height(background.height);
+      });
       background._blurCinnamonDimmer = dimmer;
       background._blurCinnamonGroup = group;
 
