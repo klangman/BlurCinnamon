@@ -2477,6 +2477,10 @@ class BlurApplications extends BlurBase {
       //signalManager.connect(metaWindow, "unmanaged"/*"unmanaging"*/, () => this._unblurWindow(compositor) );
       signalManager.connect(compositor, "destroy", () => this._unblurWindow(compositor) );
       signalManager.connect(compositor, "notify::allocation", () => this._setClip(compositor) );
+      // Some windows are positioned after their first allocation, so keep the blur aligned
+      // when either the compositor actor or the MetaWindow reports a position update.
+      signalManager.connect(compositor, "position-changed", () => this._setClip(compositor) );
+      signalManager.connect(metaWindow, "position-changed", () => this._setClip(compositor) );
       //signalManager.connect(metaWindow, "notify::maximized-horizontally", () => this._setClip(compositor) );
       //signalManager.connect(metaWindow, "notify::maximized-vertically", () => this._setClip(compositor) );
 
@@ -2535,10 +2539,11 @@ class BlurApplications extends BlurBase {
          //let windowShadowSizeY = (compositor.get_height() - rect.height) / 2;
          //data.background.set_position( -rect.x+windowShadowSizeX, -rect.y+windowShadowSizeY );
 
-         // Set the background position to the displays 0,0 based on it's transformed position and it's current position
-         let [rx,ry] = data.background.get_transformed_position();
-         let [x,y] = data.background.get_position();
-         data.background.set_position( x-rx, y-ry );
+         // The blur background lives inside the window compositor actor, so it must be
+         // offset by the compositor's transformed stage position, not by its own previous
+         // transformed position. Otherwise the blur and the real window can drift apart.
+         let [rx, ry] = compositor.get_transformed_position();
+         data.background.set_position(-rx, -ry);
 
          let cornerEffect = this._getCornerEffect(data.background);
          if (cornerEffect) {
@@ -2728,6 +2733,8 @@ class BlurFocusEffect extends BlurBase {
       this._focusedCompositor = window.get_compositor_private();
       this._focusedCompositor.insert_child_at_index(this._background, 0);
       this._signalManager.connect(this._focusedCompositor, "notify::allocation", () => this._setClip() );
+      this._signalManager.connect(this._focusedCompositor, "position-changed", () => this._setClip() );
+      this._signalManager.connect(window, "position-changed", () => this._setClip() );
       this._signalManager.connect(window, "unmanaging", () => this._removeEffect() );
       this._focusedCompositor._blurCinnamonDataFocusEffect = { effectThis: this };
       this._setClip();
@@ -2738,6 +2745,8 @@ class BlurFocusEffect extends BlurBase {
       this._background.hide();
       if (this._focusedCompositor) {
          this._signalManager.disconnect("notify::allocation", this._focusedCompositor );
+         this._signalManager.disconnect("position-changed", this._focusedCompositor );
+         this._signalManager.disconnect("position-changed", this._focusedWindow );
          this._signalManager.disconnect("unmanaging", this._focusedWindow );
          this._focusedCompositor.remove_child(this._background);
          this._focusedCompositor._blurCinnamonDataFocusEffect = undefined;
@@ -2763,10 +2772,9 @@ class BlurFocusEffect extends BlurBase {
          //let windowShadowSizeY = (compositor.get_height() - rect.height) / 2;
          //data.background.set_position( -rect.x+windowShadowSizeX, -rect.y+windowShadowSizeY );
 
-         // Set the background position to the displays 0,0 based on it's transformed position and it's current position
-         let [rx,ry] = this._background.get_transformed_position();
-         let [x,y] = this._background.get_position();
-         this._background.set_position( x-rx, y-ry );
+         // Keep the focus background aligned with the compositor actor in stage coordinates.
+         let [rx, ry] = this._focusedCompositor.get_transformed_position();
+         this._background.set_position(-rx, -ry);
 
          if (this._cornerEffect)
             this._cornerEffect.clip = [rect.x+2, rect.y+2, rect.width-3, rect.height-3];
