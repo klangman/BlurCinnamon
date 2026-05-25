@@ -323,6 +323,18 @@ function getBackgroundClip(background) {
    return clip;
 }
 
+// Hack: To fix artifacts after painting a lower z-order clone, redraw the clone that is one higher in the z-order (the widow directly above).
+// This is only needed for application window backgrounds.
+function clonePainted(background, actor) {
+   let children = background._blurCinnamonGroup.get_children();
+   let idx = children.findIndex( (element) => element === actor );
+   if (idx != -1 && idx < children.length-1 && children[idx+1]._metaWindow) {
+      //log( `parint for ${actor._metaWindow.get_title()}, queuing redraw for ${children[idx+1]._metaWindow.get_title()}` );
+      children[idx+1].queue_redraw();
+   }
+}
+
+
 function createWindowClone(metaWindow, background, desktopOnly) {
    if (background.is_mapped() && background._blurCinnamonMetaWindowOwner !== metaWindow && (!desktopOnly || metaWindow.get_window_type() === Meta.WindowType.DESKTOP) &&
       (!background._blurCinnamonMetaWindowOwner || background._blurCinnamonMetaWindowOwner.get_window_type() !== Meta.WindowType.DESKTOP || metaWindow.get_window_type() === Meta.WindowType.DESKTOP) ) {
@@ -347,9 +359,12 @@ function createWindowClone(metaWindow, background, desktopOnly) {
       //} else {
       //   windowClone._paintEventId = windowClone.connect( "paint", (actor) => log( `Paint clone for ${actor._metaWindow.get_title()}/${actor._metaWindow.get_id()} for background ${background._blurCinnamonName}` ) );
       //}
+      if (settings.windowArtifactMitigation && background._blurCinnamonMetaWindowOwner) {
+         windowClone._paintEventId = windowClone.connect( "paint", (actor) => clonePainted(background, actor));
+      }
       return windowClone;
    } else {
-      debugMsg( "Not creating a clone unnecessary cone." );
+      debugMsg( "Not creating an unnecessary clone." );
    }
 }
 
@@ -359,7 +374,8 @@ function destroyWindowClone(windowClone, background) {
    } else {
       debugMsg( `Removing clone ${windowClone} of "${windowClone._metaWindow.get_title()}"/${windowClone._metaWindow.get_id()} from background ${background._blurCinnamonName} with ${background._blurCinnamonWinClones.length} clones` );
    }
-   //windowClone.disconnect( windowClone._paintEventId );
+   if (windowClone._paintEventId) 
+      windowClone.disconnect( windowClone._paintEventId );
    background._blurCinnamonGroup.remove_child(windowClone);
    windowClone.destroy();
    let idx = background._blurCinnamonWinClones.indexOf(windowClone);
@@ -372,7 +388,8 @@ function destroyWindowClone(windowClone, background) {
 function destroyAllWindowsClones(background) {
    background._blurCinnamonWinClones.forEach( (windowClone) => {
       debugMsg( `Removing clone ${windowClone} of '${windowClone._metaWindow.get_title()}' from background ${background._blurCinnamonName}` );
-      windowClone.hide();
+      background._blurCinnamonGroup.remove_child(windowClone);
+      //windowClone.hide();
       windowClone.destroy();
    });
    background._blurCinnamonWinClones = [];
@@ -407,7 +424,7 @@ function applyNewCloneList(background, windowsToClone, desktopOnly) {
          }
       }
    });
-   // Remove all hidden clones on idle to avoid issues (does we really need to do it at idle??)
+   // Remove all hidden clones on idle to avoid issues (do we really need to do it at idle??)
    Mainloop.idle_add( () => background._blurCinnamonWinClones.forEach( (clone) => {
       if (!clone.is_visible()) {
          destroyWindowClone(clone, background);
@@ -566,7 +583,7 @@ class CloneManager {
    }
 
    _onWindowMinimized(metaWindow) {
-      this._onWindowDisappeared(metaWindow)
+      this._onWindowDisappeared(metaWindow);
    }
 
    _onWindowUnminimized(metaWindow) {
@@ -576,7 +593,7 @@ class CloneManager {
       if (blurApplications) {
          blurApplications.reapplyEffects(metaWindow);
       }
-      this._onWindowAppeared(metaWindow)
+      this._onWindowAppeared(metaWindow);
    }
 
    _uiScaleChanged() {
@@ -597,6 +614,21 @@ class CloneManager {
       }
    }
 
+   updateArtifactMitigation() {
+      debugMsg( "Update Artifact Mitigation" );
+      this._backgrounds.forEach( (background) => {
+         if (background._blurCinnamonMetaWindowOwner) {
+            background._blurCinnamonWinClones.forEach( (windowClone) => {
+               if (settings.windowArtifactMitigation && !windowClone._paintEventId) {
+                  windowClone._paintEventId = windowClone.connect( "paint", (actor) => clonePainted(background, windowClone));
+               } else if (!settings.windowArtifactMitigation && windowClone._paintEventId) {
+                  windowClone.disconnect( windowClone._paintEventId );
+               }
+            });
+         }
+      }); 
+   }
+   
    addBackground(background, owner, desktopOnly) {
       let idx = this._backgrounds.indexOf(background);
       if (idx !== -1) {
@@ -647,6 +679,8 @@ class CloneManager {
          background._blurCinnamonDeskletClone.destroy();
          delete background._blurCinnamonDeskletClone;
       }
+      delete background._blurCinnamonMetaWindowOwner;
+      delete background._blurCinnamonDesktopOnly;
       this._backgrounds.splice(idx, 1);
       debugMsg( `Removed background for "${background}"/"${background._blurCinnamonName}", group children = ${background._blurCinnamonGroup.get_n_children()}` );
    }
@@ -685,6 +719,7 @@ class CloneManager {
       if (background.mapped === true) {
          cloneWindowsForBackground(background, this.desktop_showing, background._blurCinnamonDesktopOnly);
       } else {
+         // An unmapped background can still be visible when a clone is shows (i.e Alt-Tab)
          //destroyAllWindowsClones(background);
       }
    }
@@ -1144,7 +1179,9 @@ class BlurBase {
 
    destroy(background) {
       if (background._blurCinnamonDimmer) {
-         background.remove_child(background._blurCinnamonDimmer);
+         background._blurCinnamonGroup.remove_child(background._blurCinnamonDimmer);
+         background._blurCinnamonDimmer.destroy();
+         delete background._blurCinnamonDimmer;
       }
       let effect = this._getCornerEffect(background);
       if (effect)
@@ -2203,7 +2240,7 @@ class BlurDesktop extends BlurBase {
       global.background_actor.add_effect_with_name( DESAT_EFFECT_NAME, this._desatEffect );
       // Add a dimmer child to the background so we can change the colorization and dimming of the background
       let dimmerColor = this._getColor( blendColor, opacity );
-      this._dimmer = new Clutter.Actor({x_expand: true, y_expand: true, width: global.background_actor.width, height: global.background_actor.height, background_color: dimmerColor});
+      this._dimmer = new Clutter.Actor({x_expand: true, y_expand: true, width: global.screen_width, height: global.screen_height, background_color: dimmerColor});
       global.background_actor.add_child(this._dimmer);
       this.updateEffects();
    }
@@ -2225,7 +2262,8 @@ class BlurDesktop extends BlurBase {
          this._signalManager.disconnectAllSignals();
          this._connected = false
       } else if(!this._connected && settings.desktopWithoutFocus) {
-         this._signalManager.connect(global.display, "notify::focus-window", this._onFocusChanged, this);
+         this._signalManager.connect(global.display, "notify::focus-window", () => this._onFocusChanged());
+         this._signalManager.connect(Main.layoutManager, "monitors-changed", () => this._monitorsChanged());
          this._connected = true;
       }
       let curEffect = global.background_actor.get_effect(BLUR_EFFECT_NAME);
@@ -2293,6 +2331,12 @@ class BlurDesktop extends BlurBase {
             this._desatEffect.set_factor((100-this._withoutFocusSettings.saturation)/100);
          this._currentlyWithFocus = false;
       }
+   }
+
+   _monitorsChanged() {
+      debugMsg( `Monitor Changed: Scale ${global.ui_scale}, Width,Height ${global.screen_width},${global.screen_height}` );
+      this._dimmer.set_width(global.screen_width);
+      this._dimmer.set_height(global.screen_height);
    }
 
    destroy() {
@@ -2645,7 +2689,7 @@ class BlurApplications extends BlurBase {
       let compositor = metaWindow.get_compositor_private();
 
       if (metaWindow.get_title() == "nemo-desktop") {
-         log( `setting nemo-desktop style for window with ${compositor.get_n_children()} children` );
+         //log( `setting nemo-desktop style for window with ${compositor.get_n_children()} children` );
          //compositor.get_child_at_index(0).set_style( "background-gradient-direction: vertical; background-gradient-start: transparent; " +
          //                 "background-gradient-end: transparent; background: transparent;" );
          //compositor.get_child_at_index(0).set_background_color( this._getColor("rgba(0,0,0,0)", 40) );
@@ -2676,10 +2720,10 @@ class BlurApplications extends BlurBase {
          //signalManager.connect(metaWindow, "unmanaged"/*"unmanaging"*/, () => this._unblurWindow(compositor) );
          signalManager.connect(compositor, "destroy", () => this._unblurWindow(compositor) );
          signalManager.connect(compositor, "notify::allocation", () => this._setClip(compositor) );
-      // Some windows are positioned after their first allocation, so keep the blur aligned
-      // when either the compositor actor or the MetaWindow reports a position update.
-      //signalManager.connect(compositor, "position-changed", () => this._setClip(compositor) );
-      signalManager.connect(metaWindow, "position-changed", () => this._setClip(compositor) );
+         // Some windows are positioned after their first allocation, so keep the blur aligned
+         // when either the compositor actor or the MetaWindow reports a position update.
+         //signalManager.connect(compositor, "position-changed", () => this._setClip(compositor) );
+         signalManager.connect(metaWindow, "position-changed", () => this._setClip(compositor) );
          //signalManager.connect(metaWindow, "notify::maximized-horizontally", () => this._setClip(compositor) );
          //signalManager.connect(metaWindow, "notify::maximized-vertically", () => this._setClip(compositor) );
 
@@ -2769,7 +2813,7 @@ class BlurApplications extends BlurBase {
          let data = compositor._blurCinnamonDataWindow;
          data.signalManager.disconnectAllSignals();
          this._destroyDynamicEffect(data.background);
-         compositor.remove_child(data.background);
+         //compositor.remove_child(data.background);
          super.destroy(data.background);
          data.background.destroy();
          data.metaWindow.set_opacity(255);
@@ -2786,7 +2830,7 @@ class BlurApplications extends BlurBase {
          if (data) {
             debugMsg( "Reapplying effects to window" );
             this._unblurWindow(compositor);
-            Mainloop.idle_add( () =>  this._blurWindow(metaWindow) );
+            Mainloop.idle_add( () => this._blurWindow(metaWindow) );
          }
       } else {
          // Go through all windows and remove then reapply effects
@@ -2802,7 +2846,7 @@ class BlurApplications extends BlurBase {
          }
       }
    }
-
+   
    updateEffects() {
       // Go through all windows and update/apply/remove effects
       let windows = global.display.list_windows(0);
@@ -3366,7 +3410,8 @@ class BlurSettings {
       this.bind('enable-desklets-unique-settings', 'enableDeskletsUniqueSettings', updateDeskletEffects);
 
       this.bind('windows-inclusion-list', 'windowInclusionList', updateWindowEffects);
-
+      this.bind('windows-atrifact-mitigation', 'windowArtifactMitigation', updateArtifactMitigation);
+      
       this.bind('focused-window-backlight', 'focusedWindowEffect', updateFocusedWindowEffect);
 
       this.bind('enable-overview-override',     'overviewOverride');
@@ -3449,6 +3494,12 @@ function updateDeskletEffects() {
 function updateWindowEffects() {
    if (blurApplications && settings.enableWindowEffects) {
       blurApplications.updateEffects();
+   }
+}
+
+function updateArtifactMitigation() {
+   if (cloneManager) {
+      cloneManager.updateArtifactMitigation();
    }
 }
 

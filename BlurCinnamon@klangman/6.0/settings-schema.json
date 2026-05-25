@@ -59,7 +59,7 @@
                     "notification-warning", "enable-notification-override", "allow-transparent-color-notifications", "notification-opacity", "notification-blendColor", "notification-blurType", "notification-radius", "notification-saturation", "notification-test-button",
                     "appswitcher-warning", "enable-appswitcher-override", "appswitcher-disable-3d-panels", "appswitcher-allow-classic", "window-settings-button", "appswitcher-opacity", "appswitcher-blendColor", "appswitcher-blurType", "appswitcher-radius", "appswitcher-saturation",
                     "tooltips-warning", "enable-tooltips-override", "allow-transparent-color-tooltips", "tooltips-opacity", "tooltips-blendColor", "tooltips-blurType", "tooltips-radius", "tooltips-saturation",
-                    "windows-warning", "windows-inclusion-list", "windows-label", "windows-add-button", "windows-compiz-mitigation",
+                    "windows-warning", "windows-inclusion-list", "windows-label", "windows-add-button", "windows-atrifact-mitigation", "windows-compiz-mitigation",
                     "desklets-warning", "enable-desklets-override", "enable-desklets-unique-settings", "desklets-opacity", "desklets-blendColor", "desklets-blurType", "desklets-radius", "desklets-saturation", "desklets-list", "desklets-auto", "desklets-label",
                     "info-label"
                   ]
@@ -1142,7 +1142,7 @@
             {"id": "override",      "title": "Custom",       "type": "boolean", "default": true},
             {"id": "opacity",       "title": "Dim",          "type": "integer", "default": 0,  "min": 0, "max": 100},
             {"id": "color",         "title": "Color",        "type": "string",  "default": "rgb(0,0,0)"},
-            {"id": "blurtype",      "title": "Background",   "type": "integer", "default": 2, "options": {"Transparent to wallpaper": 0, "Simple static blur": 1, "Gaussian static blur": 2, "Gaussian dynamic blur (experimental)": 4, "Monte Carlo static blur": 5, "Monte Carlo dynamic blur (experimental)": 6 } },
+            {"id": "blurtype",      "title": "Background",   "type": "integer", "default": 2, "options": {"Transparent to wallpaper": 0, "Simple static blur": 1, "Gaussian static blur": 2, "Gaussian dynamic blur": 4, "Monte Carlo static blur": 5, "Monte Carlo dynamic blur": 6 } },
             {"id": "radius",        "title": "Intensity",    "type": "integer", "default": 10,  "min": 0, "max": 100},
             {"id": "saturation",    "title": "Saturation",   "type": "integer", "default": 100, "min": 0, "max": 100},
             {"id": "corner_radius", "title": "Corner Radius","type": "integer", "default": 10, "min": 0, "max": 25},
@@ -1175,6 +1175,14 @@
         "description": "Disable \"Compiz\" effects for windows with Blur Cinnamon effects",
         "dependency" : "enable-window-effects & component-selector=9",
         "tooltip": "When enabled, the window moving effect created by the \"Compiz windows effect\" extension will be disabled for windows with Blur Cinnamon effects applied. This option will have no effect unless the \"Compiz window effect\" extension is installed and active."
+    },
+
+    "windows-atrifact-mitigation": {
+        "type": "switch",
+        "default": true,
+        "description": "Use artifact mitigation techniques",
+        "dependency" : "enable-window-effects & component-selector=9",
+        "tooltip": "When enabled, steps will be taken to eliminate background graphical artifacts for windows that use dynamic blur effects. The mitigation steps will have some minor persistent CPU costs when a dynamic blurred window is on top of two or more other windows. This option is recommended unless you are using video wallpaper like Hidamari"
     },
 
     "desklets-auto": {

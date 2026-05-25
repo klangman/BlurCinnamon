@@ -159,7 +159,6 @@ const MonteCarloBlurEffect =
         }
 
         set iterations(value) {
-            log( `Setting interations to ${value}` );
             if (this._iterations !== value) {
                 this._iterations = value;
 
