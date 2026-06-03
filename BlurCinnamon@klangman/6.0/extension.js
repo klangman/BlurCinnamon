@@ -253,7 +253,7 @@ function _initAppSwitcher3D(...params) {
       if (settings.appswitcherDisablePanels) {
          let panels = Main.getPanels();
          for ( let i=0 ; i < panels.length  ; i++ ) {
-            if (panels[i]) 
+            if (panels[i])
                panels[i].disable();
          }
       }
@@ -374,7 +374,7 @@ function destroyWindowClone(windowClone, background) {
    } else {
       debugMsg( `Removing clone ${windowClone} of "${windowClone._metaWindow.get_title()}"/${windowClone._metaWindow.get_id()} from background ${background._blurCinnamonName} with ${background._blurCinnamonWinClones.length} clones` );
    }
-   if (windowClone._paintEventId) 
+   if (windowClone._paintEventId)
       windowClone.disconnect( windowClone._paintEventId );
    background._blurCinnamonGroup.remove_child(windowClone);
    windowClone.destroy();
@@ -446,9 +446,10 @@ function destroyAllNonDesktopClones(background) {
 
 // This function just schedules an update to the background clones.
 // We don't do this work right away for a number of reasons:
-// 1. There are what I believe to be bugs in Clutter that causes hangs and weird behavior if done immediately
+// 1. There are (what I believe to be) bugs in Clutter that causes hangs and weird behavior if done immediately
 // 2. The sort_windows_by_stacking() API will sort incorrectly when called from within the "notify::focus-window" event handler
 function cloneWindowsForBackground(background, showingDesktop, desktopOnly) {
+   //Promise.resolve().then( () => cloneWindowsForBackgroundNow(background, showingDesktop, desktopOnly) );
    Mainloop.idle_add( () => cloneWindowsForBackgroundNow(background, showingDesktop, desktopOnly) );
 }
 
@@ -493,7 +494,7 @@ function cloneWindowsForBackgroundNow(background, showingDesktop, desktopOnly) {
       }
    });
 
-   // Sort the windows bye the stacking order (lowest -> highest z-oder)
+   // Sort the windows bye the stacking order (lowest -> highest z-order)
    windowsToClone = global.display.sort_windows_by_stacking(windowsToClone);
 
    // Remove owner window and all windows above it
@@ -626,9 +627,9 @@ class CloneManager {
                }
             });
          }
-      }); 
+      });
    }
-   
+
    addBackground(background, owner, desktopOnly) {
       let idx = this._backgrounds.indexOf(background);
       if (idx !== -1) {
@@ -886,6 +887,7 @@ class CloneManager {
                } else {
                   windowClone.x = rect.x;
                   windowClone.y = rect.y;
+                  //log( `Moved ${background._blurCinnamonName} window clone for ${windowClone._metaWindow.get_title()} to ${windowClone.x},${windowClone.y} - ${windowClone.width},${windowClone.height} visisble: ${windowClone.visible}` );
                }
             }
          }
@@ -1282,7 +1284,7 @@ class BlurClassicSwitcher extends BlurBase {
 
    _hideBackground() {
       if (this._blurType === BlurType.DynamicBlur || this.blurType === BlurType.DynamicMC) {
-         debugMsg( "Removing dynamic effect for classic app switcher" ); 
+         debugMsg( "Removing dynamic effect for classic app switcher" );
          this._destroyDynamicEffect(this._background);
       }
 
@@ -1294,9 +1296,11 @@ class BlurClassicSwitcher extends BlurBase {
    destroy() {
       ClassicSwitcher.ClassicSwitcher.prototype._show = this.original_show;
       ClassicSwitcher.ClassicSwitcher.prototype._hide = this.original_hide;
-      global.overlay_group.remove_actor(this._background);
-      super.destroy(this._background);
-      this._background.destroy();
+      if (this._background) {
+         global.overlay_group.remove_actor(this._background);
+         super.destroy(this._background);
+         this._background.destroy();
+      }
    }
 }
 
@@ -2649,11 +2653,7 @@ class BlurApplications extends BlurBase {
    }
 
    _supportsDynamicBlur() {
-      // Since support for Dynamic blur for Application windows is "experimental", we return false here.
-      // It's used to choose between static and dynamic when the generic setting is set to dynamic
-      // so by returning false, the default will be Gaussian static when dynamic is selected.
-      // The only way to enable dynamic is to use custom settings for the specific window!
-      return false;
+      return true;
    }
 
    _onWindowGrabbed(display, screen, window, op) {
@@ -2846,7 +2846,7 @@ class BlurApplications extends BlurBase {
          }
       }
    }
-   
+
    updateEffects() {
       // Go through all windows and update/apply/remove effects
       let windows = global.display.list_windows(0);
@@ -3169,7 +3169,6 @@ class BlurDesklets extends BlurBase {
          background._blurCinnamonName = "Desklet";
          desklet._blurCinnamonBackground = background;
          background._blurCinnamonSettings = deskletSettings;
-         //background._desklet = desklet; // DEBUGGING ONLY!!! Remove this 
          this._setClip(desklet);
          background.show();
          desklet._blurCinnamonSignalManager = new SignalManager.SignalManager(null);
@@ -3411,7 +3410,7 @@ class BlurSettings {
 
       this.bind('windows-inclusion-list', 'windowInclusionList', updateWindowEffects);
       this.bind('windows-atrifact-mitigation', 'windowArtifactMitigation', updateArtifactMitigation);
-      
+
       this.bind('focused-window-backlight', 'focusedWindowEffect', updateFocusedWindowEffect);
 
       this.bind('enable-overview-override',     'overviewOverride');
@@ -3459,7 +3458,7 @@ class BlurSettings {
    }
 
    destroy() {
-      this._signalManager .disconnectAllSignals();
+      this._signalManager.disconnectAllSignals();
       this.settings.finalize();
    }
 }
