@@ -130,7 +130,6 @@ function printStackTrace(header) {
    log( "Stack:\n"+err.stack );
 }
 
-
 function _animateVisibleOverview() {
    if (this.visible || this.animationInProgress)
       return;
@@ -218,7 +217,7 @@ function _animateVisibleExpo() {
 function _initAppSwitcher3D(...params) {
    this._oldInit(...params);
 
-   if (this._background && this.actor) {
+   if (this._background && this.actor && settings.enableAppswitcherEffects && settings.appswitcherAllow3D) {
       let blurType = (settings.appswitcherOverride) ? settings.appswitcherBlurType : settings.blurType;
       let radius = (settings.appswitcherOverride) ? settings.appswitcherRadius : settings.radius;
       let blendColor = (settings.appswitcherOverride) ? settings.appswitcherBlendColor : settings.blendColor;
@@ -248,14 +247,14 @@ function _initAppSwitcher3D(...params) {
       if (!ret) { [ret,color] = Clutter.Color.from_string( "rgba(0,0,0,0)" ); }
       color.alpha = opacity*2.55;
       this.actor.set_background_color(color);
+   }
 
-      // Disable all panels
-      if (settings.appswitcherDisablePanels) {
-         let panels = Main.getPanels();
-         for ( let i=0 ; i < panels.length  ; i++ ) {
-            if (panels[i])
-               panels[i].disable();
-         }
+   // Disable all panels
+   if (settings.appswitcherDisablePanels) {
+      let panels = Main.getPanels();
+      for ( let i=0 ; i < panels.length  ; i++ ) {
+         if (panels[i])
+            panels[i].disable();
       }
    }
 }
@@ -272,8 +271,10 @@ function _hideAppSwitcher3D(...params) {
    if (settings.appswitcherDisablePanels) {
       let panels = Main.getPanels();
       for ( let i=0 ; i < panels.length  ; i++ ) {
-         if (panels[i])
-            panels[i].enable();
+         if (panels[i]) {
+            // For some reason, if we enable the panels right now the panels applets don't reappear, doing this at idle seems to solve it.
+            Mainloop.idle_add( () => panels[i].enable() );
+         }
       }
    }
 
@@ -334,7 +335,6 @@ function clonePainted(background, actor) {
    }
 }
 
-
 function createWindowClone(metaWindow, background, desktopOnly) {
    if (background.is_mapped() && background._blurCinnamonMetaWindowOwner !== metaWindow && (!desktopOnly || metaWindow.get_window_type() === Meta.WindowType.DESKTOP) &&
       (!background._blurCinnamonMetaWindowOwner || background._blurCinnamonMetaWindowOwner.get_window_type() !== Meta.WindowType.DESKTOP || metaWindow.get_window_type() === Meta.WindowType.DESKTOP) ) {
@@ -354,11 +354,6 @@ function createWindowClone(metaWindow, background, desktopOnly) {
       }
       background._blurCinnamonWinClones.push(windowClone);
       windowClone._metaWindow = metaWindow;
-      //if (background._desklet) {
-      //   windowClone._paintEventId = windowClone.connect( "paint", (actor) => log( `Paint clone for ${actor._metaWindow.get_title()}/${actor._metaWindow.get_id()} for background ${background._blurCinnamonName} / desklet ${background._desklet}` ) );
-      //} else {
-      //   windowClone._paintEventId = windowClone.connect( "paint", (actor) => log( `Paint clone for ${actor._metaWindow.get_title()}/${actor._metaWindow.get_id()} for background ${background._blurCinnamonName}` ) );
-      //}
       if (settings.windowArtifactMitigation && background._blurCinnamonMetaWindowOwner) {
          windowClone._paintEventId = windowClone.connect( "paint", (actor) => clonePainted(background, actor));
       }
@@ -397,11 +392,6 @@ function destroyAllWindowsClones(background) {
 
 // Remove clones not in the new list of clones, add clones for windows not in the existing list of clones
 function applyNewCloneList(background, windowsToClone, desktopOnly) {
-   // This is the simple way, delete all clones and then make all the new clones
-   destroyAllWindowsClones(background);
-   windowsToClone.forEach( (window) => createWindowClone(window, background, desktopOnly) );
-   return;
-
    // Hide all clones that are no longer needed
    let clones = background._blurCinnamonWinClones;
    clones.forEach( (clone) => {
@@ -482,7 +472,6 @@ function cloneWindowsForBackgroundNow(background, showingDesktop, desktopOnly) {
          !metaWindow.minimized && metaWindow.get_window_type() !== Meta.WindowType.OVERRIDE_OTHER &&
          metaWindow.get_wm_class() !== "Nemo-desktop")
       {
-         //let compositor = metaWindow.get_compositor_private();
          let winRect = metaWindow.get_buffer_rect();
          let winX = winRect.x;
          let winY = winRect.y;
@@ -523,17 +512,6 @@ function cloneWindowsForBackgroundNow(background, showingDesktop, desktopOnly) {
          }
       }
 
-      /*
-      if (metaWindowOwner && windowsToClone.length > 0) {
-         // For Application windows, if we mess with the clones right now it causes problems, so make the changes at idle
-         debugMsg( `Creating clones for window Background on idle. ${metaWindowOwner.get_title()}/${metaWindowOwner.get_id()}` );
-         Mainloop.idle_add( () => { destroyAllWindowsClones(background); windowsToClone.forEach( (window) => createWindowClone(window, background, desktopOnly) ); } );
-         return;
-      }*/
-      // Remove/Add clones
-      //applyNewCloneList(background, windowsToClone, desktopOnly);
-      //return;
-
       // There are changes to the set of clones needed, so clear all existing clones
       destroyAllWindowsClones(background);
    }
@@ -560,8 +538,6 @@ class CloneManager {
 
       this._signalManager.connect(global.screen, "window-added", (screen, metaWindow, monitor) => this._onWindowAppeared(metaWindow) );
       this._signalManager.connect(global.screen, "window-removed", (screen, metaWindow, monitor) => this._onWindowDisappeared(metaWindow) );
-      //this._signalManager.connect(global.window_manager, "window-created", (wm, metaWindow) => this._onWindowAppeared(metaWindow) );
-      //this._signalManager.connect(global.window_manager, "window-closed", (wm, metaWindow) => this._onWindowDisappeared(metaWindow) );
       this._signalManager.connect(global.window_manager, "switch-workspace", () => this._updateCurrentWorkspace() );
       this._signalManager.connect(global.window_manager, "minimize", (wm, win) => this._onWindowMinimized(win.get_meta_window()) );
       this._signalManager.connect(global.window_manager, "unminimize", (wm, win) => this._onWindowUnminimized(win.get_meta_window()) );
@@ -641,9 +617,6 @@ class CloneManager {
       debugMsg( `Adding background "${background}", children ${background._blurCinnamonGroup.get_n_children()}` );
       background._blurCinnamonWinClones = [];
       this._backgrounds.push(background);
-      //let backgroundActor = Meta.get_x11_background_actor_for_display(global.display);
-      //let bgaClone = new Clutter.Clone({source : backgroundActor});
-      //background._blurCinnamonGroup.insert_child_below(bgaClone, background._blurCinnamonDimmer);
       if (owner !== global.desklet_container && (!owner || owner.get_window_type() !== Meta.WindowType.DESKTOP)) {
          let deskletClone = new Clutter.Clone({source : Main.deskletContainer.actor});
          background._blurCinnamonGroup.insert_child_below(deskletClone, background._blurCinnamonDimmer);
@@ -657,13 +630,6 @@ class CloneManager {
       background._blurCinnamonDesktopOnly = desktopOnly;
       cloneWindowsForBackgroundNow(background, this.desktop_showing, background._blurCinnamonDesktopOnly);
       this._signalManager.connect(background, "notify::mapped", () => this._onBackgroundMapped(background));
-      //this._signalManager.connect(background, "paint", () => {
-      //   if (background._blurCinnamonMetaWindowOwner)
-      //      log( `Paint background for ${background._blurCinnamonMetaWindowOwner.get_title()}/${background._blurCinnamonMetaWindowOwner.get_id()} for background ${background._blurCinnamonName}` );
-      //   else
-      //      log( `Paint for background ${background._blurCinnamonName}` );
-      //   background._blurCinnamonWinClones.forEach( (clone) => log( `   Background clone for ${clone._metaWindow.get_title()}/${clone._metaWindow.get_id()}` ) );
-      //});
    }
 
    removeBackground(background) {
@@ -672,7 +638,6 @@ class CloneManager {
          return;
       }
       this._signalManager.disconnect( "notify::mapped", background );
-      //this._signalManager.disconnect( "paint", background );
       destroyAllWindowsClones(background);
       delete background._blurCinnamonWinClones;
       if (background._blurCinnamonDeskletClone) {
@@ -887,7 +852,6 @@ class CloneManager {
                } else {
                   windowClone.x = rect.x;
                   windowClone.y = rect.y;
-                  //log( `Moved ${background._blurCinnamonName} window clone for ${windowClone._metaWindow.get_title()} to ${windowClone.x},${windowClone.y} - ${windowClone.width},${windowClone.height} visisble: ${windowClone.visible}` );
                }
             }
          }
@@ -1245,7 +1209,6 @@ class BlurClassicSwitcher extends BlurBase {
 
          // Create the effects and the background actor to apply to effects to
          let [opacity, blendColor, blurType, radius, saturation] = this._getSettings(settings.notificationOverride);
-         //blurType = BlurType.DynamicBlur
          this._blurType = blurType
          this._background = this._createBackgroundAndEffects(opacity, blendColor, blurType, radius, saturation, global.overlay_group, 10);
          this._background._blurCinnamonName = "ClassicSwitcher";
@@ -1270,12 +1233,6 @@ class BlurClassicSwitcher extends BlurBase {
 
    // Monkey patch function. The 'this' will be for ClassicSwitcher
    _hide(...params) {
-      if (this.actor && this._blurCinnamonBlurEffect) {
-         this.actor.remove_effect(this._blurCinnamonBlurEffect);
-      }
-      if (this.actor && this._blurCinnamonDesatEffect) {
-         this.actor.remove_effect(this._blurCinnamonDesatEffect);
-      }
       if (!this._previewEnabled) {
          blurClassicSwitcherThis._hideBackground.call(blurClassicSwitcherThis);
       }
@@ -1283,7 +1240,7 @@ class BlurClassicSwitcher extends BlurBase {
    }
 
    _hideBackground() {
-      if (this._blurType === BlurType.DynamicBlur || this.blurType === BlurType.DynamicMC) {
+      if (this._blurType === BlurType.DynamicBlur || this._blurType === BlurType.DynamicMC) {
          debugMsg( "Removing dynamic effect for classic app switcher" );
          this._destroyDynamicEffect(this._background);
       }
@@ -1718,6 +1675,8 @@ class BlurPanels extends BlurBase {
                global.overlay_group.remove_actor(blurredPanel.background);
                blurredPanel.background.destroy();
             }
+            if (blurredPanel.signalManager)
+               blurredPanel.signalManager.disconnectAllSignals()
             // Find the index of this panels this._blurredPanels entry then remove the entry
             for ( let i=0 ; i < this._blurredPanels.length ; i++ ) {
                if (this._blurredPanels[i].panel === panel) {
@@ -1869,7 +1828,7 @@ class BlurPopupMenus extends BlurBase {
       this._cornerEffect = this._getCornerEffect(this._background);
 
       // Setup the popup menu accent color
-      let accentOpacity =  settings.popupAccentOpacity;
+      let accentOpacity = settings.popupAccentOpacity;
       this._accentColor = this._getColor( blendColor, accentOpacity );
 
       this._changeCount = 0;
@@ -2688,13 +2647,6 @@ class BlurApplications extends BlurBase {
       // Get the windows compositor actor
       let compositor = metaWindow.get_compositor_private();
 
-      if (metaWindow.get_title() == "nemo-desktop") {
-         //log( `setting nemo-desktop style for window with ${compositor.get_n_children()} children` );
-         //compositor.get_child_at_index(0).set_style( "background-gradient-direction: vertical; background-gradient-start: transparent; " +
-         //                 "background-gradient-end: transparent; background: transparent;" );
-         //compositor.get_child_at_index(0).set_background_color( this._getColor("rgba(0,0,0,0)", 40) );
-      }
-
       // Get the effect setting that should apply to Application windows
       let [enabled, window_opacity, opacity, blendColor, blurType, radius, saturation, corner_radius, top, bottom] = this._getSettings(metaWindow);
       if (enabled) {
@@ -2722,7 +2674,6 @@ class BlurApplications extends BlurBase {
          signalManager.connect(compositor, "notify::allocation", () => this._setClip(compositor) );
          // Some windows are positioned after their first allocation, so keep the blur aligned
          // when either the compositor actor or the MetaWindow reports a position update.
-         //signalManager.connect(compositor, "position-changed", () => this._setClip(compositor) );
          signalManager.connect(metaWindow, "position-changed", () => this._setClip(compositor) );
          //signalManager.connect(metaWindow, "notify::maximized-horizontally", () => this._setClip(compositor) );
          //signalManager.connect(metaWindow, "notify::maximized-vertically", () => this._setClip(compositor) );
@@ -2982,7 +2933,6 @@ class BlurFocusEffect extends BlurBase {
       this._focusedCompositor = window.get_compositor_private();
       this._focusedCompositor.insert_child_at_index(this._background, 0);
       this._signalManager.connect(this._focusedCompositor, "notify::allocation", () => this._setClip() );
-      //this._signalManager.connect(this._focusedCompositor, "position-changed", () => this._setClip() );
       this._signalManager.connect(window, "position-changed", () => this._setClip() );
       this._signalManager.connect(window, "unmanaging", () => this._removeEffect() );
       this._focusedCompositor._blurCinnamonDataFocusEffect = { effectThis: this };
@@ -2994,7 +2944,6 @@ class BlurFocusEffect extends BlurBase {
       this._background.hide();
       if (this._focusedCompositor) {
          this._signalManager.disconnect("notify::allocation", this._focusedCompositor );
-         //this._signalManager.disconnect("position-changed", this._focusedCompositor );
          this._signalManager.disconnect("position-changed", this._focusedWindow );
          this._signalManager.disconnect("unmanaging", this._focusedWindow );
          this._focusedCompositor.remove_child(this._background);
@@ -3118,8 +3067,8 @@ class BlurDesklets extends BlurBase {
          let {uuid, desklet_id} = desklets[i];
          let desklet = desklets[i].desklet;
          if (desklet._blurCinnamonBackground) {
-            let settings = desklet._blurCinnamonBackground._blurCinnamonSettings;
-            if(settings[3] === BlurType.DynamicBlur || settings[3] === BlurType.DynamicMC) {
+            let blurSettings = desklet._blurCinnamonBackground._blurCinnamonSettings;
+            if(blurSettings[3] === BlurType.DynamicBlur || blurSettings[3] === BlurType.DynamicMC) {
                this._raiseDeskletDynamicBackground(desklet._blurCinnamonBackground);
             }
          }
@@ -3138,8 +3087,8 @@ class BlurDesklets extends BlurBase {
          let {uuid, desklet_id} = desklets[i];
          let desklet = desklets[i].desklet;
          if (desklet._blurCinnamonBackground) {
-            let settings = desklet._blurCinnamonBackground._blurCinnamonSettings;
-            if(settings[3] === BlurType.DynamicBlur || settings[3] === BlurType.DynamicMC) {
+            let blurSettings = desklet._blurCinnamonBackground._blurCinnamonSettings;
+            if(blurSettings[3] === BlurType.DynamicBlur || blurSettings[3] === BlurType.DynamicMC) {
                this._lowerDeskletDynamicBackground(desklet._blurCinnamonBackground);
             }
          }
@@ -3293,6 +3242,7 @@ class BlurDesklets extends BlurBase {
          delete desklet._blurCinnamonSignalManager;
       }
       if (desklet._blurCinnamonBackground) {
+         this._destroyDynamicEffect(desklet._blurCinnamonBackground);
          desklet._blurCinnamonBackground.hide();
          global.bottom_window_group.remove_actor(desklet._blurCinnamonBackground);
          desklet._blurCinnamonBackground.destroy();
@@ -3389,6 +3339,7 @@ class BlurSettings {
       this.bind('appswitcher-saturation', 'appswitcherSaturation');
       this.bind('appswitcher-disable-3d-panels', 'appswitcherDisablePanels');
       this.bind('appswitcher-allow-classic',     'appswitcherAllowClassic', enableClassicSwitcherChecked);
+      this.bind('appswitcher-allow-3d',          'appswitcherAllow3D'/*,      enable3DSwitcherChecked*/);
 
       this.bind('tooltips-opacity',    'tooltipOpacity');
       this.bind('tooltips-blurType',   'tooltipBlurType');
@@ -3429,7 +3380,7 @@ class BlurSettings {
       this.bind('enable-popup-effects',         'enablePopupEffects',    enablePopupChanged);
       this.bind('enable-desktop-effects',       'enableDesktopEffects',  enableDesktopChanged);
       this.bind('enable-notification-effects',  'enableNotificationEffects', enableNotificationChanged);
-      this.bind('enable-appswitcher-effects',   'enableAppswitcherEffects', enableAppswitcherChanged);
+      this.bind('enable-appswitcher-effects',   'enableAppswitcherEffects' /*, enableAppswitcherChanged*/);
       this.bind('enable-tooltips-effects',      'enableTooltipEffects',  enableTooltipsChanged);
       this.bind('enable-window-effects',        'enableWindowEffects',  enableWindowChanged);
       this.bind('enable-desklet-effects',       'enableDeskletEffects',  enableDeskletChanged);
@@ -3593,7 +3544,7 @@ function enableOverviewChanged() {
    if (settings.enableOverviewEffects) {
       Overview.Overview.prototype._animateVisible = _animateVisibleOverview;
       Overview.Overview.prototype._oldAnimateVisible = originalAnimateOverview;
-   } else {
+   } else if (Overview.Overview.prototype._oldAnimateVisible) {
       delete Overview.Overview.prototype._oldAnimateVisible;
       Overview.Overview.prototype._animateVisible = originalAnimateOverview;
    }
@@ -3603,31 +3554,36 @@ function enableExpoChanged() {
    if (settings.enableExpoEffects) {
       Expo.Expo.prototype._animateVisible = _animateVisibleExpo;
       Expo.Expo.prototype._oldAnimateVisible = originalAnimateExpo;
-   } else {
+   } else if (Expo.Expo.prototype._oldAnimateVisibleExpo) {
       delete Expo.Expo.prototype._oldAnimateVisibleExpo;
       Expo.Expo.prototype._animateVisible = originalAnimateExpo;
    }
 }
 
 function enableAppswitcherChanged() {
+   /*
    if (settings.enableAppswitcherEffects) {
-      AppSwitcher3D.AppSwitcher3D.prototype._init = _initAppSwitcher3D;
-      AppSwitcher3D.AppSwitcher3D.prototype._oldInit = originalInitAppSwitcher3D;
-      AppSwitcher3D.AppSwitcher3D.prototype._hide = _hideAppSwitcher3D;
-      AppSwitcher3D.AppSwitcher3D.prototype._oldHide = originalHideAppSwitcher3D;
+      if (settings.appswitcherAllow3D) {
+         AppSwitcher3D.AppSwitcher3D.prototype._init = _initAppSwitcher3D;
+         AppSwitcher3D.AppSwitcher3D.prototype._oldInit = originalInitAppSwitcher3D;
+         AppSwitcher3D.AppSwitcher3D.prototype._hide = _hideAppSwitcher3D;
+         AppSwitcher3D.AppSwitcher3D.prototype._oldHide = originalHideAppSwitcher3D;
+      }
       if (settings.appswitcherAllowClassic) {
          blurClassicSwitcher = new BlurClassicSwitcher();
       }
    } else {
-      delete AppSwitcher3D.AppSwitcher3D.prototype._oldInit;
-      AppSwitcher3D.AppSwitcher3D.prototype._init = originalInitAppSwitcher3D;
-      delete AppSwitcher3D.AppSwitcher3D.prototype._oldHide;
-      AppSwitcher3D.AppSwitcher3D.prototype._hide = originalHideAppSwitcher3D;
+      if (AppSwitcher3D.AppSwitcher3D.prototype._oldInit) {
+         delete AppSwitcher3D.AppSwitcher3D.prototype._oldInit;
+         AppSwitcher3D.AppSwitcher3D.prototype._init = originalInitAppSwitcher3D;
+         delete AppSwitcher3D.AppSwitcher3D.prototype._oldHide;
+         AppSwitcher3D.AppSwitcher3D.prototype._hide = originalHideAppSwitcher3D;
+      }
       if (blurClassicSwitcher) {
          blurClassicSwitcher.destroy();
          blurClassicSwitcher = null;
       }
-   }
+   }*/
 }
 
 function enableClassicSwitcherChecked() {
@@ -3639,6 +3595,21 @@ function enableClassicSwitcherChecked() {
          blurClassicSwitcher = null;
       }
    }
+}
+
+function enable3DSwitcherChecked() {
+   /*
+   if (settings.enableAppswitcherEffects && settings.appswitcherAllow3D) {
+      AppSwitcher3D.AppSwitcher3D.prototype._init = this._initAppSwitcher3D;
+      AppSwitcher3D.AppSwitcher3D.prototype._oldInit = originalInitAppSwitcher3D;
+      AppSwitcher3D.AppSwitcher3D.prototype._hide = this._hideAppSwitcher3D;
+      AppSwitcher3D.AppSwitcher3D.prototype._oldHide = originalHideAppSwitcher3D;
+   } else if (AppSwitcher3D.AppSwitcher3D.prototype._oldInit) {
+      delete AppSwitcher3D.AppSwitcher3D.prototype._oldInit;
+      AppSwitcher3D.AppSwitcher3D.prototype._init = originalInitAppSwitcher3D;
+      delete AppSwitcher3D.AppSwitcher3D.prototype._oldHide;
+      AppSwitcher3D.AppSwitcher3D.prototype._hide = originalHideAppSwitcher3D;
+   }*/
 }
 
 function enablePanelsChanged() {
@@ -3706,11 +3677,7 @@ function enableDeskletChanged() {
 }
 
 function init(extensionMeta) {
-   settings = new BlurSettings(extensionMeta.uuid);
    metaData = extensionMeta;
-
-   // Save the version number to the settings so that the About page can read it (is there a better way?)
-   settings.settings.setValue("ext-version", extensionMeta.version);
 
    // Store the original functions for monkey patched functions
    originalAnimateOverview = Overview.Overview.prototype._animateVisible;
@@ -3721,6 +3688,11 @@ function init(extensionMeta) {
 }
 
 function enable() {
+   settings = new BlurSettings(metaData.uuid);
+
+   // Save the version number to the settings so that the About page can read it (is there a better way?)
+   settings.settings.setValue("ext-version", metaData.version);
+
    // Monkey patch to enable Overview effects
    if (settings.enableOverviewEffects) {
       Overview.Overview.prototype._animateVisible = this._animateVisibleOverview;
@@ -3734,12 +3706,12 @@ function enable() {
    }
 
    // Monkey patch to enable 3D AppSwitcher effects
-   if (settings.enableAppswitcherEffects) {
+   //if (settings.enableAppswitcherEffects && settings.appswitcherAllow3D) {
       AppSwitcher3D.AppSwitcher3D.prototype._init = this._initAppSwitcher3D;
       AppSwitcher3D.AppSwitcher3D.prototype._oldInit = originalInitAppSwitcher3D;
       AppSwitcher3D.AppSwitcher3D.prototype._hide = this._hideAppSwitcher3D;
       AppSwitcher3D.AppSwitcher3D.prototype._oldHide = originalHideAppSwitcher3D;
-   }
+   //}
 
    // Unconditionally monkey patch _sizeChangeWindowDone since it's needed for two effects
    Main.wm._sizeChangeWindowDone = _sizeChangeWindowDoneWindowManager;
@@ -3798,22 +3770,22 @@ function enable() {
 }
 
 function disable() {
-   if (settings.enableOverviewEffects) {
+   if (Overview.Overview.prototype._oldAnimateVisible) {
       delete Overview.Overview.prototype._oldAnimateVisible;
       Overview.Overview.prototype._animateVisible = originalAnimateOverview;
    }
 
-   if (settings.enableExpoEffects) {
+   if (Expo.Expo.prototype._oldAnimateVisibleExpo) {
       delete Expo.Expo.prototype._oldAnimateVisibleExpo;
       Expo.Expo.prototype._animateVisible = originalAnimateExpo;
    }
 
-   if (settings.enableAppswitcherEffects) {
+   //if (AppSwitcher3D.AppSwitcher3D.prototype._oldInit) {
       delete AppSwitcher3D.AppSwitcher3D.prototype._oldInit;
       AppSwitcher3D.AppSwitcher3D.prototype._init = originalInitAppSwitcher3D;
       delete AppSwitcher3D.AppSwitcher3D.prototype._oldHide;
       AppSwitcher3D.AppSwitcher3D.prototype._hide = originalHideAppSwitcher3D;
-   }
+   //}
 
    Main.wm._sizeChangeWindowDone = originalSizeChangeWindowDone;
 
