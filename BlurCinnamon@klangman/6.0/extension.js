@@ -60,7 +60,7 @@ const CORNER_EFFECT_NAME = "corner";
 
 let originalAnimateOverview;
 let originalAnimateExpo;
-let originalInitAppSwitcher3D;
+let originalShowAppSwitcher3D;
 let originalHideAppSwitcher3D;
 let originalSizeChangeWindowDone;
 
@@ -214,8 +214,8 @@ function _animateVisibleExpo() {
       { opacity: Math.round(opacity*2.55), time: ANIMATION_TIME, transition: 'easeNone' } );
 }
 
-function _initAppSwitcher3D(...params) {
-   this._oldInit(...params);
+function _showAppSwitcher3D(...params) {
+   this._oldShow(...params);
 
    if (this._background && this.actor && settings.enableAppswitcherEffects && settings.appswitcherAllow3D) {
       let blurType = (settings.appswitcherOverride) ? settings.appswitcherBlurType : settings.blurType;
@@ -1120,10 +1120,24 @@ class BlurBase {
       return(background);
    }
 
-   _updateCornerRadius(background, radius) {
+   _updateCornerRadius(background, radius, top=true, bottom=true) {
       let ce = background.get_effect(CORNER_EFFECT_NAME);
-      if (ce)
+      if (ce) {
          ce.radius = radius;
+      } else {
+         if (radius>0) {
+            // Create the effect
+            let cornerEffect = new CornerEffect.CornerEffect( metaData.uuid, {radius: radius, corners_top: top, corners_bottom: bottom} );
+            // Remove all the other effects so we can add them back in the correct order (corner effect must be first)
+            let desatEffect = this._getDesatEffect(background);
+            if (desatEffect) background.remove_effect(desatEffect);
+            let blurEffect = this._getBlurEffect(background);
+            if (blurEffect) background.remove_effect(blurEffect);
+            background.add_effect_with_name( CORNER_EFFECT_NAME, cornerEffect );
+            if (desatEffect) background.add_effect_with_name( DESAT_EFFECT_NAME, desatEffect );
+            if (blurEffect) background.add_effect_with_name( BLUR_EFFECT_NAME, blurEffect );
+         }
+      }
    }
 
    _setClip(actor, marginsActor=null) {
@@ -1707,7 +1721,7 @@ class BlurPanels extends BlurBase {
                              "background-gradient-direction: vertical; background-gradient-start: transparent; " +
                              "background-gradient-end: transparent;    background: transparent; " + customCSS);
          }
-         Mainloop.idle_add( () => { this._setClip(panel) } );
+         //Mainloop.idle_add( () => { this._setClip(panel) } ); // This call to _setClip causes the blurred background to disappear for some reason.
       } else {
          actor.set_background_color(blurredPanel.original_color);
          actor.set_style(blurredPanel.original_style);
@@ -1731,6 +1745,26 @@ class BlurPanels extends BlurBase {
                      this._setPanelTransparency(blurredPanel, true);
                   }
                   this._setClip(panels[i]);
+                  let actor = panels[i].actor;
+                  // The customeCSS might have changed, so we need to restore the defaults and reapply the changes.
+                  if (settings.allowTransparentColorPanels) {
+                     actor.set_style(blurredPanel.original_style);
+                     actor.set_style_class_name(blurredPanel.original_class);
+                     actor.set_style_pseudo_class(blurredPanel.original_pseudo_class);
+                     actor.set_style( "border-image: none;  border-color: transparent;  box-shadow: 0 0 transparent; " +
+                                      "background-gradient-direction: vertical; background-gradient-start: transparent; " +
+                                      "background-gradient-end: transparent;    background: transparent; " + customCSS );
+                  }
+                  // The corner radius might have chnaged via the customCSS, so determine the corner radius
+                  let themeNode = actor.get_theme_node();
+                  let cornerRadius = 0;
+                  if (themeNode) {
+                     // TODO: Need to be able to independently round all four corners, needs improvements to the corner effect code!
+                     let topRadius = themeNode.get_border_radius(St.Corner.TOPLEFT);
+                     let bottomRadius = themeNode.get_border_radius(St.Corner.BOTTOMLEFT);
+                     cornerRadius = Math.max(topRadius, bottomRadius);
+                  }
+                  this._updateCornerRadius(blurredPanel.background, cornerRadius, topRadius!==0, bottomRadius!==0);
                } else {
                   this._blurPanel(panels[i]);
                }
@@ -2815,7 +2849,7 @@ class BlurApplications extends BlurBase {
                   cornerEffect.corners_top = top;
                   cornerEffect.corners_bottom = bottom;
                }
-               this._updateCornerRadius(data.background, corner_radius);
+               this._updateCornerRadius(data.background, corner_radius, top, bottom);
                if (!window_opacity || window_opacity < 10 || window_opacity > 100 )
                   window_opacity = 100;
                windows[i].set_opacity(window_opacity*2.55);
@@ -3339,7 +3373,7 @@ class BlurSettings {
       this.bind('appswitcher-saturation', 'appswitcherSaturation');
       this.bind('appswitcher-disable-3d-panels', 'appswitcherDisablePanels');
       this.bind('appswitcher-allow-classic',     'appswitcherAllowClassic', enableClassicSwitcherChecked);
-      this.bind('appswitcher-allow-3d',          'appswitcherAllow3D'/*,      enable3DSwitcherChecked*/);
+      this.bind('appswitcher-allow-3d',          'appswitcherAllow3D');
 
       this.bind('tooltips-opacity',    'tooltipOpacity');
       this.bind('tooltips-blurType',   'tooltipBlurType');
@@ -3380,7 +3414,7 @@ class BlurSettings {
       this.bind('enable-popup-effects',         'enablePopupEffects',    enablePopupChanged);
       this.bind('enable-desktop-effects',       'enableDesktopEffects',  enableDesktopChanged);
       this.bind('enable-notification-effects',  'enableNotificationEffects', enableNotificationChanged);
-      this.bind('enable-appswitcher-effects',   'enableAppswitcherEffects' /*, enableAppswitcherChanged*/);
+      this.bind('enable-appswitcher-effects',   'enableAppswitcherEffects', enableClassicSwitcherChecked);
       this.bind('enable-tooltips-effects',      'enableTooltipEffects',  enableTooltipsChanged);
       this.bind('enable-window-effects',        'enableWindowEffects',  enableWindowChanged);
       this.bind('enable-desklet-effects',       'enableDeskletEffects',  enableDeskletChanged);
@@ -3560,34 +3594,8 @@ function enableExpoChanged() {
    }
 }
 
-function enableAppswitcherChanged() {
-   /*
-   if (settings.enableAppswitcherEffects) {
-      if (settings.appswitcherAllow3D) {
-         AppSwitcher3D.AppSwitcher3D.prototype._init = _initAppSwitcher3D;
-         AppSwitcher3D.AppSwitcher3D.prototype._oldInit = originalInitAppSwitcher3D;
-         AppSwitcher3D.AppSwitcher3D.prototype._hide = _hideAppSwitcher3D;
-         AppSwitcher3D.AppSwitcher3D.prototype._oldHide = originalHideAppSwitcher3D;
-      }
-      if (settings.appswitcherAllowClassic) {
-         blurClassicSwitcher = new BlurClassicSwitcher();
-      }
-   } else {
-      if (AppSwitcher3D.AppSwitcher3D.prototype._oldInit) {
-         delete AppSwitcher3D.AppSwitcher3D.prototype._oldInit;
-         AppSwitcher3D.AppSwitcher3D.prototype._init = originalInitAppSwitcher3D;
-         delete AppSwitcher3D.AppSwitcher3D.prototype._oldHide;
-         AppSwitcher3D.AppSwitcher3D.prototype._hide = originalHideAppSwitcher3D;
-      }
-      if (blurClassicSwitcher) {
-         blurClassicSwitcher.destroy();
-         blurClassicSwitcher = null;
-      }
-   }*/
-}
-
 function enableClassicSwitcherChecked() {
-   if (settings.appswitcherAllowClassic) {
+   if (settings.enableAppswitcherEffects && settings.appswitcherAllowClassic) {
       blurClassicSwitcher = new BlurClassicSwitcher();
    } else {
       if (blurClassicSwitcher) {
@@ -3595,21 +3603,6 @@ function enableClassicSwitcherChecked() {
          blurClassicSwitcher = null;
       }
    }
-}
-
-function enable3DSwitcherChecked() {
-   /*
-   if (settings.enableAppswitcherEffects && settings.appswitcherAllow3D) {
-      AppSwitcher3D.AppSwitcher3D.prototype._init = this._initAppSwitcher3D;
-      AppSwitcher3D.AppSwitcher3D.prototype._oldInit = originalInitAppSwitcher3D;
-      AppSwitcher3D.AppSwitcher3D.prototype._hide = this._hideAppSwitcher3D;
-      AppSwitcher3D.AppSwitcher3D.prototype._oldHide = originalHideAppSwitcher3D;
-   } else if (AppSwitcher3D.AppSwitcher3D.prototype._oldInit) {
-      delete AppSwitcher3D.AppSwitcher3D.prototype._oldInit;
-      AppSwitcher3D.AppSwitcher3D.prototype._init = originalInitAppSwitcher3D;
-      delete AppSwitcher3D.AppSwitcher3D.prototype._oldHide;
-      AppSwitcher3D.AppSwitcher3D.prototype._hide = originalHideAppSwitcher3D;
-   }*/
 }
 
 function enablePanelsChanged() {
@@ -3682,7 +3675,7 @@ function init(extensionMeta) {
    // Store the original functions for monkey patched functions
    originalAnimateOverview = Overview.Overview.prototype._animateVisible;
    originalAnimateExpo = Expo.Expo.prototype._animateVisible;
-   originalInitAppSwitcher3D = AppSwitcher3D.AppSwitcher3D.prototype._init;
+   originalShowAppSwitcher3D = AppSwitcher3D.AppSwitcher3D.prototype._show;
    originalHideAppSwitcher3D = AppSwitcher3D.AppSwitcher3D.prototype._hide;
    originalSizeChangeWindowDone = Main.wm._sizeChangeWindowDone;
 }
@@ -3706,12 +3699,10 @@ function enable() {
    }
 
    // Monkey patch to enable 3D AppSwitcher effects
-   //if (settings.enableAppswitcherEffects && settings.appswitcherAllow3D) {
-      AppSwitcher3D.AppSwitcher3D.prototype._init = this._initAppSwitcher3D;
-      AppSwitcher3D.AppSwitcher3D.prototype._oldInit = originalInitAppSwitcher3D;
-      AppSwitcher3D.AppSwitcher3D.prototype._hide = this._hideAppSwitcher3D;
-      AppSwitcher3D.AppSwitcher3D.prototype._oldHide = originalHideAppSwitcher3D;
-   //}
+   AppSwitcher3D.AppSwitcher3D.prototype._show = this._showAppSwitcher3D;
+   AppSwitcher3D.AppSwitcher3D.prototype._oldShow = originalShowAppSwitcher3D;
+   AppSwitcher3D.AppSwitcher3D.prototype._hide = this._hideAppSwitcher3D;
+   AppSwitcher3D.AppSwitcher3D.prototype._oldHide = originalHideAppSwitcher3D;
 
    // Unconditionally monkey patch _sizeChangeWindowDone since it's needed for two effects
    Main.wm._sizeChangeWindowDone = _sizeChangeWindowDoneWindowManager;
@@ -3780,12 +3771,10 @@ function disable() {
       Expo.Expo.prototype._animateVisible = originalAnimateExpo;
    }
 
-   //if (AppSwitcher3D.AppSwitcher3D.prototype._oldInit) {
-      delete AppSwitcher3D.AppSwitcher3D.prototype._oldInit;
-      AppSwitcher3D.AppSwitcher3D.prototype._init = originalInitAppSwitcher3D;
-      delete AppSwitcher3D.AppSwitcher3D.prototype._oldHide;
-      AppSwitcher3D.AppSwitcher3D.prototype._hide = originalHideAppSwitcher3D;
-   //}
+   delete AppSwitcher3D.AppSwitcher3D.prototype._oldShow;
+   AppSwitcher3D.AppSwitcher3D.prototype._show = originalShowAppSwitcher3D;
+   delete AppSwitcher3D.AppSwitcher3D.prototype._oldHide;
+   AppSwitcher3D.AppSwitcher3D.prototype._hide = originalHideAppSwitcher3D;
 
    Main.wm._sizeChangeWindowDone = originalSizeChangeWindowDone;
 
