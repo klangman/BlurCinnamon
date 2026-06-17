@@ -1758,10 +1758,12 @@ class BlurPanels extends BlurBase {
                   // The corner radius might have chnaged via the customCSS, so determine the corner radius
                   let themeNode = actor.get_theme_node();
                   let cornerRadius = 0;
+                  let topRadius = 0;
+                  let bottomRadius = 0;
                   if (themeNode) {
                      // TODO: Need to be able to independently round all four corners, needs improvements to the corner effect code!
-                     let topRadius = themeNode.get_border_radius(St.Corner.TOPLEFT);
-                     let bottomRadius = themeNode.get_border_radius(St.Corner.BOTTOMLEFT);
+                     topRadius = themeNode.get_border_radius(St.Corner.TOPLEFT);
+                     bottomRadius = themeNode.get_border_radius(St.Corner.BOTTOMLEFT);
                      cornerRadius = Math.max(topRadius, bottomRadius);
                   }
                   this._updateCornerRadius(blurredPanel.background, cornerRadius, topRadius!==0, bottomRadius!==0);
