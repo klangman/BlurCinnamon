@@ -381,6 +381,7 @@ function destroyWindowClone(windowClone, background) {
 }
 
 function destroyAllWindowsClones(background) {
+   debugMsg( `Removing ${background._blurCinnamonWinClones.length} window clones from background ${background}` );
    background._blurCinnamonWinClones.forEach( (windowClone) => {
       debugMsg( `Removing clone ${windowClone} of '${windowClone._metaWindow.get_title()}' from background ${background._blurCinnamonName}` );
       background._blurCinnamonGroup.remove_child(windowClone);
@@ -438,18 +439,17 @@ function destroyAllNonDesktopClones(background) {
 // We don't do this work right away for a number of reasons:
 // 1. There are (what I believe to be) bugs in Clutter that causes hangs and weird behavior if done immediately
 // 2. The sort_windows_by_stacking() API will sort incorrectly when called from within the "notify::focus-window" event handler
-function cloneWindowsForBackground(background, showingDesktop, desktopOnly) {
-   //Promise.resolve().then( () => cloneWindowsForBackgroundNow(background, showingDesktop, desktopOnly) );
-   Mainloop.idle_add( () => cloneWindowsForBackgroundNow(background, showingDesktop, desktopOnly) );
+function cloneWindowsForBackground(background, desktopOnly) {
+   //Promise.resolve().then( () => cloneWindowsForBackgroundNow(background, desktopOnly) );
+   Mainloop.idle_add( () => cloneWindowsForBackgroundNow(background, desktopOnly) );
 }
 
 // Find windows that need to be cloned for the background passed in.
 // metaWindowOwner is the window that owns the background and therefore
 // only windows with a z-order below that window should be included.
 // If metaWindowOwner is null, all overlapping windows will be cloned.
-// showingDesktop: bool, true when all windows are hidden (i.e Super+D)
 // desktopOnly: bool, true when the background should only show desktop clones
-function cloneWindowsForBackgroundNow(background, showingDesktop, desktopOnly) {
+function cloneWindowsForBackgroundNow(background, desktopOnly) {
    let currentWs = global.workspace_manager.get_active_workspace_index();
    let [blurX, blurY, blurWidth, blurHeight] = getBackgroundClip(background);
    if (blurWidth===0 || blurHeight===0 || !background.is_mapped()) {
@@ -465,12 +465,9 @@ function cloneWindowsForBackgroundNow(background, showingDesktop, desktopOnly) {
    let windows = global.get_window_actors();
    windows.forEach( (window) => {
       let metaWindow = window.get_meta_window();
-      if (metaWindow && metaWindow.get_workspace() &&
-         (!showingDesktop || metaWindow.get_window_type() === Meta.WindowType.DESKTOP) &&
-         (!desktopOnly || metaWindow.get_window_type() === Meta.WindowType.DESKTOP) &&
-         (metaWindow.get_workspace().index() === currentWs || metaWindow.is_on_all_workspaces()) &&
-         !metaWindow.minimized && metaWindow.get_window_type() !== Meta.WindowType.OVERRIDE_OTHER &&
-         metaWindow.get_wm_class() !== "Nemo-desktop")
+      let compositor = metaWindow.get_compositor_private();
+      if (metaWindow && compositor && compositor.visible && (!desktopOnly || metaWindow.get_window_type() === Meta.WindowType.DESKTOP) && 
+          metaWindow.get_window_type() !== Meta.WindowType.OVERRIDE_OTHER && metaWindow.get_wm_class() !== "Nemo-desktop")
       {
          let winRect = metaWindow.get_buffer_rect();
          let winX = winRect.x;
@@ -537,47 +534,17 @@ class CloneManager {
       this._activeWorkspaceIdx = global.workspace_manager.get_active_workspace_index();
 
       this._signalManager.connect(global.screen, "window-added", (screen, metaWindow, monitor) => this._onWindowAppeared(metaWindow) );
-      this._signalManager.connect(global.screen, "window-removed", (screen, metaWindow, monitor) => this._onWindowDisappeared(metaWindow) );
       this._signalManager.connect(global.window_manager, "switch-workspace", () => this._updateCurrentWorkspace() );
-      this._signalManager.connect(global.window_manager, "minimize", (wm, win) => this._onWindowMinimized(win.get_meta_window()) );
-      this._signalManager.connect(global.window_manager, "unminimize", (wm, win) => this._onWindowUnminimized(win.get_meta_window()) );
-      this._signalManager.connect(global.workspace_manager, "showing-desktop-changed", () => this._onShowingDesktopChanged() );
       this._signalManager.connect(global.display, "notify::focus-window", () => this._onFocusChanged() );
       this._signalManager.connect(global, 'scale-changed', () => this._uiScaleChanged());
       this._setupWindowListeners();
-
-      // I can't find a way to query if the desktop is showing, so I will just have to assume it is not showing at construction time
-      this.desktop_showing = false;
-   }
-
-   _onShowingDesktopChanged() {
-      this.desktop_showing = !this.desktop_showing;
-      if (this.desktop_showing) {
-         this._backgrounds.forEach( (background) => destroyAllNonDesktopClones(background) );
-      } else {
-         this._backgrounds.forEach( (background) => cloneWindowsForBackground(background, this.desktop_showing, background._blurCinnamonDesktopOnly) );
-      }
-   }
-
-   _onWindowMinimized(metaWindow) {
-      this._onWindowDisappeared(metaWindow);
-   }
-
-   _onWindowUnminimized(metaWindow) {
-      // After unminimizing a window with a blurred background, if the window is dragged off a
-      // dynamic blurred panel the window will not get drawn correctly after it's clone is deleted
-      // from the panels dynamic blur group. This reapplyEffect call is a workaround for this issue.
-      if (blurApplications) {
-         blurApplications.reapplyEffects(metaWindow);
-      }
-      this._onWindowAppeared(metaWindow);
    }
 
    _uiScaleChanged() {
       debugMsg( "UI Scale Changed" );
       this._backgrounds.forEach( (background) => destroyAllWindowsClones(background) );
       // Delay creating closes to avoid issues with an instance destroy/create sequence
-      this._backgrounds.forEach( (background) => cloneWindowsForBackground(background, this.desktop_showing, background._blurCinnamonDesktopOnly) );
+      this._backgrounds.forEach( (background) => cloneWindowsForBackground(background, background._blurCinnamonDesktopOnly) );
    }
 
    getBackgroundCount() {
@@ -587,7 +554,7 @@ class CloneManager {
    backgroundClipChanged(background) {
       let idx = this._backgrounds.indexOf(background);
       if (idx!==-1) {
-         cloneWindowsForBackground(background, this.desktop_showing, background._blurCinnamonDesktopOnly);
+         cloneWindowsForBackground(background, background._blurCinnamonDesktopOnly);
       }
    }
 
@@ -628,7 +595,7 @@ class CloneManager {
          background._blurCinnamonMetaWindowOwner = null;
       }
       background._blurCinnamonDesktopOnly = desktopOnly;
-      cloneWindowsForBackgroundNow(background, this.desktop_showing, background._blurCinnamonDesktopOnly);
+      cloneWindowsForBackgroundNow(background, background._blurCinnamonDesktopOnly);
       this._signalManager.connect(background, "notify::mapped", () => this._onBackgroundMapped(background));
    }
 
@@ -659,13 +626,14 @@ class CloneManager {
    raiseDeskletBackground(background) {
       debugMsg( "Raising desklet background" );
       // Hide the desklet container from all backgrounds to avoid an endless loop while painting
-      // The desklets are not under of any backgrounds anymore since it's been raised to the top
+      // The desklets are not under any backgrounds anymore since it's been raised to the top
       this._backgrounds.forEach( (background) => {
          if (background._blurCinnamonDeskletClone) {
             background._blurCinnamonDeskletClone.hide();
          }
       });
-      cloneWindowsForBackground(background, this.desktop_showing, false);
+      background._blurCinnamonDesktopOnly = false;
+      cloneWindowsForBackground(background, false);
    }
 
    lowerDeskletBackground(background) {
@@ -676,17 +644,27 @@ class CloneManager {
             background._blurCinnamonDeskletClone.show();
          }
       });
+      background._blurCinnamonDesktopOnly = true;
       // We need to immediately remove clones of window for the desklet background to avoid SOF during painting
-      cloneWindowsForBackgroundNow(background, this.desktop_showing, background._blurCinnamonDesktopOnly);
+      cloneWindowsForBackgroundNow(background, background._blurCinnamonDesktopOnly);
    }
 
    _onBackgroundMapped(background) {
+      let owner = background._blurCinnamonMetaWindowOwner;
+      if (owner) {
+         let compositor = owner.get_compositor_private();
+         if (compositor && !compositor.visible) {
+            // The background is for an application window and that window is not visible,
+            // therefore this map/unmap is for some clone (i.e a Windowlist Thubmnail, Alt-Tab etc.).
+            return;
+         }
+      }
       debugMsg( `Background ${(background.mapped)?"mapped":"unmapped"} for ${background._blurCinnamonName}` );
       if (background.mapped === true) {
-         cloneWindowsForBackground(background, this.desktop_showing, background._blurCinnamonDesktopOnly);
+         cloneWindowsForBackground(background, background._blurCinnamonDesktopOnly);
       } else {
          // An unmapped background can still be visible when a clone is shows (i.e Alt-Tab)
-         //destroyAllWindowsClones(background);
+         destroyAllWindowsClones(background);
       }
    }
 
@@ -696,11 +674,9 @@ class CloneManager {
       windows.forEach( (window) => {
          let metaWindow = window.get_meta_window();
          let compositor = metaWindow.get_compositor_private();
-         if (!metaWindow._blurCinnamonWSChangeEventID)
-            metaWindow._blurCinnamonWSChangeEventID = metaWindow.connect("workspace-changed", () => this._onWindowsWorkspaceChanged(metaWindow) );
-         if (metaWindow && metaWindow.get_workspace() &&
-            (metaWindow.get_workspace().index() === this._activeWorkspaceIdx || metaWindow.is_on_all_workspaces()) &&
-            !metaWindow.minimized && metaWindow.get_window_type() !== Meta.WindowType.DESKTOP)
+         if (!metaWindow._blurCinnamonVisibleEventId)
+            metaWindow._blurCinnamonUnmanagedEventId = metaWindow.get_compositor_private().connect("notify::visible", () => this._visibilityChanged(metaWindow) );
+         if (compositor.visible && metaWindow.get_window_type() !== Meta.WindowType.DESKTOP)
          {
             if (!metaWindow._blurCinnamonAllocEventID)
                metaWindow._blurCinnamonAllocEventID = compositor.connect("notify::allocation", () => this._allocationChanged(metaWindow) );
@@ -713,43 +689,49 @@ class CloneManager {
       });
    }
 
-   _onWindowsWorkspaceChanged(metaWindow) {
-      debugMsg( "A windows workspace was changed" );
-      if (!metaWindow.get_workspace())
-         return;
-      if (metaWindow.get_workspace().index() === this._activeWorkspaceIdx) {
+   _visibilityChanged(metaWindow) {
+      let compositor = metaWindow.get_compositor_private();
+      if (compositor.visible) {
+         debugMsg( `Window "${metaWindow.get_title()}" is visible!` );
          this._onWindowAppeared(metaWindow);
-      } else {
+         if (compositor._blurCinnamonDataWindow) {
+            blurApplications.reapplyEffects(metaWindow);
+         }
+      }else {
+         debugMsg( `Window "${metaWindow.get_title()}" is NOT visible!` );
          this._onWindowDisappeared(metaWindow);
+         if (compositor && compositor._blurCinnamonDataWindow) {
+            debugMsg( "Application window has been made invisible" );
+            destroyAllWindowsClones(compositor._blurCinnamonDataWindow.background);
+         }
       }
    }
 
    _onWindowAppeared(metaWindow) {
-      if (!metaWindow._blurCinnamonWSChangeEventID)
-         metaWindow._blurCinnamonWSChangeEventID = metaWindow.connect("workspace-changed", () => this._onWindowsWorkspaceChanged(metaWindow) );
-      if (metaWindow.get_workspace().index() === this._activeWorkspaceIdx) {
-         let compositor = metaWindow.get_compositor_private();
-         let winRect = metaWindow.get_buffer_rect();
-         let winX = winRect.x;
-         let winY = winRect.y;
-         let winX2 = winRect.x + winRect.width;
-         let winY2 = winRect.y + winRect.height;
-         if (!metaWindow._blurCinnamonAllocEventID)
-            metaWindow._blurCinnamonAllocEventID = compositor.connect("notify::allocation", () => this._allocationChanged(metaWindow) );
-
-         debugMsg( `Checking if clones are needed for appeared window: "${metaWindow.get_title()}"` );
-         this._backgrounds.forEach( (background) => {
-            if (!background._blurCinnamonMetaWindowOwner || metaWindow.get_window_type() === Meta.WindowType.DESKTOP || isAbove(background._blurCinnamonMetaWindowOwner, metaWindow)) {
-               let [blurX, blurY, blurWidth, blurHeight] = getBackgroundClip(background);
-               let blurX2 = blurX + blurWidth;
-               let blurY2 = blurY + blurHeight;
-               if ( rectOverlap(winX, winY, winX2, winY2, blurX, blurY, blurX2, blurY2) )
-               {
-                  createWindowClone(metaWindow, background, background._blurCinnamonDesktopOnly)
-               }
-            }
-         });
+      let compositor = metaWindow.get_compositor_private();
+      let winRect = metaWindow.get_buffer_rect();
+      let winX = winRect.x;
+      let winY = winRect.y;
+      let winX2 = winRect.x + winRect.width;
+      let winY2 = winRect.y + winRect.height;
+      if (!metaWindow._blurCinnamonAllocEventID)
+         metaWindow._blurCinnamonAllocEventID = compositor.connect("notify::allocation", () => this._allocationChanged(metaWindow) );
+      if (!metaWindow._blurCinnamonVisibleEventId) {
+         metaWindow._blurCinnamonVisibleEventId = metaWindow.get_compositor_private().connect("notify::visible", () => this._visibilityChanged(metaWindow) );
       }
+
+      debugMsg( `Checking if clones are needed for appeared window: "${metaWindow.get_title()}"` );
+      this._backgrounds.forEach( (background) => {
+         if (!background._blurCinnamonMetaWindowOwner || metaWindow.get_window_type() === Meta.WindowType.DESKTOP || isAbove(background._blurCinnamonMetaWindowOwner, metaWindow)) {
+            let [blurX, blurY, blurWidth, blurHeight] = getBackgroundClip(background);
+            let blurX2 = blurX + blurWidth;
+            let blurY2 = blurY + blurHeight;
+            if ( rectOverlap(winX, winY, winX2, winY2, blurX, blurY, blurX2, blurY2) )
+            {
+               createWindowClone(metaWindow, background, background._blurCinnamonDesktopOnly)
+            }
+         }
+      });
    }
 
    _onWindowDisappeared(metaWindow) {
@@ -758,10 +740,6 @@ class CloneManager {
          compositor.disconnect(metaWindow._blurCinnamonAllocEventID);
          delete metaWindow._blurCinnamonAllocEventID;
       }
-      //if (metaWindow._blurCinnamonWSChangeEventID) {
-      //   metaWindow.disconnect(metaWindow._blurCinnamonWSChangeEventID);
-      //   delete metaWindow._blurCinnamonWSChangeEventID;
-      //}
       // Remove windowClones for this window from each background
       this._backgrounds.forEach( (background) => {
          if (background._blurCinnamonWinClones) {
@@ -785,7 +763,7 @@ class CloneManager {
          if (background._blurCinnamonMetaWindowOwner === window) {
             // This background is for the new focused window, we might need to create any number of clones for this background
             debugMsg( "Cloning windows because a blurred window has received the focus" );
-            cloneWindowsForBackground(background, this.desktop_showing, background._blurCinnamonDesktopOnly);
+            cloneWindowsForBackground(background, background._blurCinnamonDesktopOnly);
          } else {
             if (background._blurCinnamonWinClones) {
                let dimmer = background._blurCinnamonDimmer;
@@ -814,18 +792,14 @@ class CloneManager {
    _updateCurrentWorkspace() {
       let currentWs = global.workspace_manager.get_active_workspace_index();
       if (currentWs !== this._activeWorkspaceIdx) {
-         debugMsg( `Creating clones after workspace switch from ${this._activeWorkspaceIdx} to ${currentWs}` );
          this._activeWorkspaceIdx = currentWs;
          // After switching workspace, if a window with a blurred background is dragged off a
          // dynamic blurred panel the window will not get drawn correctly after it's clone is deleted
          // from the panels dynamic blur group. This reapplyEffect call is a workaround for this issue.
+         debugMsg( `Reapplying application window effects after workspace switch from ${this._activeWorkspaceIdx} to ${currentWs}` );
          if (blurApplications) {
             blurApplications.reapplyEffects();
          }
-         // Make sure we are listening for changes to windows on this (and only this) workspace
-         this._setupWindowListeners();
-         // Add new clones for windows on the new workspace
-         this._backgrounds.forEach( (background) => cloneWindowsForBackground(background, this.desktop_showing, background._blurCinnamonDesktopOnly) );
       }
    }
 
@@ -2800,7 +2774,7 @@ class BlurApplications extends BlurBase {
          let data = compositor._blurCinnamonDataWindow;
          data.signalManager.disconnectAllSignals();
          this._destroyDynamicEffect(data.background);
-         //compositor.remove_child(data.background);
+         compositor.remove_child(data.background);
          super.destroy(data.background);
          data.background.destroy();
          data.metaWindow.set_opacity(255);
@@ -2816,7 +2790,7 @@ class BlurApplications extends BlurBase {
          let data = compositor._blurCinnamonDataWindow;
          if (data) {
             debugMsg( "Reapplying effects to window" );
-            this._unblurWindow(compositor);
+            Mainloop.idle_add( () => this._unblurWindow(compositor) );
             Mainloop.idle_add( () => this._blurWindow(metaWindow) );
          }
       } else {
@@ -2827,8 +2801,8 @@ class BlurApplications extends BlurBase {
             let data = compositor._blurCinnamonDataWindow;
             if (data) {
                debugMsg( "Reapplying effects to window" );
-               this._unblurWindow(compositor);
-               Mainloop.idle_add( () =>  this._blurWindow(windows[i]) );
+               Mainloop.idle_add( () => this._unblurWindow(compositor) );
+               Mainloop.idle_add( () => this._blurWindow(windows[i]) );
             }
          }
       }
@@ -3102,7 +3076,7 @@ class BlurDesklets extends BlurBase {
       for (let i=0 ; i<desklets.length ; i++) {
          let {uuid, desklet_id} = desklets[i];
          let desklet = desklets[i].desklet;
-         if (desklet._blurCinnamonBackground) {
+         if (desklet && desklet._blurCinnamonBackground) {
             let blurSettings = desklet._blurCinnamonBackground._blurCinnamonSettings;
             if(blurSettings[3] === BlurType.DynamicBlur || blurSettings[3] === BlurType.DynamicMC) {
                this._raiseDeskletDynamicBackground(desklet._blurCinnamonBackground);
@@ -3122,7 +3096,7 @@ class BlurDesklets extends BlurBase {
       for (let i=0 ; i<desklets.length ; i++) {
          let {uuid, desklet_id} = desklets[i];
          let desklet = desklets[i].desklet;
-         if (desklet._blurCinnamonBackground) {
+         if (desklet && desklet._blurCinnamonBackground) {
             let blurSettings = desklet._blurCinnamonBackground._blurCinnamonSettings;
             if(blurSettings[3] === BlurType.DynamicBlur || blurSettings[3] === BlurType.DynamicMC) {
                this._lowerDeskletDynamicBackground(desklet._blurCinnamonBackground);
@@ -3296,7 +3270,7 @@ class BlurDesklets extends BlurBase {
       for (let i=0 ; i<desklets.length ; i++) {
          let {uuid, desklet_id} = desklets[i];
          let desklet = desklets[i].desklet;
-         if (desklet._blurCinnamonBackground) {
+         if (desklet && desklet._blurCinnamonBackground) {
             this._deskletDestroy(desklet);
          }
       }
@@ -3735,7 +3709,8 @@ function enable() {
    }
    // Create a Application (Window) Effects class instance, the constructor will set everything up.
    if (settings.enableWindowEffects) {
-      blurApplications = new BlurApplications();
+      // Enable on idle, to avoid a bug where windows freeze for some reason on a Cinnamon restarts
+      Mainloop.idle_add( () => { blurApplications = new BlurApplications(); } );
    }
    // Create a Focused Window Effect class instance, the constructor will set everything up.
    if (settings.focusedWindowEffect > 0) {
