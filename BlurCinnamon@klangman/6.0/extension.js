@@ -1196,7 +1196,7 @@ class BlurClassicSwitcher extends BlurBase {
                           "background-gradient-end: transparent; background: transparent;" );
 
          // Create the effects and the background actor to apply to effects to
-         let [opacity, blendColor, blurType, radius, saturation] = this._getSettings(settings.notificationOverride);
+         let [opacity, blendColor, blurType, radius, saturation] = this._getSettings(settings.appswitcherOverride);
          this._blurType = blurType
          this._background = this._createBackgroundAndEffects(opacity, blendColor, blurType, radius, saturation, global.overlay_group, 10);
          this._background._blurCinnamonName = "ClassicSwitcher";
