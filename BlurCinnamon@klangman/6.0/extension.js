@@ -42,6 +42,8 @@ const Tooltips        = imports.ui.tooltips;
 const WindowMenu      = imports.ui.windowMenu;
 const Cinnamon        = imports.gi.Cinnamon;
 const DeskletManager  = imports.ui.deskletManager;
+const OsdWindow       = imports.ui.osdWindow;
+const WorkspaceOsd    = imports.ui.workspaceOsd;
 
 // For PopupMenu effects
 const Applet    = imports.ui.applet;
@@ -73,6 +75,7 @@ let blurNotifications;
 let blurTooltips;
 let blurApplications;
 let blurDesklets;
+let blurOSD;
 let blurFocusEffect;
 let metaData;
 
@@ -84,6 +87,8 @@ var blurPopupMenusThis;
 var blurNotificationsThis;
 var blurTooltipsThis;
 var blurDeskletsThis;
+var blurOSDThis;
+var blurWorkspaceOsdThis;
 
 const BlurType = {
    None: 0,
@@ -1160,6 +1165,155 @@ class BlurBase {
    }
 }
 
+class BlurOSD extends BlurBase {
+   constructor() {
+      super();
+      this._signalManager = new SignalManager.SignalManager(null);
+      blurOSDThis = this; // Make "this" available to monkey patched functions
+
+      this.original_show = OsdWindow.OsdWindow.prototype.show;
+      this.original_hide = OsdWindow.OsdWindow.prototype._hide;
+      OsdWindow.OsdWindow.prototype.show = this._show;
+      OsdWindow.OsdWindow.prototype._hide = this._hide;
+
+      this.original_display = WorkspaceOsd.WorkspaceOsd.prototype.display;
+      this.original_onTimeout = WorkspaceOsd.WorkspaceOsd.prototype._onTimeout;
+      WorkspaceOsd.WorkspaceOsd.prototype.display = this._display;
+      WorkspaceOsd.WorkspaceOsd.prototype._onTimeout = this._onTimeout;
+   }
+
+   _supportsDynamicBlur() {
+      return true;
+   }
+
+   _getUniqueSettings() {
+      return [settings.osdOpacity, settings.osdBlendColor, settings.osdBlurType, settings.osdRadius, settings.osdSaturation];
+   }
+
+   // Monkey patch function. The 'this' will be for OsdWindow
+   _show(...params) {
+      blurOSDThis.original_show.call(this, ...params);
+      if (settings.osdSliderEffects) {
+         blurOSDThis._showBackground(this, this._hbox);
+      }
+   }
+
+   // Monkey patch function. The 'this' will be for WorkspaceOsd
+   _display(...params) {
+      blurOSDThis.original_display.call(this, ...params);
+      if (settings.osdWorkspaceEffects) {
+         blurOSDThis._showBackground(this, this._vbox);
+      }
+   }
+
+   _showBackground(osd, actor) {
+      if (actor && !osd._blurCinnamonBackground) {
+         if (this._background) {
+            this._hideBackground(this._currentOsd);
+         }
+         this._currentOsd = osd
+         if (!actor._blurCinnamonData && settings.allowTransparentColorOSD) {
+            actor._blurCinnamonData = { original_color: actor.get_background_color(), original_style: actor.get_style(),
+                                      original_class: actor.get_style_class_name(), original_pseudo_class: actor.get_style_pseudo_class() };
+            actor.set_style( "background-gradient-direction: vertical; background-gradient-start: transparent; " +
+                             "background-gradient-end: transparent; background: transparent;" );
+         } else if (!settings.allowTransparentColorOSD && osd._blurCinnamonData) {
+            actor.set_background_color(actor._blurCinnamonData.original_color);
+            actor.set_style(actor._blurCinnamonData.original_style);
+            actor.set_style_class_name(actor._blurCinnamonData.original_class);
+            actor.set_style_pseudo_class(actor._blurCinnamonData.original_pseudo_class);
+            delete actor._blurCinnamonData;
+         }
+
+         // Create the effects and the background actor to apply to effects to
+         let [opacity, blendColor, blurType, radius, saturation] = this._getSettings(settings.osdOverride);
+         this._blurType = blurType
+         this._background = this._createBackgroundAndEffects(opacity, blendColor, blurType, radius, saturation, global.overlay_group, 10);
+         this._background._blurCinnamonName = "OsdWindow";
+         osd._blurCinnamonBackground = this._background;
+
+         // If Dynamic Blurring is enabled, create a workspace clone and add the clone to the background
+         if (blurType === BlurType.DynamicBlur || blurType === BlurType.DynamicMC) {
+            debugMsg( "Creating dynamic effect for classic app switcher" );
+            this._createDynamicEffect(this._background);
+         }
+         let themeNode = actor.get_theme_node();
+         if (themeNode) {
+            // We are assuming that all corners have the same radius, hope that is true.
+            let radius = themeNode.get_border_radius(St.Corner.TOPLEFT);
+            if (radius === 9999) {
+               radius = actor.height / 2;
+            }
+            this._updateCornerRadius(this._background, (radius)/global.ui_scale);
+         }
+         this._signalManager.connect(osd, "notify::allocation", () => this._setClip(actor) );
+
+         this._background.show();
+         this._setClip(actor);
+      }
+   }
+
+   // Monkey patch function. The 'this' will be for OsdWindow
+   _hide(...params) {
+      blurOSDThis._hideBackground.call(blurOSDThis, this, this._hbox);
+      blurOSDThis.original_hide.call(this, ...params);
+   }
+
+   // Monkey patch function. The 'this' will be for WorkspaceOsd
+   _onTimeout(...params) {
+      blurOSDThis._hideBackground.call(blurOSDThis, this, this._vbox);
+      blurOSDThis.original_onTimeout.call(this, ...params);
+   }
+
+   _hideBackground(osd, actor) {
+      if (!this._background) return;
+      if (this._blurType === BlurType.DynamicBlur || this._blurType === BlurType.DynamicMC) {
+         debugMsg( "Removing dynamic effect for classic app switcher" );
+         this._destroyDynamicEffect(this._background);
+      }
+      if (actor._blurCinnamonData) {
+         actor.set_background_color(actor._blurCinnamonData.original_color);
+         actor.set_style(actor._blurCinnamonData.original_style);
+         actor.set_style_class_name(actor._blurCinnamonData.original_class);
+         actor.set_style_pseudo_class(actor._blurCinnamonData.original_pseudo_class);
+         delete actor._blurCinnamonData;
+      }
+      this._signalManager.disconnectAllSignals();
+      global.overlay_group.remove_actor(this._background);
+      super.destroy(this._background);
+      this._background.destroy();
+      delete this._background;
+      delete osd._blurCinnamonBackground;
+   }
+
+   _setClip(actor) {
+      let [x,y] = actor.get_transformed_position();
+      //log( `OsdWindow pos/size: ${x},${y} / ${actor.width},${actor.height}` );
+      let cornerEffect = this._getCornerEffect(this._background);
+      if (cornerEffect) {
+         cornerEffect.clip = [x+2, y+2, actor.width-3, actor.height-3];
+      } else {
+         this._background.set_clip(x, y, actor.width, actor.height );
+         if (cloneManager)
+            cloneManager.backgroundClipChanged(this._background);
+      }
+   }
+
+   destroy() {
+      OsdWindow.OsdWindow.prototype.show = this.original_show;
+      OsdWindow.OsdWindow.prototype._hide = this.original_hide;
+
+      WorkspaceOsd.WorkspaceOsd.prototype.display = this.original_display;
+      WorkspaceOsd.WorkspaceOsd.prototype._onTimeout = this.original_onTimeout;
+
+      if (this._background) {
+         global.overlay_group.remove_actor(this._background);
+         super.destroy(this._background);
+         this._background.destroy();
+      }
+   }
+}
+
 class BlurClassicSwitcher extends BlurBase {
    constructor() {
       super();
@@ -1232,7 +1386,7 @@ class BlurClassicSwitcher extends BlurBase {
          debugMsg( "Removing dynamic effect for classic app switcher" );
          this._destroyDynamicEffect(this._background);
       }
-
+      this._signalManager.disconnectAllSignals();
       global.overlay_group.remove_actor(this._background);
       super.destroy(this._background);
       this._background.destroy();
@@ -3364,6 +3518,15 @@ class BlurSettings {
       this.bind('desklets-blendColor', 'deskletsBlendColor', updateDeskletEffects);
       this.bind('desklets-saturation', 'deskletsSaturation', updateDeskletEffects);
 
+      this.bind('osd-opacity',        'osdOpacity');
+      this.bind('osd-blurType',       'osdBlurType');
+      this.bind('osd-radius',         'osdRadius');
+      this.bind('osd-blendColor',     'osdBlendColor');
+      this.bind('osd-saturation',     'osdSaturation');
+      this.bind(`osd-slider-effects`, `osdSliderEffects`);
+      this.bind(`osd-workspace-effects`, `osdWorkspaceEffects`);
+      this.bind('allow-transparent-color-osd', 'allowTransparentColorOSD');
+
       this.bind('desklets-list',    'deskletList',        updateDeskletEffects);
       //this.bind('desklets-effects', 'deskletEffectsList', updateDeskletEffects);
       this.bind('desklets-auto',    'autoDeskletAdd',     updateDeskletEffects);
@@ -3383,6 +3546,7 @@ class BlurSettings {
       this.bind('enable-appswitcher-override',  'appswitcherOverride');
       this.bind('enable-tooltips-override',     'tooltipsOverride');
       this.bind('enable-desklets-override',     'deskletsOverride', updateDeskletEffects);
+      this.bind('enable-osd-override',          'osdOverride');
 
       this.bind('enable-overview-effects',      'enableOverviewEffects', enableOverviewChanged);
       this.bind('enable-expo-effects',          'enableExpoEffects',     enableExpoChanged);
@@ -3394,6 +3558,7 @@ class BlurSettings {
       this.bind('enable-tooltips-effects',      'enableTooltipEffects',  enableTooltipsChanged);
       this.bind('enable-window-effects',        'enableWindowEffects',  enableWindowChanged);
       this.bind('enable-desklet-effects',       'enableDeskletEffects',  enableDeskletChanged);
+      this.bind('enable-osd-effects',           'enableOSDEffects',  enableOSDChanged);
 
       this.bind('enable-panel-unique-settings', 'enablePanelUniqueSettings');
       this.bind('panel-unique-settings', 'panelUniqueSettings', panelsSettingsChangled);
@@ -3636,12 +3801,20 @@ function enableWindowChanged() {
 }
 
 function enableDeskletChanged() {
-   settings.enableDeskletEffects
    if (blurDesklets && !settings.enableDeskletEffects) {
       blurDesklets.destroy();
       blurDesklets = null;
    } else if (!blurDesklets && settings.enableDeskletEffects) {
       blurDesklets = new BlurDesklets();
+   }
+}
+
+function enableOSDChanged() {
+   if (blurOSD && !settings.enableOSDEffects) {
+      blurOSD.destroy();
+      blurOSD = null;
+   } else if (!blurOSD && settings.enableOSDEffects) {
+      blurOSD = new BlurOSD();
    }
 }
 
@@ -3683,6 +3856,10 @@ function enable() {
    // Unconditionally monkey patch _sizeChangeWindowDone since it's needed for two effects
    Main.wm._sizeChangeWindowDone = _sizeChangeWindowDoneWindowManager;
 
+   // Create a OsdWindow Effects class instance, the constructor will kick things off
+   if (1 /*settings.enableAppswitcherEffects && settings.appswitcherAllowClassic*/) {
+      blurOSD = new BlurOSD();
+   }
    // Create a Classic Switcher Effects class instance, the constructor will kick things off
    if (settings.enableAppswitcherEffects && settings.appswitcherAllowClassic) {
       blurClassicSwitcher = new BlurClassicSwitcher();
@@ -3725,7 +3902,7 @@ function enable() {
       settings.settings.setValue( "new-install", 0 );
       let source = new MessageTray.Source(metaData.name);
       let notification = new MessageTray.Notification(source, _("Welcome to Blur Cinnamon"),
-         _("Hope you are enjoying your new Panel, Expo, Overview and Alt-Tab Coverflow/Timeline effects.\n\nOpen the Blur Cinnamon Settings to enable additional effects on several other desktop elements like menus, notifications and windows, or disable effects on components that were enabled by default. You can also make changes to the effect properties like blur intensity, color saturation and dimming."),
+         _("Hope you are enjoying your new Panel, Expo, Overview and Alt-Tab effects.\n\nOpen the Blur Cinnamon Settings to enable additional effects on several other desktop elements like menus, notifications and windows, or disable effects on components that were enabled by default. You can also make changes to the effect properties like blur intensity, color saturation and dimming."),
          {icon: new St.Icon({icon_name: "blur-cinnamon", icon_type: St.IconType.FULLCOLOR, icon_size: source.ICON_SIZE })}
          );
       Main.messageTray.add(source);
@@ -3754,6 +3931,11 @@ function disable() {
    AppSwitcher3D.AppSwitcher3D.prototype._hide = originalHideAppSwitcher3D;
 
    Main.wm._sizeChangeWindowDone = originalSizeChangeWindowDone;
+
+   if (blurOSD) {
+      blurOSD.destroy();
+      blurOSD = null;
+   }
 
    if (blurClassicSwitcher) {
       blurClassicSwitcher.destroy();

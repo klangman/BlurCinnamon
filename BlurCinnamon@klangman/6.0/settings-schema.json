@@ -27,7 +27,7 @@
       "general-settings" : {
          "type" : "section",
          "title" : "Cinnamon desktop components where effects will be applied",
-         "keys" : ["enable-appswitcher-effects", "enable-desklet-effects", "enable-desktop-effects", "enable-expo-effects", "enable-popup-effects", "enable-notification-effects", "enable-overview-effects", "enable-panels-effects", "enable-tooltips-effects", "enable-window-effects", "focused-window-backlight"]
+         "keys" : ["enable-appswitcher-effects", "enable-desklet-effects", "enable-desktop-effects", "enable-expo-effects", "enable-popup-effects", "enable-notification-effects", "enable-osd-effects", "enable-overview-effects", "enable-panels-effects", "enable-tooltips-effects", "enable-window-effects", "focused-window-backlight"]
       },
 
       "generic-effect-settings" : {
@@ -51,7 +51,8 @@
       "component-specific-section" : {
          "type" : "section",
          "title" : "Component Specific Settings",
-         "keys" : [ "overview-warning", "enable-overview-override",  "overview-opacity", "overview-blendColor", "overview-blurType", "overview-radius", "overview-saturation",
+         "keys" : [ "overview-warning", "enable-overview-override", "overview-opacity", "overview-blendColor", "overview-blurType", "overview-radius", "overview-saturation",
+                    "osd-warning", "enable-osd-override", "allow-transparent-color-osd", "osd-slider-effects", "osd-workspace-effects", "osd-opacity", "osd-blendColor", "osd-blurType", "osd-radius", "osd-saturation",
                     "expo-warning", "enable-expo-override", "expo-opacity", "expo-blendColor", "expo-blurType", "expo-radius", "expo-saturation",
                     "panel-warning", "enable-panels-override", "allow-transparent-color-panels", "no-panel-effects-maximized", "hover-brighten-panels", "enable-panel-unique-settings", "panels-opacity", "panels-blendColor", "panels-blurType", "panels-radius", "panels-saturation", "panel-unique-settings",
                     "popup-warning", "enable-popup-override", "popup-applet-menu-effects", "popup-panel-menu-effects", "popup-title-menu-effects", "allow-transparent-color-popup", "popup-opacity", "popup-accent-opacity", "popup-blendColor", "popup-blurType", "popup-radius", "popup-saturation",
@@ -101,6 +102,11 @@
       "type" : "label",
       "description" : "Note: The Notification effects are currently disabled under the \"General setup\" tab.",
       "dependency" : "!enable-notification-effects & component-selector=5"
+   },
+   "osd-warning": {
+      "type" : "label",
+      "description" : "Note: The On-Screen-Display effects are currently disabled under the \"General setup\" tab.",
+      "dependency" : "!enable-osd-effects & component-selector=10"
    },
    "overview-warning": {
       "type" : "label",
@@ -156,6 +162,7 @@
          "Expo": 3,
          "Menus": 4,
          "Notifications": 5,
+         "OSD": 10,
          "Overview": 6,
          "Panels": 7,
          "Tooltips": 8,
@@ -232,6 +239,12 @@
       "tooltip": "Apply effects to Desklet backgrounds. Desklets must be setup to be transparent in order for the Blur Cinnamon effects to be visible.",
       "default": false
    },
+   "enable-osd-effects" : {
+      "type": "switch",
+      "description": "On-screen display",
+      "tooltip": "Apply effects to the on-screen display (OSD) background. The OSD is used when changing volumn using the media keys, changing the screen brightness, and switching workspaces.",
+      "default": false
+   },
 
     "focused-window-backlight": {
         "type" : "custom",
@@ -272,6 +285,13 @@
         "tooltip": "Allow this extension to modify the tooltip transparency and background color settings. If this is disabled the extension will only apply a blur background under the tooltips. This setting should only be disabled when the theme already uses transparent tooltips and you want the themes setting to apply.",
         "default": true,
         "dependency" : "enable-tooltips-effects & component-selector=8"
+    },
+    "allow-transparent-color-osd" : {
+        "type": "switch",
+        "description": "Override some of the OSD theme settings (recommended)",
+        "tooltip": "Allow this extension to modify the OSD transparency and background color settings. If this is disabled the extension will only apply a blur background under the OSD. This setting should only be disabled when the theme already uses a transparent OSD and you want the themes setting to apply.",
+        "default": true,
+        "dependency" : "enable-osd-effects & component-selector=10"
     },
 
     "enable-overview-override" : {
@@ -334,6 +354,13 @@
         "type": "switch",
         "description": "Override the generic effect settings for Desklets",
         "dependency" : "enable-desklet-effects & component-selector=1",
+        "tooltip": "Override the settings found on the \"Generic effect settings\" tab with unique settings for this cinnamon component.",
+        "default": false
+    },
+    "enable-osd-override" : {
+        "type": "switch",
+        "description": "Override the generic effect settings for OSD windows",
+        "dependency" : "enable-osd-effects & component-selector=10",
         "tooltip": "Override the settings found on the \"Generic effect settings\" tab with unique settings for this cinnamon component.",
         "default": false
     },
@@ -1137,6 +1164,84 @@
         "default": 100,
         "dependency" : "enable-desklet-effects & component-selector=1 & !enable-desklets-unique-settings & enable-desklets-override"
     },
+
+
+    "osd-slider-effects" : {
+        "type": "switch",
+        "description": "Apply effects to volumn and brightness OSD windows",
+        "dependency" : "enable-osd-effects & component-selector=10",
+        "default": true
+    },
+
+    "osd-workspace-effects" : {
+        "type": "switch",
+        "description": "Apply effects to the workspace switching OSD window",
+        "dependency" : "enable-osd-effects & component-selector=10",
+        "default": true
+    },
+
+    "osd-opacity" : {
+        "type" : "custom",
+        "file" : "CustomWidgets.py",
+        "widget" : "CompactScale",
+        "description": "Dim/Colorize background Image (%)",
+        "min": 0,
+        "max": 100,
+        "default": 50,
+        "step": 1,
+        "dependency" : "enable-osd-effects & component-selector=10 & enable-osd-override"
+    },
+
+    "osd-blendColor": {
+        "type": "colorchooser",
+        "description" : "Dimming overlay color",
+        "default": "rgb(0,0,0)",
+        "dependency" : "enable-osd-effects & component-selector=10 & enable-osd-override",
+        "tooltip": "Defines the color that is blended into the background based on the dimming control above. Use black for a normal dimming effect or some other color for a color blend effect"
+    },
+
+    "osd-blurType": {
+        "type": "combobox",
+        "default": 2,
+        "options": {
+            "None": 0,
+            "Simple static blur": 1,
+            "Gaussian static blur": 2,
+            "Gaussian dynamic blur": 4,
+            "Monte Carlo static blur": 5,
+            "Monte Carlo dynamic blur": 6
+        },
+        "description": "Type of blur effect",
+        "tooltip": "What type of blur algorithm should be used to blur the background",
+        "dependency" : "enable-osd-effects & component-selector=10 & enable-osd-override"
+    },
+
+    "osd-radius": {
+        "type" : "custom",
+        "file" : "CustomWidgets.py",
+        "widget" : "CompactScale",
+        "description" : "Blur intensity",
+        "min" : 0.0,
+        "max" : 100,
+        "step" : 0.1,
+        "tooltip": "Adjusts the intensity of the blur effect by changing the radius use by the effect.",
+        "default": 20,
+        "dependency" : "enable-osd-effects & component-selector=10 & osd-blurType>1 & enable-osd-override"
+    },
+
+    "osd-saturation": {
+        "type" : "custom",
+        "file" : "CustomWidgets.py",
+        "widget" : "CompactScale",
+        "description" : "Background color saturation",
+        "min" : 0.0,
+        "max" : 100,
+        "step" : 0.1,
+        "tooltip": "Adjusts the color saturation of the background image from gray-scale to full color.",
+        "default": 100,
+        "dependency" : "enable-osd-effects & component-selector=10 &  enable-osd-override"
+    },
+
 
     "windows-inclusion-list" : {
         "type" : "list",
