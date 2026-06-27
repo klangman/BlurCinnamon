@@ -1346,8 +1346,11 @@ class BlurClassicSwitcher extends BlurBase {
    _showBackground(switcher) {
       let actor = switcher._appList.actor;
       if (actor) {
-         actor.set_style( "background-gradient-direction: vertical; background-gradient-start: transparent; " +
-                          "background-gradient-end: transparent; background: transparent;" );
+         // -------------------- TODO: Make this an option for people with themes that are already transparent -------------------
+         if (settings.allowTransparentColorSwitcher) {
+            actor.set_style( "background-gradient-direction: vertical; background-gradient-start: transparent; " +
+                             "background-gradient-end: transparent; background: transparent;" );
+         }
 
          // Create the effects and the background actor to apply to effects to
          let [opacity, blendColor, blurType, radius, saturation] = this._getSettings(settings.appswitcherOverride);
@@ -3504,6 +3507,7 @@ class BlurSettings {
       this.bind('appswitcher-disable-3d-panels', 'appswitcherDisablePanels');
       this.bind('appswitcher-allow-classic',     'appswitcherAllowClassic', enableClassicSwitcherChecked);
       this.bind('appswitcher-allow-3d',          'appswitcherAllow3D');
+      this.bind('allow-transparent-color-switcher', 'allowTransparentColorSwitcher');
 
       this.bind('tooltips-opacity',    'tooltipOpacity');
       this.bind('tooltips-blurType',   'tooltipBlurType');
@@ -3857,7 +3861,7 @@ function enable() {
    Main.wm._sizeChangeWindowDone = _sizeChangeWindowDoneWindowManager;
 
    // Create a OsdWindow Effects class instance, the constructor will kick things off
-   if (1 /*settings.enableAppswitcherEffects && settings.appswitcherAllowClassic*/) {
+   if (settings.enableOSDEffects) {
       blurOSD = new BlurOSD();
    }
    // Create a Classic Switcher Effects class instance, the constructor will kick things off
