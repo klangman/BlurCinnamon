@@ -33,7 +33,7 @@
       "generic-effect-settings" : {
          "type" : "section",
          "title" : "Generic effect settings",
-         "keys" : ["opacity", "blendColor", "blurType", "radius", "saturation"]
+         "keys" : ["opacity", "blendColor", "blurType", "show-blur-info", "blur-info-label", "radius", "saturation"]
       },
 
       "monte-carlo-settings" : {
@@ -405,7 +405,7 @@
             {"id": "override",  "title": "Custom",    "type": "boolean", "default": true},
             {"id": "opacity",   "title": "Dim",       "type": "integer", "default": 40,  "min": 0, "max": 100},
             {"id": "color",     "title": "Color",     "type": "string",  "default": "rgb(0,0,0)"},
-            {"id": "blurtype",  "title": "Background","type": "integer", "default": 4, "options": { "Transparent": 3, "Transparent to wallpaper": 0, "Simple static blur": 1, "Gaussian static blur": 2, "Gaussian dynamic blur": 4, "Monte Carlo static blur": 5, "Monte Carlo dynamic blur": 6 } },
+            {"id": "blurtype",  "title": "Background","type": "integer", "default": 4, "options": { "Transparent": 3, "Transparent to wallpaper": 0, "Simple static blur": 1, "Gaussian static blur": 2, "Gaussian dynamic blur": 4, "Monte Carlo static blur": 5, "Monte Carlo dynamic blur": 6, "Dual Kawase static blur": 7, "Dual Kawase dynamic blur": 8 } },
             {"id": "radius",    "title": "Intensity", "type": "integer", "default": 10,  "min": 0, "max": 100},
             {"id": "saturation","title": "Saturation","type": "integer", "default": 100, "min": 0, "max": 100},
             {"id": "customCSS", "title": "Custom CSS","type": "string",  "default": ""}
@@ -462,10 +462,24 @@
             "Gaussian static blur": 2,
             "Gaussian dynamic blur (if applicable)": 4,
             "Monte Carlo static blur": 5,
-            "Monte Carlo dynamic blur (if applicable)": 6
+            "Monte Carlo dynamic blur (if applicable)": 6,
+            "Dual Kawase static blur": 7,
+            "Dual Kawase dynamic blur (if applicable)": 8
         },
         "description": "Type of blur effect",
         "tooltip": "What type of blur algorithm should be used to blur the background"
+    },
+
+    "show-blur-info": {
+        "type": "switch",
+        "default": false,
+        "description": "💡 Show Algorithm Guide (Help)"
+    },
+
+    "blur-info-label": {
+        "type": "label",
+        "description": "Algorithm Guide:\n• Gaussian: High quality, but very heavy on performance (especially Dynamic).\n• Dual Kawase: Same high quality as Gaussian, but heavily optimized. Best for low-end GPUs and Dynamic Blur.\n• Monte Carlo: Grainy, frosted-glass style noise blur.\n• Static vs Dynamic: 'Dynamic' blurs videos and moving windows behind the element in real-time. 'Static' only blurs the wallpaper.",
+        "dependency": "show-blur-info"
     },
 
     "radius": {
@@ -554,7 +568,8 @@
             "None": 0,
             "Simple": 1,
             "Gaussian": 2,
-            "Monte Carlo": 5
+            "Monte Carlo": 5,
+            "Dual Kawase": 7
         },
         "description": "Type of blur effect",
         "dependency" : "enable-overview-effects & component-selector=6 & enable-overview-override",
@@ -615,7 +630,8 @@
             "None": 0,
             "Simple": 1,
             "Gaussian": 2,
-            "Monte Carlo": 5
+            "Monte Carlo": 5,
+            "Dual Kawase": 7
         },
         "description": "Type of blur effect",
         "dependency" : "enable-expo-effects & component-selector=3 & enable-expo-override",
@@ -679,7 +695,9 @@
             "Gaussian static blur": 2,
             "Gaussian dynamic blur": 4,
             "Monte Carlo static blur": 5,
-            "Monte Carlo dynamic blur": 6
+            "Monte Carlo dynamic blur": 6,
+            "Dual Kawase static blur": 7,
+            "Dual Kawase dynamic blur": 8
         },
         "description": "Type of background effect",
         "tooltip": "What type of background effect should be applied",
@@ -777,7 +795,9 @@
             "Gaussian static blur": 2,
             "Gaussian dynamic blur": 4,
             "Monte Carlo static blur": 5,
-            "Monte Carlo dynamic blur": 6
+            "Monte Carlo dynamic blur": 6,
+            "Dual Kawase static blur": 7,
+            "Dual Kawase dynamic blur": 8
         },
         "description": "Type of background effect",
         "tooltip": "What type of background effect should be applied",
@@ -854,7 +874,8 @@
             "None": 0,
             "Simple": 1,
             "Gaussian": 2,
-            "Monte Carlo": 5
+            "Monte Carlo": 5,
+            "Dual Kawase": 7
         },
         "description": "Type of blur effect",
         "tooltip": "What type of blur algorithm should be used to blur the background",
@@ -918,7 +939,9 @@
             "Gaussian static blur": 2,
             "Gaussian dynamic blur": 4,
             "Monte Carlo static blur": 5,
-            "Monte Carlo dynamic blur": 6
+            "Monte Carlo dynamic blur": 6,
+            "Dual Kawase static blur": 7,
+            "Dual Kawase dynamic blur": 8
         },
         "description": "Type of background effect",
         "dependency" : "enable-notification-effects & component-selector=5 & enable-notification-override",
@@ -1012,7 +1035,9 @@
             "Gaussian static blur": 2,
             "Gaussian dynamic blur": 4,
             "Monte Carlo static blur": 5,
-            "Monte Carlo dynamic blur": 6
+            "Monte Carlo dynamic blur": 6,
+            "Dual Kawase static blur": 7,
+            "Dual Kawase dynamic blur": 8
         },
         "description": "Type of blur effect",
         "dependency" : "enable-appswitcher-effects & component-selector=0 & enable-appswitcher-override",
@@ -1075,7 +1100,9 @@
             "Gaussian static blur": 2,
             "Gaussian dynamic blur": 4,
             "Monte Carlo static blur": 5,
-            "Monte Carlo dynamic blur": 6
+            "Monte Carlo dynamic blur": 6,
+            "Dual Kawase static blur": 7,
+            "Dual Kawase dynamic blur": 8
         },
         "description": "Type of background effect",
         "dependency" : "enable-tooltips-effects & component-selector=8 & enable-tooltips-override",
@@ -1138,7 +1165,9 @@
             "Gaussian static blur": 2,
             "Gaussian dynamic blur": 4,
             "Monte Carlo static blur": 5,
-            "Monte Carlo dynamic blur": 6
+            "Monte Carlo dynamic blur": 6,
+            "Dual Kawase static blur": 7,
+            "Dual Kawase dynamic blur": 8
         },
         "description": "Type of blur effect",
         "tooltip": "What type of blur algorithm should be used to blur the background",
@@ -1215,7 +1244,9 @@
             "Gaussian static blur": 2,
             "Gaussian dynamic blur": 4,
             "Monte Carlo static blur": 5,
-            "Monte Carlo dynamic blur": 6
+            "Monte Carlo dynamic blur": 6,
+            "Dual Kawase static blur": 7,
+            "Dual Kawase dynamic blur": 8
         },
         "description": "Type of blur effect",
         "tooltip": "What type of blur algorithm should be used to blur the background",
@@ -1261,7 +1292,7 @@
             {"id": "override",      "title": "Custom",       "type": "boolean", "default": true},
             {"id": "opacity",       "title": "Dim",          "type": "integer", "default": 0,  "min": 0, "max": 100},
             {"id": "color",         "title": "Color",        "type": "string",  "default": "rgb(0,0,0)"},
-            {"id": "blurtype",      "title": "Background",   "type": "integer", "default": 2, "options": {"Transparent to wallpaper": 0, "Simple static blur": 1, "Gaussian static blur": 2, "Gaussian dynamic blur": 4, "Monte Carlo static blur": 5, "Monte Carlo dynamic blur": 6 } },
+            {"id": "blurtype",      "title": "Background",   "type": "integer", "default": 2, "options": {"Transparent to wallpaper": 0, "Simple static blur": 1, "Gaussian static blur": 2, "Gaussian dynamic blur": 4, "Monte Carlo static blur": 5, "Monte Carlo dynamic blur": 6, "Dual Kawase static blur": 7, "Dual Kawase dynamic blur": 8 } },
             {"id": "radius",        "title": "Intensity",    "type": "integer", "default": 10,  "min": 0, "max": 100},
             {"id": "saturation",    "title": "Saturation",   "type": "integer", "default": 100, "min": 0, "max": 100},
             {"id": "corner_radius", "title": "Corner Radius","type": "integer", "default": 10, "min": 0, "max": 25},
@@ -1325,7 +1356,7 @@
             {"id": "override",   "title": "Custom",     "type": "boolean", "default": true},
             {"id": "opacity",    "title": "Dim",        "type": "integer", "default": 0,  "min": 0, "max": 100},
             {"id": "color",      "title": "Color",      "type": "string",  "default": "rgb(0,0,0)"},
-            {"id": "blurtype",   "title": "Blur",       "type": "integer", "default": 2, "options": { "None": 0, "Simple static blur": 1, "Gaussian static blur": 2, "Gaussian dynamic blur": 4, "Monte Carlo static blur": 5, "Monte Carlo dynamic blur": 6 } },
+            {"id": "blurtype",   "title": "Blur",       "type": "integer", "default": 2, "options": { "None": 0, "Simple static blur": 1, "Gaussian static blur": 2, "Gaussian dynamic blur": 4, "Monte Carlo static blur": 5, "Monte Carlo dynamic blur": 6, "Dual Kawase static blur": 7, "Dual Kawase dynamic blur": 8 } },
             {"id": "radius",     "title": "Intensity",  "type": "integer", "default": 10,  "min": 0, "max": 100},
             {"id": "saturation", "title": "Saturation", "type": "integer", "default": 100, "min": 0, "max": 100}
         ],

@@ -121,12 +121,7 @@ const MonteCarloBlurEffect =
                 this.set_shader_source(this._source);
 
             const theme_context = St.ThemeContext.get_for_stage(global.stage);
-            theme_context.connect(
-                'notify::scale-factor',
-                _ => this.set_uniform_value('radius',
-                    parseFloat(this._radius * theme_context.scale_factor - 1e-6)
-                )
-            );
+            this.set_uniform_value('radius', parseFloat(this._radius * theme_context.scale_factor - 1e-6));
         }
 
         get_shader_source(shader_filename) {
@@ -232,6 +227,12 @@ const MonteCarloBlurEffect =
                 let old_actor = this.get_actor();
                 old_actor?.disconnect(this._actor_connection_size_id);
             }
+
+            if (this._scale_connection_id) {
+                St.ThemeContext.get_for_stage(global.stage).disconnect(this._scale_connection_id);
+                this._scale_connection_id = null;
+            }
+          
             if (actor) {
                 this.width = actor.width;
                 this.height = actor.height;
@@ -239,9 +240,14 @@ const MonteCarloBlurEffect =
                     this.width = actor.width;
                     this.height = actor.height;
                 });
-            }
-            else
+
+                this._scale_connection_id = St.ThemeContext.get_for_stage(global.stage).connect('notify::scale-factor', () => {
+                    const scale_factor = St.ThemeContext.get_for_stage(global.stage).scale_factor;
+                    this.set_uniform_value('radius', parseFloat(this._radius * scale_factor - 1e-6));
+                });     
+            } else {
                 this._actor_connection_size_id = null;
+            }
 
             super.vfunc_set_actor(actor);
         }

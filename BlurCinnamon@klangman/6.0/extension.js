@@ -58,6 +58,7 @@ const PopupMenu = imports.ui.popupMenu;
 
 const GaussianBlur = require("./gaussian_blur");
 const MonteCarloBlur = require("./monte_carlo_blur");
+const DualKawaseBlur = require("./dual_kawase_blur");
 const CornerEffect = require("./corner");
 
 const ANIMATION_TIME = 0.25;
@@ -104,7 +105,9 @@ const BlurType = {
    Transparent: 3,
    DynamicBlur: 4,    // Dynamic blur using Gaussian
    MonteCarlo: 5,
-   DynamicMC: 6       // Dynamic blur using Monte-Carlo
+   DynamicMC: 6,      // Dynamic blur using Monte-Carlo
+   DualKawase: 7,
+   DynamicDK: 8,      // Dynamic blur using Dual-Kawase
 }
 
 const PanelLoc = {
@@ -161,11 +164,13 @@ function _animateVisibleOverview() {
    if (blurType > BlurType.None) {
       let fx;
       if (blurType === BlurType.Simple) {
-         fx =  new Clutter.BlurEffect();
+         fx = new Clutter.BlurEffect();
       } else if (blurType === BlurType.Gaussian || blurType === BlurType.DynamicBlur) {
          fx = new GaussianBlur.GaussianBlurEffect( { radius: radius, brightness: 1, width: 0, height: 0 } );
-      } else { // Monte-Carlo
+      } else if (blurType === BlurType.MonteCarlo || blurType === BlurType.DynamicMC) {
          fx = new MonteCarloBlur.MonteCarloBlurEffect( { radius: radius, iterations: settings.montecarloIterations, prefer_closer_pixels: settings.montecarloPerferCloserPixels, use_base_pixel: settings.montecarloUseBasePixel, brightness: 1, width: 0, height: 0 } );
+      } else { // Dual-Kawase
+         fx = new DualKawaseBlur.DualFilteringBlurEffect( { radius: radius, brightness: 1, width: 0, height: 0 } );
       }
       desktopBackground.add_effect_with_name( BLUR_EFFECT_NAME, fx );
    }
@@ -204,8 +209,10 @@ function _animateVisibleExpo() {
          fx =  new Clutter.BlurEffect();
       } else if (blurType === BlurType.Gaussian || blurType === BlurType.DynamicBlur) {
          fx = new GaussianBlur.GaussianBlurEffect( {radius: radius, brightness: 1, width: 0, height: 0} );
-      } else { // Monte-Carlo
+      } else if (blurType === BlurType.MonteCarlo || blurType === BlurType.DynamicMC) {
          fx = new MonteCarloBlur.MonteCarloBlurEffect( { radius: radius, iterations: settings.montecarloIterations, prefer_closer_pixels: settings.montecarloPerferCloserPixels, use_base_pixel: settings.montecarloUseBasePixel, brightness: 1, width: 0, height: 0 } );
+      } else { // Dual-Kawase
+         fx = new DualKawaseBlur.DualFilteringBlurEffect( { radius: radius, brightness: 1, width: 0, height: 0 } );
       }
       desktopBackground.add_effect_with_name( BLUR_EFFECT_NAME, fx );
    }
@@ -243,8 +250,10 @@ function _showAppSwitcher3D(...params) {
             fx =  new Clutter.BlurEffect();
          } else if (blurType === BlurType.Gaussian || blurType === BlurType.DynamicBlur) {
             fx = new GaussianBlur.GaussianBlurEffect( {radius: radius, brightness: 1, width: 0, height: 0} );
-         } else { // Monte-Carlo
+         } else if (blurType === BlurType.MonteCarlo || blurType === BlurType.DynamicMC) {
             fx = new MonteCarloBlur.MonteCarloBlurEffect( { radius: radius, iterations: settings.montecarloIterations, prefer_closer_pixels: settings.montecarloPerferCloserPixels, use_base_pixel: settings.montecarloUseBasePixel, brightness: 1, width: 0, height: 0 } );
+         } else { // Dual-Kawase
+            fx = new DualKawaseBlur.DualFilteringBlurEffect( { radius: radius, brightness: 1, width: 0, height: 0 } );
          }
          desktopBackground.add_effect_with_name( BLUR_EFFECT_NAME, fx );
          this._blurCinnamonBlurEffect = fx;
@@ -873,7 +882,7 @@ class BlurBase {
    }
 
    _getGenericSettings() {
-      if (!this._supportsDynamicBlur() && (settings.blurType === BlurType.DynamicBlur || settings.blurType === BlurType.DynamicMC))
+      if (!this._supportsDynamicBlur() && (settings.blurType === BlurType.DynamicBlur || settings.blurType === BlurType.DynamicMC || settings.blurType === BlurType.DynamicDK))
          return [settings.opacity, settings.blendColor, BlurType.Gaussian, settings.radius, settings.saturation];
       return [settings.opacity, settings.blendColor, settings.blurType, settings.radius, settings.saturation];
    }
@@ -949,9 +958,11 @@ class BlurBase {
          blurEffect =  new Clutter.BlurEffect();
       else if (blurType === BlurType.Gaussian || blurType === BlurType.DynamicBlur)
          blurEffect = new GaussianBlur.GaussianBlurEffect( {radius: radius, brightness: 1 , width: 0, height: 0} );
-      else // Monte-Carlo
+      else if (blurType === BlurType.MonteCarlo || blurType === BlurType.DynamicMC)
          blurEffect = new MonteCarloBlur.MonteCarloBlurEffect( { radius: radius, iterations: settings.montecarloIterations, prefer_closer_pixels: settings.montecarloPerferCloserPixels, use_base_pixel: settings.montecarloUseBasePixel, brightness: 1, width: 0, height: 0 } );
-      if (saturation<100)
+      else if (blurType === BlurType.DualKawase || blurType === BlurType.DynamicDK)
+         blurEffect = new DualKawaseBlur.DualFilteringBlurEffect( { radius: radius, brightness: 1, width: 0, height: 0 } );
+      if (saturation < 100)
          desatEffect = new Clutter.DesaturateEffect({factor: (100-saturation)/100});
       if (cornerRadius>0)
          cornerEffect = new CornerEffect.CornerEffect( metaData.uuid, {radius: cornerRadius, corners_top: top, corners_bottom: bottom} );
@@ -1061,6 +1072,12 @@ class BlurBase {
          }
          let blurEffect = new MonteCarloBlur.MonteCarloBlurEffect( { radius: radius, iterations: settings.montecarloIterations, prefer_closer_pixels: settings.montecarloPerferCloserPixels, use_base_pixel: settings.montecarloUseBasePixel, brightness: 1, width: 0, height: 0 } );
          background.add_effect_with_name( BLUR_EFFECT_NAME, blurEffect );
+      } else if ((blurType === BlurType.DualKawase || blurType === BlurType.DynamicDK) && !(curEffect instanceof DualKawaseBlur.DualFilteringBlurEffect)) {
+         if (curEffect) {
+            background.remove_effect(curEffect);
+         }
+         let blurEffect = new DualKawaseBlur.DualFilteringBlurEffect( { radius: radius, brightness: 1, width: 0, height: 0 } );
+         background.add_effect_with_name( BLUR_EFFECT_NAME, blurEffect );
       } else if (blurType === BlurType.Transparent && background instanceof Meta.X11BackgroundActor) {
          if (curEffect) {
             background.remove_effect(curEffect);
@@ -1081,7 +1098,7 @@ class BlurBase {
          this.parent.add_actor(background);
       }
       // Adjust the blur effects
-      if ((curEffect instanceof GaussianBlur.GaussianBlurEffect || curEffect instanceof MonteCarloBlur.MonteCarloBlurEffect) && curEffect.radius != radius) {
+      if ((curEffect instanceof GaussianBlur.GaussianBlurEffect || curEffect instanceof MonteCarloBlur.MonteCarloBlurEffect || curEffect instanceof DualKawaseBlur.DualFilteringBlurEffect) && curEffect.radius != radius) {
          curEffect.radius = radius;
       }
       // If Monte Carlo, update it's settings
@@ -1263,7 +1280,7 @@ class BlurOSD extends BlurBase {
          osd._blurCinnamonBackground = this._background;
 
          // If Dynamic Blurring is enabled, create a workspace clone and add the clone to the background
-         if (blurType === BlurType.DynamicBlur || blurType === BlurType.DynamicMC) {
+         if (blurType === BlurType.DynamicBlur || blurType === BlurType.DynamicMC || blurType === BlurType.DynamicDK) {
             debugMsg( "Creating dynamic effect for classic app switcher" );
             this._createDynamicEffect(this._background);
          }
@@ -1302,7 +1319,7 @@ class BlurOSD extends BlurBase {
 
    _hideBackground(osd, actor) {
       if (!this._background) return;
-      if (this._blurType === BlurType.DynamicBlur || this._blurType === BlurType.DynamicMC) {
+      if (this._blurType === BlurType.DynamicBlur || this._blurType === BlurType.DynamicMC || this._blurType === BlurType.DynamicDK) {
          debugMsg( "Removing dynamic effect for classic app switcher" );
          this._destroyDynamicEffect(this._background);
       }
@@ -1408,7 +1425,7 @@ class BlurClassicSwitcher extends BlurBase {
 
          this._setClip(actor)
          // If Dynamic Blurring is enabled, create a workspace clone and add the clone to the background
-         if (blurType === BlurType.DynamicBlur || blurType === BlurType.DynamicMC) {
+         if (blurType === BlurType.DynamicBlur || blurType === BlurType.DynamicMC || blurType === BlurType.DynamicDK) {
             debugMsg( "Creating dynamic effect for classic app switcher" );
             this._createDynamicEffect(this._background);
          }
@@ -1425,7 +1442,7 @@ class BlurClassicSwitcher extends BlurBase {
    }
 
    _hideBackground() {
-      if (this._blurType === BlurType.DynamicBlur || this._blurType === BlurType.DynamicMC) {
+      if (this._blurType === BlurType.DynamicBlur || this._blurType === BlurType.DynamicMC || this._blurType === BlurType.DynamicDK) {
          debugMsg( "Removing dynamic effect for classic app switcher" );
          this._destroyDynamicEffect(this._background);
       }
@@ -1776,7 +1793,7 @@ class BlurPanels extends BlurBase {
       blurredPanel.background = background;
       this._setClip(panel);
 
-      if (blurType === BlurType.DynamicBlur || blurType === BlurType.DynamicMC) {
+      if (blurType === BlurType.DynamicBlur || blurType === BlurType.DynamicMC || blurType === BlurType.DynamicDK) {
          this._createDynamicEffect(background);
       }
 
@@ -1953,7 +1970,7 @@ class BlurPanels extends BlurBase {
                } else {
                   this._blurPanel(panels[i]);
                }
-               if ((blurType === BlurType.DynamicBlur || blurType === BlurType.DynamicMC) && !this._isDynamicEffectActive(blurredPanel.background)) {
+               if ((blurType === BlurType.DynamicBlur || blurType === BlurType.DynamicMC || blurType === BlurType.DynamicDK) && !this._isDynamicEffectActive(blurredPanel.background)) {
                   this._createDynamicEffect(blurredPanel.background);
                }
             } else if (panels[i].__blurredPanel) {
@@ -2189,7 +2206,7 @@ class BlurPopupMenus extends BlurBase {
          debugMsg( "Blurred actor is now visible" );
 
          // If Dynamic Blurring is enabled, create window clones and add them to the background
-         if (blurType === BlurType.DynamicBlur || blurType === BlurType.DynamicMC) {
+         if (blurType === BlurType.DynamicBlur || blurType === BlurType.DynamicMC || blurType === BlurType.DynamicDK) {
             this._createDynamicEffect(this._background);
          }
 
@@ -2362,7 +2379,7 @@ class BlurPopupMenus extends BlurBase {
       // Update the accent dimming color
       this._accentColor = this._getColor( blendColor, accentOpacity );
 
-      if ((blurType === BlurType.DynamicBlur || blurType === BlurType.DynamicMC) && !this._isDynamicEffectActive(this._background)) {
+      if ((blurType === BlurType.DynamicBlur || blurType === BlurType.DynamicMC || blurType === BlurType.DynamicDK) && !this._isDynamicEffectActive(this._background)) {
          this._createDynamicEffect(this._background);
       }
 
@@ -2416,7 +2433,9 @@ class BlurDesktop extends BlurBase {
          this._blurEffect = new GaussianBlur.GaussianBlurEffect( {radius: radius, brightness: 1, width: 0, height: 0} );
       else if (blurType === BlurType.MonteCarlo)
          this._blurEffect = new MonteCarloBlur.MonteCarloBlurEffect( { radius: radius, iterations: settings.montecarloIterations, prefer_closer_pixels: settings.montecarloPerferCloserPixels, use_base_pixel: settings.montecarloUseBasePixel, brightness: 1, width: 0, height: 0 } );
-      this._desatEffect = new Clutter.DesaturateEffect({factor: (100-saturation)/100});
+      else if (blurType === BlurType.DualKawase)
+         this._blurEffect = new DualKawaseBlur.DualFilteringBlurEffect( { radius: radius, brightness: 1, width: 0, height: 0 } );
+      this._desatEffect = new Clutter.DesaturateEffect({ factor: (100 - saturation) / 100 });
       if (this._blurEffect)
          global.background_actor.add_effect_with_name( BLUR_EFFECT_NAME, this._blurEffect );
       global.background_actor.add_effect_with_name( DESAT_EFFECT_NAME, this._desatEffect );
@@ -2469,11 +2488,17 @@ class BlurDesktop extends BlurBase {
          }
          this._blurEffect = new MonteCarloBlur.MonteCarloBlurEffect( { radius: radius, iterations: settings.montecarloIterations, prefer_closer_pixels: settings.montecarloPerferCloserPixels, use_base_pixel: settings.montecarloUseBasePixel, brightness: 1, width: 0, height: 0 } );
          global.background_actor.add_effect_with_name( BLUR_EFFECT_NAME, this._blurEffect );
+      } else if (blurType === BlurType.DualKawase && !(this._blurEffect instanceof DualKawaseBlur.DualFilteringBlurEffect)) {
+         if (curEffect) {
+            global.background_actor.remove_effect(curEffect);
+         }
+         this._blurEffect = new DualKawaseBlur.DualFilteringBlurEffect( { radius: radius, brightness: 1, width: 0, height: 0 } );
+         global.background_actor.add_effect_with_name( BLUR_EFFECT_NAME, this._blurEffect );
       } else if (blurType !== BlurType.None && curEffect === null) {
          global.background_actor.add_effect_with_name( BLUR_EFFECT_NAME, this._blurEffect );
       }
       // Adjust the effects
-      if ((this._blurEffect instanceof GaussianBlur.GaussianBlurEffect || this._blurEffect instanceof MonteCarloBlur.MonteCarloBlurEffect) && this._blurEffect.radius != radius) {
+      if ((this._blurEffect instanceof GaussianBlur.GaussianBlurEffect || this._blurEffect instanceof MonteCarloBlur.MonteCarloBlurEffect || this._blurEffect instanceof DualKawaseBlur.DualFilteringBlurEffect) && this._blurEffect.radius != radius) {
          this._blurEffect.radius = radius;
       }
       // If Monte Carlo, update it's settings
@@ -2495,7 +2520,7 @@ class BlurDesktop extends BlurBase {
    _onFocusChanged(){
       let window = global.display.get_focus_window();
       if (!window || window.get_window_type() === Meta.WindowType.DESKTOP) {
-         if ((this._blurEffect instanceof GaussianBlur.GaussianBlurEffect || this._blurEffect instanceof MonteCarloBlur.MonteCarloBlurEffect) && this._blurEffect.radius != this._withFocusSettings.radius)
+         if ((this._blurEffect instanceof GaussianBlur.GaussianBlurEffect || this._blurEffect instanceof MonteCarloBlur.MonteCarloBlurEffect || this._blurEffect instanceof DualKawaseBlur.DualFilteringBlurEffect) && this._blurEffect.radius != this._withFocusSettings.radius)
             this._blurEffect.radius = this._withFocusSettings.radius;
          let dimmerColor = this._getColor( this._withFocusSettings.blendColor, this._withFocusSettings.opacity );
          this._dimmer.set_background_color(dimmerColor);
@@ -2505,7 +2530,7 @@ class BlurDesktop extends BlurBase {
          return;
       }
       if (this._currentlyWithFocus) {
-         if ((this._blurEffect instanceof GaussianBlur.GaussianBlurEffect || this._blurEffect instanceof MonteCarloBlur.MonteCarloBlurEffect) && this._blurEffect.radius != this._withoutFocusSettings.radius)
+         if ((this._blurEffect instanceof GaussianBlur.GaussianBlurEffect || this._blurEffect instanceof MonteCarloBlur.MonteCarloBlurEffect || this._blurEffect instanceof DualKawaseBlur.DualFilteringBlurEffect) && this._blurEffect.radius != this._withoutFocusSettings.radius)
             this._blurEffect.radius = this._withoutFocusSettings.radius;
          let dimmerColor = this._getColor( this._withoutFocusSettings.blendColor, this._withoutFocusSettings.opacity );
          this._dimmer.set_background_color(dimmerColor);
@@ -2597,7 +2622,7 @@ class BlurNotifications extends BlurBase {
             table.set_style( this._activeNotificationData.original_table_style );
          }
          this._setClip(actor, this._background, table);
-         if ((this._blurType === BlurType.DynamicBlur || this._blurType === BlurType.DynamicMC) && !this._isDynamicEffectActive(this._background)) {
+         if ((this._blurType === BlurType.DynamicBlur || this._blurType === BlurType.DynamicMC || this._blurType === BlurType.DynamicDK) && !this._isDynamicEffectActive(this._background)) {
             this._createDynamicEffect(this._background);
          }
       } else {
@@ -2648,7 +2673,7 @@ class BlurNotifications extends BlurBase {
       // Resize the background to match the size of the notification window
       this._setClip(actor, this._background, table);
       // If Dynamic Blurring is enabled, create a workspace clone and add the clone to the background
-      if (this._blurType === BlurType.DynamicBlur || this._blurType === BlurType.DynamicMC) {
+      if (this._blurType === BlurType.DynamicBlur || this._blurType === BlurType.DynamicMC || this._blurType === BlurType.DynamicDK) {
          this._createDynamicEffect(this._background);
       }
       // The notification window size can change after being shown, so we need to adjust the background when that happens
@@ -2753,7 +2778,7 @@ class BlurTooltips extends BlurBase {
       this._setClip(actor, this._background, actor);
       this._background.show();
       // If Dynamic Blurring is enabled, create a workspace clone and add the clone to the background
-      if ((blurType === BlurType.DynamicBlur || blurType === BlurType.DynamicMC) && !this._isDynamicEffectActive(this._background)) {
+      if ((blurType === BlurType.DynamicBlur || blurType === BlurType.DynamicMC || blurType === BlurType.DynamicDK) && !this._isDynamicEffectActive(this._background)) {
          this._createDynamicEffect(this._background);
       }
       // Adapt to any future tooltip size changes
@@ -2901,7 +2926,7 @@ class BlurApplications extends BlurBase {
          this._setClip(compositor);
          // Make the background visible
          background.show();
-         if (blurType === BlurType.DynamicBlur || blurType === BlurType.DynamicMC) {
+         if (blurType === BlurType.DynamicBlur || blurType === BlurType.DynamicMC || blurType === BlurType.DynamicDK) {
             this._createDynamicEffect(background, metaWindow);
          }
       }
@@ -3038,7 +3063,7 @@ class BlurApplications extends BlurBase {
                if (!window_opacity || window_opacity < 10 || window_opacity > 100 )
                   window_opacity = 100;
                windows[i].set_opacity(window_opacity*2.55);
-               if ((blurType === BlurType.DynamicBlur || blurType === BlurType.DynamicMC) && !this._isDynamicEffectActive(data.background)) {
+               if ((blurType === BlurType.DynamicBlur || blurType === BlurType.DynamicMC || blurType === BlurType.DynamicDK) && !this._isDynamicEffectActive(data.background)) {
                   this._createDynamicEffect(data.background, data.metaWindow);
                }
             }
@@ -3287,7 +3312,7 @@ class BlurDesklets extends BlurBase {
          let desklet = desklets[i].desklet;
          if (desklet && desklet._blurCinnamonBackground) {
             let blurSettings = desklet._blurCinnamonBackground._blurCinnamonSettings;
-            if(blurSettings[3] === BlurType.DynamicBlur || blurSettings[3] === BlurType.DynamicMC) {
+            if(blurSettings[3] === BlurType.DynamicBlur || blurSettings[3] === BlurType.DynamicMC || blurSettings[3] === BlurType.DynamicDK) {
                this._raiseDeskletDynamicBackground(desklet._blurCinnamonBackground);
             }
          }
@@ -3307,7 +3332,7 @@ class BlurDesklets extends BlurBase {
          let desklet = desklets[i].desklet;
          if (desklet && desklet._blurCinnamonBackground) {
             let blurSettings = desklet._blurCinnamonBackground._blurCinnamonSettings;
-            if(blurSettings[3] === BlurType.DynamicBlur || blurSettings[3] === BlurType.DynamicMC) {
+            if(blurSettings[3] === BlurType.DynamicBlur || blurSettings[3] === BlurType.DynamicMC || blurSettings[3] === BlurType.DynamicDK) {
                this._lowerDeskletDynamicBackground(desklet._blurCinnamonBackground);
             }
          }
@@ -3342,7 +3367,7 @@ class BlurDesklets extends BlurBase {
          desklet._blurCinnamonSignalManager = new SignalManager.SignalManager(null);
          desklet._blurCinnamonSignalManager.connect(desklet.actor, "notify::allocation", () => this._setClip(desklet) );
          //desklet._blurCinnamonSignalManager.connect(desklet, "destroy", () => this._deskletRemoved(desklet) );
-         if (blurType === BlurType.DynamicBlur || blurType === BlurType.DynamicMC) {
+         if (blurType === BlurType.DynamicBlur || blurType === BlurType.DynamicMC || blurType === BlurType.DynamicDK) {
             this._createDynamicEffect(background, global.desklet_container, true);
          }
       }
@@ -3403,7 +3428,6 @@ class BlurDesklets extends BlurBase {
          if (cloneManager)
             cloneManager.backgroundClipChanged(background);
       }
-
    }
 
    updateEffects() {
@@ -3420,7 +3444,7 @@ class BlurDesklets extends BlurBase {
                   if (enabled) {
                      this._updateEffects( desklet._blurCinnamonBackground, opacity, blendColor, blurType, radius, saturation );
                      desklet._blurCinnamonBackground._blurCinnamonSettings = deskletSettings;
-                     if ((blurType === BlurType.DynamicBlur || blurType === BlurType.DynamicMC) && !this._isDynamicEffectActive(desklet._blurCinnamonBackground)) {
+                     if ((blurType === BlurType.DynamicBlur || blurType === BlurType.DynamicMC || blurType === BlurType.DynamicDK) && !this._isDynamicEffectActive(desklet._blurCinnamonBackground)) {
                         this._createDynamicEffect(desklet._blurCinnamonBackground, global.desklet_container, true);
                      }
                   } else {
