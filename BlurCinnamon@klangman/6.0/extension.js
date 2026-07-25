@@ -1504,7 +1504,8 @@ class BlurDialogs extends BlurBase {
          if (themeNode) {
             let corner_radius = themeNode.get_border_radius(St.Corner.TOPLEFT);
             if (corner_radius === 9999) { corner_radius = 24; } // visual fallback
-            this._updateCornerRadius(this._background, (corner_radius)/global.ui_scale);
+            let adjusted_radius = Math.max(0, corner_radius - 2);
+            this._updateCornerRadius(this._background, (adjusted_radius)/global.ui_scale);
          }
 
          this._signalManager.connect(actor, "notify::allocation", () => this._setClip(actor) );
@@ -1520,13 +1521,32 @@ class BlurDialogs extends BlurBase {
 
    _setClip(actor) {
       if (!actor) return;
-      let [x, y] = actor.get_transformed_position(); // Reads the coordinates and the size of the diolog box in the screen
+      let [x, y] = actor.get_transformed_position(); // Reads the coordinates and the size of the box in the screen
       let cornerEffect = this._getCornerEffect(this._background);
-      if (cornerEffect) {
-         cornerEffect.clip = [x + 2, y + 2, actor.width - 3, actor.height - 3];
-      } else {
-         this._background.set_clip(x, y, actor.width, actor.height);
+      
+      let themeNode = actor.get_theme_node();
+      let bw = 2; 
+      if (themeNode) {
+         let theme_bw = themeNode.get_border_width(St.Side.TOP);
+         if (theme_bw > 1) bw = theme_bw + 1;
       }
+
+      if (cornerEffect) {
+         cornerEffect.clip = [
+            x + bw, 
+            y + bw, 
+            actor.width - (bw * 2), 
+            actor.height - (bw * 2)
+         ];
+      } else {
+         this._background.set_clip(
+            x + bw, 
+            y + bw, 
+            actor.width - (bw * 2), 
+            actor.height - (bw * 2)
+         );
+      }
+      
       if (cloneManager) {
          cloneManager.backgroundClipChanged(this._background);
       }
