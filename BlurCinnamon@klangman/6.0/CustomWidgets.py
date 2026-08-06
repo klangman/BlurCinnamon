@@ -148,7 +148,7 @@ class LabelWithTooltip(SettingsWidget):
       self.label.set_line_wrap(True)
       self.pack_start(self.label, True, True, 0)
       if "tooltip" in info:
-         self.label.set_tooltip_text(info["tooltip"])
+         self.label.set_tooltip_markup(info["tooltip"])
 
 
 # An About page Widget with an image and a centered label that supports markup
