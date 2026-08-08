@@ -42,7 +42,7 @@ const Tooltips        = imports.ui.tooltips;
 const WindowMenu      = imports.ui.windowMenu;
 const Cinnamon        = imports.gi.Cinnamon;
 const DeskletManager  = imports.ui.deskletManager;
-const OsdWindow = imports.ui.osdWindow;
+const OsdWindow       = imports.ui.osdWindow;
 
 try {
    var WorkspaceOsd    = imports.ui.workspaceOsd;
