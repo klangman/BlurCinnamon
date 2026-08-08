@@ -27,7 +27,7 @@
       "general-settings" : {
          "type" : "section",
          "title" : "Cinnamon desktop components where effects will be applied",
-         "keys" : ["enable-appswitcher-effects", "enable-desklet-effects", "enable-desktop-effects", "enable-dialogs-effects", "enable-expo-effects", "enable-popup-effects", "enable-notification-effects", "enable-osd-effects", "enable-overview-effects", "enable-panels-effects", "enable-tooltips-effects", "enable-window-effects", "focused-window-backlight"]
+         "keys" : ["enable-appswitcher-effects", "enable-desklet-effects", "enable-desktop-effects", "enable-expo-effects", "enable-popup-effects", "enable-notification-effects", "enable-osd-effects", "enable-overview-effects", "enable-panels-effects", "enable-tooltips-effects", "enable-window-effects", "focused-window-backlight"]
       },
 
       "generic-effect-settings" : {
@@ -62,7 +62,6 @@
                     "tooltips-warning", "enable-tooltips-override", "allow-transparent-color-tooltips", "tooltips-opacity", "tooltips-blendColor", "tooltips-blurType", "tooltips-radius", "tooltips-saturation",
                     "windows-warning", "windows-inclusion-list", "windows-label", "windows-add-button", "windows-atrifact-mitigation", "windows-compiz-mitigation",
                     "desklets-warning", "enable-desklets-override", "enable-desklets-unique-settings", "desklets-opacity", "desklets-blendColor", "desklets-blurType", "desklets-radius", "desklets-saturation", "desklets-list", "desklets-auto", "desklets-label",
-                    "dialogs-warning", "enable-dialogs-override", "dialogs-opacity", "dialogs-blendColor", "dialogs-blurType", "dialogs-radius", "dialogs-saturation",
                     "info-label"
                   ]
       },
@@ -160,7 +159,6 @@
          "Alt-Tab": 0,
          "Desklets": 1,
          "Desktop": 2,
-         "Dialogs": 11,
          "Expo": 3,
          "Menus": 4,
          "Notifications": 5,
@@ -909,92 +907,6 @@
         "tooltip": "Adjusts the color saturation of the background image from gray-scale to full color.",
         "default": 100,
         "dependency" : "enable-desktop-effects & component-selector=2 & enable-desktop-override"
-    },
-
-    "dialogs-warning": {
-        "type" : "label",
-        "description" : "Note: The Dialog effects are currently disabled under the \"General setup\" tab.",
-        "dependency" : "!enable-dialogs-effects & component-selector=11"
-    },
-
-    "enable-dialogs-effects" : {
-        "type": "switch",
-        "description": "Session Dialogs (Logout, Restart, Shutdown)",
-        "tooltip": "Apply effects to the background of the End Session dialogs.",
-        "default": false
-    },
-
-    "enable-dialogs-override" : {
-        "type": "switch",
-        "description": "Override the generic effect settings for Session Dialogs",
-        "dependency" : "enable-dialogs-effects & component-selector=11",
-        "tooltip": "Override the settings found on the \"Generic effect settings\" tab with unique settings for this component.",
-        "default": false
-    },
-
-    "dialogs-opacity" : {
-        "type" : "custom",
-        "file" : "CustomWidgets.py",
-        "widget" : "CompactScale",
-        "description": "Dim/Colorize Background (%)",
-        "min": 0,
-        "max": 100,
-        "default": 0,
-        "step": 1,
-        "dependency" : "enable-dialogs-effects & component-selector=11 & enable-dialogs-override"
-    },
-
-    "dialogs-blendColor": {
-        "type": "colorchooser",
-        "description" : "Dimming overlay color",
-        "default": "rgb(0,0,0)",
-        "dependency" : "enable-dialogs-effects & component-selector=11 & enable-dialogs-override",
-        "tooltip": "Defines the color that is blended into the background based on the dimming control above."
-    },
-
-    "dialogs-blurType": {
-        "type": "combobox",
-        "default": 4,
-        "options": {
-            "Transparent": 3,
-            "Transparent to wallpaper": 0,
-            "Simple static blur": 1,
-            "Gaussian static blur": 2,
-            "Gaussian dynamic blur": 4,
-            "Monte Carlo static blur": 5,
-            "Monte Carlo dynamic blur": 6,
-            "Dual Kawase static blur": 7,
-            "Dual Kawase dynamic blur": 8
-        },
-        "description": "Type of blur effect",
-        "tooltip": "What type of blur algorithm should be used to blur the background",
-        "dependency" : "enable-dialogs-effects & component-selector=11 & enable-dialogs-override"
-    },
-    
-    "dialogs-radius": {
-        "type" : "custom",
-        "file" : "CustomWidgets.py",
-        "widget" : "CompactScale",
-        "description" : "Blur intensity",
-        "min" : 0.0,
-        "max" : 100,
-        "step" : 0.1,
-        "tooltip": "Adjusts the intensity of the blur effect by changing the radius use by the effect.",
-        "default": 20,
-        "dependency" : "enable-dialogs-effects & component-selector=11 & dialogs-blurType>1 & dialogs-blurType!=3 & enable-dialogs-override"
-    },
-    
-    "dialogs-saturation": {
-        "type" : "custom",
-        "file" : "CustomWidgets.py",
-        "widget" : "CompactScale",
-        "description" : "Background color saturation",
-        "min" : 0.0,
-        "max" : 100,
-        "step" : 0.1,
-        "tooltip": "Adjusts the color saturation of the background image from gray-scale to full color.",
-        "default": 100,
-        "dependency" : "enable-dialogs-effects & component-selector=11 & enable-dialogs-override"
     },
     
     "notification-opacity" : {

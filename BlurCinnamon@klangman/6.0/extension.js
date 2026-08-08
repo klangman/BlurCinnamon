@@ -43,7 +43,6 @@ const WindowMenu      = imports.ui.windowMenu;
 const Cinnamon        = imports.gi.Cinnamon;
 const DeskletManager  = imports.ui.deskletManager;
 const OsdWindow = imports.ui.osdWindow;
-const EndSessionDialog = imports.ui.endSessionDialog;
 
 try {
    var WorkspaceOsd    = imports.ui.workspaceOsd;
@@ -98,8 +97,6 @@ var blurTooltipsThis;
 var blurDeskletsThis;
 var blurOSDThis;
 var blurWorkspaceOsdThis;
-let blurDialogs;
-var blurDialogsThis;
 
 const BlurType = {
    None: 0,
@@ -135,8 +132,7 @@ const Component = {
   Overview: 6,
   Panels: 7,
   Tooltips: 8,
-  Windows: 9,
-  Dialogs: 11
+  Windows: 9
 }
 
 function debugMsg(...params) {
@@ -1455,233 +1451,6 @@ class BlurOSD extends BlurBase {
       }
 
       this._hideBackground(this._currentOsd, this._currentActor);
-   }
-}
-
-// This class handles the blur effect for the sesson dialogs menus
-class BlurDialogs extends BlurBase {
-   constructor() {
-      super();
-      this._signalManager = new SignalManager.SignalManager(null);
-      blurDialogsThis = this; // Make "this" available to monkey patched functions
-
-      this.original_open = EndSessionDialog.EndSessionDialog.prototype.open;
-      this.original_close = EndSessionDialog.EndSessionDialog.prototype.close;
-
-      this.has_own_open = EndSessionDialog.EndSessionDialog.prototype.hasOwnProperty('open');
-      this.has_own_close = EndSessionDialog.EndSessionDialog.prototype.hasOwnProperty('close');
-
-      EndSessionDialog.EndSessionDialog.prototype.open = this._open;
-      EndSessionDialog.EndSessionDialog.prototype.close = this._close;
-   }
-
-   _supportsDynamicBlur() {
-      return true; 
-   }
-
-   _getUniqueSettings() {
-      return [settings.dialogsOpacity, settings.dialogsBlendColor, settings.dialogsBlurType, settings.dialogsRadius, settings.dialogsSaturation];
-   }
-
-   _open(...params) {
-      let ret = blurDialogsThis.original_open.call(this, ...params);
-      
-      try {
-         let boxActor = this.dialogLayout || this.actor;
-         blurDialogsThis._showBackground(this, boxActor);
-      } catch (e) {
-         global.logError("BlurCinnamon: Error generating Dialog background: " + e);
-      }
-      return ret;
-   }
-
-   _close(...params) {
-      try {
-         blurDialogsThis._hideBackground(blurDialogsThis._currentActor);
-      } catch (e) {
-         global.logError("BlurCinnamon: Error closing Dialog background: " + e);
-      }
-      return blurDialogsThis.original_close.call(this, ...params);
-   }
-
-   _showBackground(dialog, actor) {
-      if (actor) {
-         if (this._currentDialog && this._currentDialog !== dialog && this._background) {
-             this._hideBackground(this._currentActor);
-         }
-         
-         if (!this._background) {
-             this._currentDialog = dialog;
-             this._currentActor = actor;
-       
-             if (!actor._blurCinnamonData && settings.allowTransparentColorDialogs) {
-                actor._blurCinnamonData = { 
-                   original_color: actor.get_background_color(), 
-                   original_style: actor.get_style(),
-                   original_class: actor.get_style_class_name(), 
-                   original_pseudo_class: actor.get_style_pseudo_class() 
-                };
-                actor.set_style( "background-gradient-direction: vertical; background-gradient-start: transparent; " +
-                                 "background-gradient-end: transparent; background: transparent;" );
-             }
-       
-             let [opacity, blendColor, blurType, radius, saturation] = this._getSettings(settings.dialogsOverride);
-             this._blurType = blurType;
-                
-             this._background = this._createBackgroundAndEffects(opacity, blendColor, blurType, radius, saturation, null, 10);
-             this._background._blurCinnamonName = "Dialogs";
-       
-             let parent = actor.get_parent(); 
-             if (parent) {
-                parent.add_child(this._background);
-                parent.set_child_below_sibling(this._background, actor);
-             } else {
-                global.layoutManager.modalDialogGroup.add_child(this._background);
-             }
-             
-             if (blurType === BlurType.DynamicBlur || blurType === BlurType.DynamicMC || blurType === BlurType.DynamicDK) {
-                this._createDynamicEffect(this._background);
-             }
-    
-             let themeNode = actor.get_theme_node();
-             this._dialogInset = 1; // Default inset value
-    
-             if (themeNode) {
-                let corner_radius = themeNode.get_border_radius(St.Corner.TOPLEFT);
-                if (corner_radius === 9999) { corner_radius = 24; } // visual fallback
-                
-                // Search for the largest border to ensure the inset covers the entire theme
-                let border = Math.max(
-                    themeNode.get_border_width(St.Side.TOP),
-                    themeNode.get_border_width(St.Side.LEFT),
-                    themeNode.get_border_width(St.Side.RIGHT),
-                    themeNode.get_border_width(St.Side.BOTTOM)
-                );
-                
-                this._dialogInset = Math.max(1, border);
-    
-                // Reduce the radius at the same proportion as the inset
-                let adjusted_radius = Math.max(0, corner_radius - this._dialogInset);
-                this._updateCornerRadius(this._background, (adjusted_radius)/global.ui_scale);
-             }
-    
-             this._signalManager.connect(actor, "notify::allocation", () => this._setClip(actor) );
-    
-             if (this._idleId) {
-                 Mainloop.source_remove(this._idleId);
-                 this._idleId = null;
-             }
-             this._idleId = Mainloop.idle_add(() => {
-                 if (this._background) this._setClip(actor);
-                 this._idleId = null;
-             });
-    
-             this._background.show();
-             this._setClip(actor);
-         }
-      }
-   }
-
-   _setClip(actor) {
-      if (!actor || !this._background) return;
-      
-      let [x, y] = actor.get_transformed_position();
-      let width = actor.width;
-      let height = actor.height;
-
-      // Adjustment for UI scaling
-      if (typeof actor.get_transformed_size === 'function') {
-          let [tw, th] = actor.get_transformed_size();
-          width = tw;
-          height = th;
-      }
-
-      let inset = this._dialogInset || 1;
-      let cornerEffect = this._getCornerEffect(this._background);
-
-      if (cornerEffect) {
-         cornerEffect.clip = [
-            x + inset, 
-            y + inset, 
-            Math.max(0, width - (inset * 2) - 3), 
-            Math.max(0, height - (inset * 2) - 3)
-         ];
-      } else {
-         this._background.set_clip(
-            x + inset, 
-            y + inset, 
-            Math.max(0, width - (inset * 2)), 
-            Math.max(0, height - (inset * 2))
-         );
-      }
-      
-      if (cloneManager && this._background) {
-         cloneManager.backgroundClipChanged(this._background);
-      }
-   }
-
-   _hideBackground(actor) {
-      if (!this._background) return;
-      
-      if (this._idleId) {
-          Mainloop.source_remove(this._idleId);
-          this._idleId = null;
-      }
-      
-      if (this._blurType === BlurType.DynamicBlur || this._blurType === BlurType.DynamicMC || this._blurType === BlurType.DynamicDK) {
-         this._destroyDynamicEffect(this._background);
-      }
-      
-      if (actor && actor._blurCinnamonData) {
-          actor.set_background_color(actor._blurCinnamonData.original_color);
-          actor.set_style(actor._blurCinnamonData.original_style);
-          actor.set_style_class_name(actor._blurCinnamonData.original_class);
-          actor.set_style_pseudo_class(actor._blurCinnamonData.original_pseudo_class);
-          delete actor._blurCinnamonData;
-      }
-      
-      this._signalManager.disconnectAllSignals();
-      
-      let parent = this._background.get_parent();
-      if (parent) parent.remove_child(this._background);
-      
-      super.destroy(this._background);
-      this._background.destroy();
-      this._background = null;
-      this._currentDialog = null;
-      this._currentActor = null;
-   }
-
-   updateEffects() {
-      if (this._background) {
-         let [opacity, blendColor, blurType, radius, saturation] = this._getSettings(settings.dialogsOverride);
-         this._blurType = blurType;
-         this._background = this._updateEffects(this._background, opacity, blendColor, blurType, radius, saturation);
-         this._setClip(this._currentActor); 
-         if ((blurType === BlurType.DynamicBlur || blurType === BlurType.DynamicMC || blurType === BlurType.DynamicDK) && !this._isDynamicEffectActive(this._background)) {
-            this._createDynamicEffect(this._background);
-         }
-      }
-   }
-
-   destroy() {
-      if (this._idleId) {
-          Mainloop.source_remove(this._idleId);
-          this._idleId = null;
-      }
-      
-      if (this.has_own_open) {
-         EndSessionDialog.EndSessionDialog.prototype.open = this.original_open;
-      } else {
-         delete EndSessionDialog.EndSessionDialog.prototype.open;
-      }
-      
-      if (this.has_own_close) {
-         EndSessionDialog.EndSessionDialog.prototype.close = this.original_close;
-      } else {
-         delete EndSessionDialog.EndSessionDialog.prototype.close;
-      }
-      this._hideBackground(this._currentActor);
    }
 }
 
@@ -3884,14 +3653,6 @@ class BlurSettings {
       this.bind('desktop-with-focus',    'desktopWithFocus',    updateDesktopEffects);
       this.bind('desktop-without-focus', 'desktopWithoutFocus', updateDesktopEffects);
 
-      this.bind('dialogs-opacity',        'dialogsOpacity',       updateDialogsEffects);
-      this.bind('dialogs-blurType',       'dialogsBlurType',      updateDialogsEffects);
-      this.bind('dialogs-radius',         'dialogsRadius',        updateDialogsEffects);
-      this.bind('dialogs-blendColor',     'dialogsBlendColor',    updateDialogsEffects);
-      this.bind('dialogs-saturation',     'dialogsSaturation',    updateDialogsEffects);
-      this.bind('enable-dialogs-override', 'dialogsOverride',     updateDialogsEffects);
-      this.bind('enable-dialogs-effects', 'enableDialogsEffects', enableDialogsChanged);
-
       this.bind('notification-opacity',    'notificationOpacity',    updateNotificationEffects);
       this.bind('notification-blurType',   'notificationBlurType',   updateNotificationEffects);
       this.bind('notification-radius',     'notificationRadius',     updateNotificationEffects);
@@ -4222,21 +3983,6 @@ function enableOSDChanged() {
    }
 }
 
-function updateDialogsEffects() {
-   if (blurDialogs && settings.enableDialogsEffects) {
-      blurDialogs.updateEffects();
-   }
-}
-
-function enableDialogsChanged() {
-   if (blurDialogs && !settings.enableDialogsEffects) {
-      blurDialogs.destroy();
-      blurDialogs = null;
-   } else if (!blurDialogs && settings.enableDialogsEffects) {
-      blurDialogs = new BlurDialogs();
-   }
-}
-
 function init(extensionMeta) {
    metaData = extensionMeta;
 
@@ -4294,10 +4040,6 @@ function enable() {
    // Create a Desktop Effects class instance, the constructor will set everything up.
    if (settings.enableDesktopEffects) {
       blurDesktop = new BlurDesktop();
-   }
-   // Create a Dialogs Effects class instance, the constructor will set everything up.
-   if (settings.enableDialogsEffects) {
-      blurDialogs = new BlurDialogs();
    }
    // Create a Notification Effects class instance, the constructor will set everything up.
    if (settings.enableNotificationEffects) {
@@ -4378,11 +4120,6 @@ function disable() {
    if (blurDesktop) {
       blurDesktop.destroy();
       blurDesktop = null;
-   }
-
-   if (blurDialogs) {
-      blurDialogs.destroy();
-      blurDialogs = null;
    }
 
    if (blurNotifications) {
