@@ -8,6 +8,8 @@ const GLib     = imports.gi.GLib;
 
 const UUID = "BlurCinnamon@klangman";
 
+const SHADER_CACHE = {};
+
 const DEFAULT_PARAMS = {
     radius: 0, brightness: 1,
     width: 0, height: 0, 
@@ -98,9 +100,22 @@ var DualFilteringBlurEffect =
         }
 
         get_shader_source(shader_filename) {
-            let file_name = GLib.get_home_dir() + '/.local/share/cinnamon/extensions/' + UUID + "/6.0/" + shader_filename;
+          if (SHADER_CACHE[shader_filename]) {
+            return SHADER_CACHE[shader_filename];
+          }
+
+          let file_name = GLib.get_home_dir() + '/.local/share/cinnamon/extensions/' + UUID + "/6.0/" + shader_filename;
+          try {
             let [ok, content] = GLib.file_get_contents(file_name);
-            return (new TextDecoder().decode(content));
+            if (ok) {
+              let decoded_shader = new TextDecoder().decode(content);
+              SHADER_CACHE[shader_filename] = decoded_shader;
+              return decoded_shader;
+            }
+          } catch (e) {
+            global.logError(`BlurCinnamon: Error loading shader ${shader_filename}: ${e.message}`);
+          }
+          return null;
         }
 
         static get default_params() {
@@ -222,14 +237,17 @@ var DualFilteringBlurEffect =
             if (actor) {
                 this.width = actor.width;
                 this.height = actor.height;
-                this._actor_connection_size_id = actor.connect('notify::size', _ => {
-                    this.width = actor.width;
-                    this.height = actor.height;
-                });
-              
-                this._scale_connection_id = St.ThemeContext.get_for_stage(global.stage).connect('notify::scale-factor', () => {
-                    this._update_uniforms(St.ThemeContext.get_for_stage(global.stage).scale_factor);
-                });
+                // Only connect to size/scale signals for the first pass
+                if (this.pass_index === 0) {
+                    this._actor_connection_size_id = actor.connect('notify::size', _ => {
+                        this.width = actor.width;
+                        this.height = actor.height;
+                    });
+                  
+                    this._scale_connection_id = St.ThemeContext.get_for_stage(global.stage).connect('notify::scale-factor', () => {
+                        this._update_uniforms(St.ThemeContext.get_for_stage(global.stage).scale_factor);
+                    });
+                }
             } else {
                 this._actor_connection_size_id = null;
             }
