@@ -11,7 +11,7 @@ const UUID = "BlurCinnamon@klangman";
 const DEFAULT_PARAMS = {
     radius: 0, brightness: 1,
     width: 0, height: 0, 
-    pass_index: 0, total_passes: 1, chained_effect: null
+    pass_index: 0, total_passes: 1
 };
 
 var DualFilteringBlurEffect =
@@ -66,13 +66,6 @@ var DualFilteringBlurEffect =
                 1, 16,
                 1,
             ),
-            'chained_effect': GObject.ParamSpec.object(
-                `chained_effect`,
-                `Chained Effect`,
-                `Chained Effect`,
-                GObject.ParamFlags.READWRITE,
-                GObject.Object,
-            ),
         }
     }, class DualFilteringBlurEffect extends Clutter.ShaderEffect {
         constructor(params) {
@@ -94,7 +87,6 @@ var DualFilteringBlurEffect =
             this.brightness = params?.brightness ?? 1;
             this.width = params?.width ?? 0;
             this.height = params?.height ?? 0;
-            this.chained_effect = params?.chained_effect ?? null;
 
             // Fetches the scale factor safely
             const theme_context = St.ThemeContext.get_for_stage(global.stage);
@@ -194,14 +186,6 @@ var DualFilteringBlurEffect =
             this._total_passes = value;
         }
 
-        get chained_effect() {
-            return this._chained_effect;
-        }
-
-        set chained_effect(value) {
-            this._chained_effect = value;
-        }
-
         _update_uniforms(scale_factor) {
             // Treat the UI radius as an intensity percentage 
             let effective_radius = Math.min(this.radius, 100.0); 
@@ -261,6 +245,10 @@ var DualFilteringBlurEffect =
                         } catch (e) {
                             // Ignores silently if the actor has already been cleaned up by the Cinnamon engine
                         }
+                        // Forces the immediate destruction of the GObject
+                        if (typeof effect.run_dispose === 'function') {
+                            effect.run_dispose();
+                        }
                     });
                 }
                 this._sub_effects = [];
@@ -269,7 +257,6 @@ var DualFilteringBlurEffect =
                     let total_depth = 7;
 
                     this.total_passes = total_depth;
-                    this.chained_effect = this; 
                     
                     for (let i = 1; i < total_depth; i++) {
                         let new_pass = new DualFilteringBlurEffect({ 
