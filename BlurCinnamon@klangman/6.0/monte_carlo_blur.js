@@ -125,7 +125,7 @@ const MonteCarloBlurEffect =
         }
 
         get_shader_source(shader_filename) {
-            let file_name = GLib.get_home_dir() + '/.local/share/cinnamon/extensions/' + UUID + "/6.0/" + shader_filename;
+            let file_name = GLib.get_user_data_dir() + '/cinnamon/extensions/' + UUID + "/6.0/" + shader_filename;
             let [ok, content] = GLib.file_get_contents(file_name);
             return (new TextDecoder().decode(content));
         }
@@ -232,7 +232,7 @@ const MonteCarloBlurEffect =
                 St.ThemeContext.get_for_stage(global.stage).disconnect(this._scale_connection_id);
                 this._scale_connection_id = null;
             }
-          
+
             if (actor) {
                 this.width = actor.width;
                 this.height = actor.height;
@@ -244,7 +244,7 @@ const MonteCarloBlurEffect =
                 this._scale_connection_id = St.ThemeContext.get_for_stage(global.stage).connect('notify::scale-factor', () => {
                     const scale_factor = St.ThemeContext.get_for_stage(global.stage).scale_factor;
                     this.set_uniform_value('radius', parseFloat(this._radius * scale_factor - 1e-6));
-                });     
+                });
             } else {
                 this._actor_connection_size_id = null;
             }

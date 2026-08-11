@@ -273,7 +273,7 @@ function _showAppSwitcher3D(...params) {
 
       let [ret,color] = Clutter.Color.from_string( blendColor );
       if (!ret) { [ret,color] = Clutter.Color.from_string( "rgba(0,0,0,0)" ); }
-      color.alpha = opacity*2.55;
+      color.alpha = Math.round(opacity*2.55);
       this.actor.set_background_color(color);
    }
 
@@ -377,7 +377,7 @@ function createWindowClone(metaWindow, background, desktopOnly) {
       // Remove any clones of the backgrounds window in metaWindow's clones. Required to avoid a recurrsion during painting.
       if (owner && compositor) {
          let blurData = compositor._blurCinnamonDataWindow;
-         if (blurData) {
+         if (blurData && blurData.background &&  blurData.background._blurCinnamonWinClones) {
             blurData.background._blurCinnamonWinClones.forEach( (clone) => {
                if (clone._metaWindow === owner) {
                   debugMsg( `Destroying clone of background's window from metaWindow's clones` );
@@ -923,7 +923,7 @@ class BlurBase {
    _getColor(colorString, opacity) {
       let [ret,color] = Clutter.Color.from_string( colorString );
       if (!ret) { [ret,color] = Clutter.Color.from_string( "rgba(0,0,0,0)" ); }
-      color.alpha = opacity*2.55;
+      color.alpha = Math.round(opacity*2.55);
       return color;
    }
 
@@ -3007,7 +3007,7 @@ class BlurApplications extends BlurBase {
          // Setup the window opacity
          if (!window_opacity || window_opacity < 10 || window_opacity > 100 )
             window_opacity = 100;
-         metaWindow.set_opacity(window_opacity*2.55);
+         metaWindow.set_opacity(Math.round(window_opacity*2.55));
 
          // Create the effect and add it to the window
          let background = this._createBackgroundAndEffects(opacity, blendColor, blurType, radius, saturation, null, corner_radius, top, bottom);
@@ -3032,7 +3032,6 @@ class BlurApplications extends BlurBase {
             // when either the compositor actor or the MetaWindow reports a position update.
             signalManager.connect(compositor, "notify::allocation", () => this._setClip(compositor) );
             signalManager.connect(metaWindow, "position-changed", () => this._setClip(compositor) );
-            //signalManager.connect(metaWindow, "notify::shaded", () => {log("notify::shaded"); this._setClip(compositor);} );
             // Resize / reposition the blurred actor
             this._setClip(compositor);
             // Make the background visible
@@ -3197,7 +3196,7 @@ class BlurApplications extends BlurBase {
                this._updateCornerRadius(data.background, corner_radius, top, bottom);
                if (!window_opacity || window_opacity < 10 || window_opacity > 100 )
                   window_opacity = 100;
-               windows[i].set_opacity(window_opacity*2.55);
+               windows[i].set_opacity(Math.round(window_opacity*2.55));
                if ((blurType === BlurType.DynamicBlur || blurType === BlurType.DynamicMC || blurType === BlurType.DynamicDK) && !this._isDynamicEffectActive(data.background)) {
                   this._createDynamicEffect(data.background, data.metaWindow);
                }
@@ -4062,8 +4061,8 @@ function enableExpoChanged() {
    if (settings.enableExpoEffects) {
       Expo.Expo.prototype._animateVisible = _animateVisibleExpo;
       Expo.Expo.prototype._oldAnimateVisible = originalAnimateExpo;
-   } else if (Expo.Expo.prototype._oldAnimateVisibleExpo) {
-      delete Expo.Expo.prototype._oldAnimateVisibleExpo;
+   } else if (Expo.Expo.prototype._oldAnimateVisible) {
+      delete Expo.Expo.prototype._oldAnimateVisible;
       Expo.Expo.prototype._animateVisible = originalAnimateExpo;
    }
 }
@@ -4253,8 +4252,8 @@ function disable() {
       Overview.Overview.prototype._animateVisible = originalAnimateOverview;
    }
 
-   if (Expo.Expo.prototype._oldAnimateVisibleExpo) {
-      delete Expo.Expo.prototype._oldAnimateVisibleExpo;
+   if (Expo.Expo.prototype._oldAnimateVisible) {
+      delete Expo.Expo.prototype._oldAnimateVisible;
       Expo.Expo.prototype._animateVisible = originalAnimateExpo;
    }
 

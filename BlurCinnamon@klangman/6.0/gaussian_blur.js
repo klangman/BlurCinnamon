@@ -113,7 +113,7 @@ const GaussianBlurEffect =
         }
 
         get_shader_source(shader_filename) {
-            let file_name = GLib.get_home_dir() + '/.local/share/cinnamon/extensions/' + UUID + "/6.0/" + shader_filename;
+            let file_name = GLib.get_user_data_dir() + '/cinnamon/extensions/' + UUID + "/6.0/" + shader_filename;
             let [ok, content] = GLib.file_get_contents(file_name);
             return (new TextDecoder().decode(content));
         }
@@ -213,7 +213,7 @@ const GaussianBlurEffect =
                 St.ThemeContext.get_for_stage(global.stage).disconnect(this._scale_connection_id);
                 this._scale_connection_id = null;
             }
-          
+
             if (actor) {
                 this.width = actor.width;
                 this.height = actor.height;
@@ -239,7 +239,7 @@ const GaussianBlurEffect =
                         let current_actor = this.chained_effect.get_actor();
                         if (current_actor) current_actor.remove_effect(this.chained_effect);
                     } catch (e) {}
-                    
+
                     this.chained_effect = null; 
                 }
 

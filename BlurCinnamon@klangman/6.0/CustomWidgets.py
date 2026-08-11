@@ -160,7 +160,7 @@ class About(SettingsWidget):
       self.info = info
 
       UUID = "BlurCinnamon@klangman"
-      extensions_path  = GLib.get_home_dir() + "/.local/share/cinnamon/extensions/"
+      extensions_path  = GLib.get_user_data_dir() + "/cinnamon/extensions/"
 
       self.box = Gtk.Box(spacing=10,orientation=Gtk.Orientation.VERTICAL,margin_start=20, margin_end=20, margin_top=20, margin_left=20, margin_right=20)
       self.label = Gtk.Label("", xalign=0.5, justify=Gtk.Justification.CENTER, expand=True)

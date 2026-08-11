@@ -80,7 +80,7 @@ var DualFilteringBlurEffect =
             // Determines Downsample vs Upsample based on the midpoint of the pyramid
             let is_downsample = (this.pass_index <= Math.floor(this.total_passes / 2));
             let shader_file = is_downsample ? 'dual_filtering_down.glsl' : 'dual_filtering_up.glsl';
-            
+
             this._source = this.get_shader_source(shader_file);
             if (this._source)
                 this.set_shader_source(this._source);
@@ -104,7 +104,7 @@ var DualFilteringBlurEffect =
             return SHADER_CACHE[shader_filename];
           }
 
-          let file_name = GLib.get_home_dir() + '/.local/share/cinnamon/extensions/' + UUID + "/6.0/" + shader_filename;
+          let file_name = GLib.get_user_data_dir() + '/cinnamon/extensions/' + UUID + "/6.0/" + shader_filename;
           try {
             let [ok, content] = GLib.file_get_contents(file_name);
             if (ok) {
@@ -121,7 +121,7 @@ var DualFilteringBlurEffect =
         static get default_params() {
             return DEFAULT_PARAMS;
         }
-        
+
         get radius() {
             return this._radius;
         }
@@ -129,12 +129,12 @@ var DualFilteringBlurEffect =
         set radius(value) {
             if (this._radius !== value) {
                 this._radius = value;
-                
+
                 if (this._sub_effects) {
                     const scale_factor = St.ThemeContext.get_for_stage(global.stage).scale_factor;
                     this._update_uniforms(scale_factor);
                     this.set_enabled(this.radius > 0.);
-                    
+
                     this._sub_effects.forEach(effect => { effect.radius = value; });
                 }
             }
@@ -147,7 +147,7 @@ var DualFilteringBlurEffect =
         set brightness(value) {
             if (this._brightness !== value) {
                 this._brightness = value;
-                
+
                 if (this._sub_effects) {
                     this.set_uniform_value('brightness', parseFloat(this._brightness - 1e-6));
                     this._sub_effects.forEach(effect => { effect.brightness = value; });
@@ -162,7 +162,7 @@ var DualFilteringBlurEffect =
         set width(value) {
             if (this._width !== value) {
                 this._width = value;
-                
+
                 if (this._sub_effects) {
                     this.set_uniform_value('width', parseFloat(this._width + 3.0 - 1e-6));
                     this._sub_effects.forEach(effect => { effect.width = value; });
@@ -177,7 +177,7 @@ var DualFilteringBlurEffect =
         set height(value) {
             if (this._height !== value) {
                 this._height = value;
-                
+
                 if (this._sub_effects) {
                     this.set_uniform_value('height', parseFloat(this._height + 3.0 - 1e-6));
                     this._sub_effects.forEach(effect => { effect.height = value; });
@@ -205,11 +205,11 @@ var DualFilteringBlurEffect =
             // Treat the UI radius as an intensity percentage 
             let effective_radius = Math.min(this.radius, 100.0); 
             let base_offset = effective_radius * 0.08;
-            
+
             // Calculate spatial spread mathematically
             let midpoint = Math.floor(this.total_passes / 2);
             let step_multiplier = 1.0;
-            
+
             if (this.pass_index <= midpoint) {
                 // Downsample: spread increases as we go deeper
                 step_multiplier = Math.pow(2.0, this.pass_index);
@@ -218,7 +218,7 @@ var DualFilteringBlurEffect =
                 let up_index = (this.total_passes - 1) - this.pass_index;
                 step_multiplier = Math.pow(2.0, up_index);
             }
-        
+
             let calculated_offset = base_offset * scale_factor * step_multiplier;
             this.set_uniform_value('offset', parseFloat(calculated_offset - 1e-6));
         }
@@ -228,12 +228,12 @@ var DualFilteringBlurEffect =
                 let old_actor = this.get_actor();
                 old_actor?.disconnect(this._actor_connection_size_id);
             }
-          
+
             if (this._scale_connection_id) {
                 St.ThemeContext.get_for_stage(global.stage).disconnect(this._scale_connection_id);
                 this._scale_connection_id = null;
             }
-          
+
             if (actor) {
                 this.width = actor.width;
                 this.height = actor.height;
@@ -243,7 +243,7 @@ var DualFilteringBlurEffect =
                         this.width = actor.width;
                         this.height = actor.height;
                     });
-                  
+
                     this._scale_connection_id = St.ThemeContext.get_for_stage(global.stage).connect('notify::scale-factor', () => {
                         this._update_uniforms(St.ThemeContext.get_for_stage(global.stage).scale_factor);
                     });
@@ -275,7 +275,7 @@ var DualFilteringBlurEffect =
                     let total_depth = 7;
 
                     this.total_passes = total_depth;
-                    
+
                     for (let i = 1; i < total_depth; i++) {
                         let new_pass = new DualFilteringBlurEffect({ 
                             radius: this.radius, 
@@ -285,14 +285,14 @@ var DualFilteringBlurEffect =
                             pass_index: i,
                             total_passes: total_depth 
                         });
-                                        
+
                         this._sub_effects.push(new_pass);
                         actor.add_effect(new_pass);
                     }
                 }
             }
         }
-          
+
         vfunc_paint_target(...params) {
             // Identifies the last pass in the pyramid to apply final color grading
             let is_last = (this._sub_effects && this.pass_index === this.total_passes - 1) ? 1 : 0;
