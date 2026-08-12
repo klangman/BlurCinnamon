@@ -117,7 +117,7 @@ If you like this Cinnamon extension, "star" this Github repository and its Cinna
 
 Some code was borrowed from the [BlurOverview](https://cinnamon-spices.linuxmint.com/extensions/view/72) Extension by nailfarmer.
 
-The Dual Kawase effect was written by <a href=\"https://github.com/Lucas-X-A\">Lucas-X-A</a>
+The Dual Kawase effect was written by [Lucas-X-A](https://github.com/Lucas-X-A).
 
 The Gaussian and rounded corner effect code was borrowed from the Gnome [Blur my shell](https://github.com/aunetx/blur-my-shell) extension by [Aurélien Hamy](https://github.com/aunetx).
 
