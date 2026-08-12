@@ -10,22 +10,24 @@ Cinnamon components you can effect (currently):
 4. Panel applet popup menus (i.e Menu menu, Calendar, etc.)
 5. Desktop background
 6. Notifications
-7. Alt-Tab (Coverflow & Timeline) switchers
+7. Alt-Tab switchers
 8. Panel Tooltips
-9. Appication Windows
+9. Application Windows (including a Titlebar blurring option)
+10. Desklet backgrounds
 
 ![screen shot](BlurCinnamon@klangman/screenshot.png)
 
 ## Features
 
 1. Gaussian blur algorithm (borrowed from the Gnome extension Blur-my-Shell) with a user configurable intensity
-2. Simple blur algorithm (the Cinnamon built-in algorithm) which I would only recommend for very old computers
-3. Dimming overlay with user configurable color and intensity (fully-transparent to a solid color)
-4. Makes the Panels, Popup menus and the Expo transparent so that the desktop background image effects are visible
-5. Allows you to adjust the color saturation of the background overlay. You can reduced or completely desaturated (i.e gray scale)
-6. You can use general settings for Popups/Panels/Overview/Expo or use unique settings for each
-7. You can blur, dim and desaturate the desktop background image
-8. The desktop background image effects can be configured to only apply when the desktop is not in focus
+2. Dual Kawase blur algorithm by Lucas-X-A optimized for lower power GPUs
+3. Simple blur algorithm (the Cinnamon built-in algorithm) which I would only recommend for very old computers
+4. Dimming overlay with user configurable color and intensity (fully-transparent to a solid color)
+5. Makes the Panels, Popup menus and the Expo transparent so that the desktop background image effects are visible
+6. Allows you to adjust the color saturation of the background overlay. You can reduced or completely desaturated (i.e gray scale)
+7. You can use general settings for Popups/Panels/Overview/Expo or use unique settings for each
+8. You can blur, dim and desaturate the desktop background image
+9. The desktop background image effects can be configured to only apply when the desktop is not in focus
 
 ## Requirements
 
@@ -41,12 +43,8 @@ Using any of the above with Blur Cinnamon may have some odd side effects that wo
 
 ## Limitations
 
-1. Currently, any windows that are moved such that they overlap with a panel will not be visible beneath the panel as you might expect with a transparent panel. This is because the blur effect is applied to a user interface element that floats above all windows just like the panel floats above the windows. At some point I hope to look into making the blur element appear below all windows rather than above.
-2. The Applet popup-menu effects works for all the applets that I have tested except "Cinnamenu". Cinnamenu is preventing other code from receiving the "open-state-changed" event which BlurCinnamon uses to know when to apply popup-menu theme setting and when to resize and show the blur background element. This issue is fixed in the latest Cinnamenu from [Fredcw GitHub](https://github.com/fredcw/Cinnamenu) but you will need to manually fix the current Cinnamon Spices version of Cinnamenu (see [here](https://github.com/linuxmint/cinnamon-spices-extensions/issues/873))
-3. If you disable effects for a compoenent under the General tab of the setting dialog while the "Override the generic effect settings" option is enabled under the component tab, the components "effect setting" options under the component tab will still be visible, but changing those setting will have no effect until you re-enable the component under the General tab. Ideally those effect setting would only be visible when the component is enabled under the general tab but Cinnamon setting support is a bit limited in this way.
-4. When using "Application Window" effects or the "Focused window backlight effect", the Blur Cinnamon effect actor size does not immediatly follow the windows size. This casues a split second where the Blur Cinnamon effect actor is parly visible outside the window bounds when tiling, maximizing, unmaximizing or expanding the window size. Hopfully I can find a better way of tracking the window size in the future.
-5. If the "Compiz Windows Effect" extension is used with "Application window" effects applied to some window, the Blur Cinnamon actor will "wobble" along with the rest of the window elements. This means the windows blurred background will not match the background image while the "Compiz Windows Effect" animation is in action.
-6. This extension currently does not work under Wayland, it only works under X11. The extension automatically detects wayland and disables most of the features of the extension.
+1. The Applet popup-menu effects works for all the applets that I have tested except "Cinnamenu". Cinnamenu is preventing other code from receiving the "open-state-changed" event which BlurCinnamon uses to know when to apply popup-menu theme setting and when to resize and show the blur background element. This issue is fixed in the latest Cinnamenu from [Fredcw GitHub](https://github.com/fredcw/Cinnamenu) but you will need to manually fix the current Cinnamon Spices version of Cinnamenu (see [here](https://github.com/linuxmint/cinnamon-spices-extensions/issues/873))
+2. This extension currently does not work under Wayland, it only works under X11. The extension automatically detects wayland and disables most of the features of the extension. I hope to add wayland support when Linux Mint 23 is released.
 
 ## Installation
 
@@ -82,6 +80,33 @@ For the latest cutting edge development version, follow these instructions to in
 
 7. Use the "gears" icon to open the Blur Cinnamon setting window and setup the preferred behavior
 
+## Window Title Bar Blurring
+
+1. Enable the "Blur window title bars" option under the "Component specific settings" tab with the "Windows" component selected.
+
+2. Add the following CSS code into the `~/.config/gtk-3.0/gtk.css` file. Create the file if it does not exist, which will likely be the case.
+   
+   ```
+   /* Make the titlebars semi-transparent, Opacity 0.5 */
+   headerbar, .titlebar {
+    background-color: rgba(24, 60, 181, 0.5);
+    border: none;
+    box-shadow: none;
+   }
+   ```
+
+3. Restart Cinnamon: ALT-F2, type r, press Enter
+
+Limitations: 
+
+1. This only works for GTK3 windows, GTK4 windows will not be effected, and as I understand it they can not be changed to have transparent title bars.
+
+2. The title bar controls (close, minimize, maximize, etc.) will also be made semi-transparent, I was unable to find a way to have solid controls, but maybe someone that knows Cinnamon/GTK3 CSS better than I can make it solid?
+
+3. Windows that draw there own titlebars (ie. Firefox, Chrome, Discord, etc.) will not be effected. In fact chrome is effected, but Blur Cinnamon is unable to determine the height of the titlebar and therefore it is left without blurring effects. For Chrome you can enable the "Use system title bar and borders" option.
+
+4. The CSS code here only works for Mint-Y Application themes. The Mint-X theme does not work, but maybe could be made to work with different CSS code.
+
 ## Feedback
 
 Feel free to open an issue here in my Github repo if you want to make a suggestion or report an issue.
@@ -91,6 +116,8 @@ If you like this Cinnamon extension, "star" this Github repository and its Cinna
 ## Credits
 
 Some code was borrowed from the [BlurOverview](https://cinnamon-spices.linuxmint.com/extensions/view/72) Extension by nailfarmer.
+
+The Dual Kawase effect was written by <a href=\"https://github.com/Lucas-X-A\">Lucas-X-A</a>
 
 The Gaussian and rounded corner effect code was borrowed from the Gnome [Blur my shell](https://github.com/aunetx/blur-my-shell) extension by [Aurélien Hamy](https://github.com/aunetx).
 

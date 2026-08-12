@@ -43,6 +43,13 @@ const WindowMenu      = imports.ui.windowMenu;
 const Cinnamon        = imports.gi.Cinnamon;
 const DeskletManager  = imports.ui.deskletManager;
 const OsdWindow       = imports.ui.osdWindow;
+const GLib            = imports.gi.GLib;
+
+// For Plank support (reading X11 property)
+imports.gi.versions.Gdk = '3.0';
+imports.gi.versions.GdkX11 = '3.0';
+const Gdk = imports.gi.Gdk;
+const GdkX11 = imports.gi.GdkX11;
 
 try {
    var WorkspaceOsd    = imports.ui.workspaceOsd;
@@ -357,8 +364,9 @@ function clonePainted(background, actor) {
 }
 
 function createWindowClone(metaWindow, background, desktopOnly) {
-   if (background.is_mapped() && background._blurCinnamonMetaWindowOwner !== metaWindow && (!desktopOnly || metaWindow.get_window_type() === Meta.WindowType.DESKTOP) &&
-      (!background._blurCinnamonMetaWindowOwner || background._blurCinnamonMetaWindowOwner.get_window_type() !== Meta.WindowType.DESKTOP || metaWindow.get_window_type() === Meta.WindowType.DESKTOP) ) {
+   let owner = background._blurCinnamonMetaWindowOwner;
+   if (background.is_mapped() && owner !== metaWindow && (!desktopOnly || metaWindow.get_window_type() === Meta.WindowType.DESKTOP) &&
+      (!owner || owner.get_window_type() !== Meta.WindowType.DESKTOP || metaWindow.get_window_type() === Meta.WindowType.DESKTOP) ) {
       // Debugging check
       if( background._blurCinnamonWinClones.find( (element) => element._metaWindow === metaWindow) ) {
          log( `Warning! Tried to add a window clone to a background that already has a clone for that window.` );
@@ -366,8 +374,24 @@ function createWindowClone(metaWindow, background, desktopOnly) {
       }
       let rect = metaWindow.get_buffer_rect();
       let compositor = metaWindow.get_compositor_private();
+      // Remove any clones of the backgrounds window in metaWindow's clones. Required to avoid a recurrsion during painting.
+      if (owner && compositor) {
+         let blurData = compositor._blurCinnamonDataWindow;
+         if (blurData) {
+            blurData.background._blurCinnamonWinClones.forEach( (clone) => {
+               if (clone._metaWindow === owner) {
+                  debugMsg( `Destroying clone of background's window from metaWindow's clones` );
+                  destroyWindowClone(clone, blurData.background)
+               }
+            });
+         }
+      }
       let windowClone = new Clutter.Clone({source: compositor, reactive: false, x: rect.x, y: rect.y });
-      debugMsg( `Created clone ${windowClone} of ${metaWindow.get_title()}/${metaWindow.get_id()} for background ${background._blurCinnamonName}` );
+      if (owner) {
+         debugMsg( `Created clone ${windowClone} of ${metaWindow.get_title()}/${metaWindow.get_id()} for background ${background._blurCinnamonName} "${owner.get_title()}"/"${owner.get_wm_class()}"` );
+      } else {
+         debugMsg( `Created clone ${windowClone} of ${metaWindow.get_title()}/${metaWindow.get_id()} for background ${background._blurCinnamonName}` );
+      }
       if (metaWindow.get_window_type() === Meta.WindowType.DESKTOP && background._blurCinnamonDeskletClone) {
          background._blurCinnamonGroup.insert_child_below(windowClone, background._blurCinnamonDeskletClone);
       } else {
@@ -375,7 +399,7 @@ function createWindowClone(metaWindow, background, desktopOnly) {
       }
       background._blurCinnamonWinClones.push(windowClone);
       windowClone._metaWindow = metaWindow;
-      if (settings.windowArtifactMitigation && background._blurCinnamonMetaWindowOwner) {
+      if (settings.windowArtifactMitigation && owner) {
          windowClone._paintEventId = windowClone.connect( "paint", (actor) => clonePainted(background, actor));
       }
       return windowClone;
@@ -488,7 +512,7 @@ function cloneWindowsForBackgroundNow(background, desktopOnly) {
       let metaWindow = window.get_meta_window();
       let compositor = metaWindow.get_compositor_private();
       if (metaWindow && compositor && compositor.visible && (!desktopOnly || metaWindow.get_window_type() === Meta.WindowType.DESKTOP) &&
-          metaWindow.get_window_type() !== Meta.WindowType.OVERRIDE_OTHER && metaWindow.get_wm_class() !== "Nemo-desktop")
+          metaWindow.get_window_type() !== Meta.WindowType.OVERRIDE_OTHER /*&& metaWindow.get_wm_class() !== "Nemo-desktop"*/)
       {
          let winRect = metaWindow.get_buffer_rect();
          let winX = winRect.x;
@@ -573,6 +597,7 @@ class CloneManager {
    }
 
    backgroundClipChanged(background) {
+      debugMsg( "Clip Changed" );
       let idx = this._backgrounds.indexOf(background);
       if (idx!==-1) {
          cloneWindowsForBackground(background, background._blurCinnamonDesktopOnly);
@@ -654,7 +679,7 @@ class CloneManager {
          }
       });
       background._blurCinnamonDesktopOnly = false;
-      cloneWindowsForBackground(background, false);
+      cloneWindowsForBackgroundNow(background, false);
    }
 
    lowerDeskletBackground(background) {
@@ -2926,7 +2951,7 @@ class BlurApplications extends BlurBase {
       let element = settings.windowInclusionList.find( (element) => {if (element.application == _("Default window settings")) {return true;}} );
       if (!element) {
          let windowList = settings.settings.getValue("windows-inclusion-list");
-         windowList.splice( 0, 0, {enabled:false, application:_("Default window settings"), override: false, opacity:0, color:"rgb(0,0,0)", blurtype:BlurType.Gaussian, radius:10, saturation:100, corner_radius: 10, corner_top: true, corner_bottom: false  } );
+         windowList.splice( 0, 0, {enabled:false, application:_("Default window settings"), override: false, opacity:0, color:"rgb(0,0,0)", blurtype:BlurType.Gaussian, radius:10, saturation:100, corner_radius: 8, corner_top: true, corner_bottom: false  } );
          settings.settings.setValue("windows-inclusion-list", windowList);
       }
 
@@ -2974,7 +2999,7 @@ class BlurApplications extends BlurBase {
       let compositor = metaWindow.get_compositor_private();
 
       // Get the effect setting that should apply to Application windows
-      let [enabled, window_opacity, opacity, blendColor, blurType, radius, saturation, corner_radius, top, bottom] = this._getSettings(metaWindow);
+      let [enabled, window_opacity, opacity, blendColor, blurType, radius, saturation, corner_radius, top, bottom, titlebarsOnly] = this._getSettings(metaWindow);
       if (enabled) {
          // A signal manager for this window
          let signalManager = new SignalManager.SignalManager(null);
@@ -2990,24 +3015,30 @@ class BlurApplications extends BlurBase {
          compositor.insert_child_at_index(background, 0);
 
          // Add blur data to the compositor while blurring is in effect
-         compositor._blurCinnamonDataWindow = { effectThis: this, background: background, metaWindow: metaWindow, signalManager: signalManager };
+         compositor._blurCinnamonDataWindow = { effectThis: this, background: background, metaWindow: metaWindow, signalManager: signalManager, titlebarsOnly: titlebarsOnly };
 
          // Add listeners for this window's compositor
-         //signalManager.connect(metaWindow, "notify::maximized-horizontally", () => this._maximized(metaWindow) );
-         //signalManager.connect(metaWindow, "notify::maximized-vertically ",  () => this._maximized(metaWindow) );
-         //signalManager.connect(metaWindow, "unmanaged"/*"unmanaging"*/, () => this._unblurWindow(compositor) );
          signalManager.connect(compositor, "destroy", () => this._unblurWindow(compositor) );
-         signalManager.connect(compositor, "notify::allocation", () => this._setClip(compositor) );
-         // Some windows are positioned after their first allocation, so keep the blur aligned
-         // when either the compositor actor or the MetaWindow reports a position update.
-         signalManager.connect(metaWindow, "position-changed", () => this._setClip(compositor) );
-         //signalManager.connect(metaWindow, "notify::maximized-horizontally", () => this._setClip(compositor) );
-         //signalManager.connect(metaWindow, "notify::maximized-vertically", () => this._setClip(compositor) );
+         if (metaWindow.get_wm_class() == "Plank") {
+            //log( `Found a "Plank" window / ${metaWindow.get_id()}` );
+            signalManager.connect(compositor, "notify::allocation", () => this._setClipPlank(metaWindow) );
+            signalManager.connect(compositor, "notify::mapped", () => this._setClipPlank(metaWindow) );
+            signalManager.connect(metaWindow, "raised", () => this._setClipPlank(metaWindow) );
+            // Resize / reposition the blurred actor
+            this.lastBlurGeometryString = null;
+            this._setClipPlank(metaWindow);
+         } else {
+            // Some windows are positioned after their first allocation, so keep the blur aligned
+            // when either the compositor actor or the MetaWindow reports a position update.
+            signalManager.connect(compositor, "notify::allocation", () => this._setClip(compositor) );
+            signalManager.connect(metaWindow, "position-changed", () => this._setClip(compositor) );
+            //signalManager.connect(metaWindow, "notify::shaded", () => {log("notify::shaded"); this._setClip(compositor);} );
+            // Resize / reposition the blurred actor
+            this._setClip(compositor);
+            // Make the background visible
+            background.show();
+         }
 
-         // Resize / reposition the blurred actor
-         this._setClip(compositor);
-         // Make the background visible
-         background.show();
          if (blurType === BlurType.DynamicBlur || blurType === BlurType.DynamicMC || blurType === BlurType.DynamicDK) {
             this._createDynamicEffect(background, metaWindow);
          }
@@ -3028,24 +3059,36 @@ class BlurApplications extends BlurBase {
 
    // Get the window specific effect settings, or a disabled set of value when no settings exist
    _getSettings(metaWindow) {
+      let titlebarsOnly = false;
+      let enabled;
       let wmclass = metaWindow.get_wm_class();
       let winType = metaWindow.get_window_type();
       // We want to allow blurring for normal window, docks (i.e Plank) and desktop windows (i.e Conky)
-      if ((winType === Meta.WindowType.NORMAL || winType === Meta.WindowType.DOCK || winType === Meta.WindowType.DESKTOP) && wmclass !== "Nemo-desktop") {
+      if ((winType === Meta.WindowType.NORMAL || (settings.windowsTitlebarBlur && (winType === Meta.WindowType.DIALOG || winType === Meta.WindowType.MODAL_DIALOG)) ||
+           winType === Meta.WindowType.DOCK || winType === Meta.WindowType.DESKTOP) && wmclass !== "Nemo-desktop") 
+      {
          let app = this._getAppForWindow(metaWindow);
          let appId = app ? app.get_id() : null;
          let element = settings.windowInclusionList.find( (element) => {if (element.application == appId || element.application == wmclass) {return true;}} );
          if (!element) {
             element = settings.windowInclusionList.find( (element) => {if (element.application == _("Default window settings")) {return true;}} );
+            if (!element.enabled && settings.windowsTitlebarBlur) {
+               titlebarsOnly = true;
+               enabled = true;
+            } else {
+               enabled = element.enabled;
+            }
+         } else {
+            enabled = element.enabled;
          }
          if (element) {
             if (element.override) {
-               return [element.enabled, element.window_opacity, element.opacity, element.color, element.blurtype, element.radius, element.saturation, element.corner_radius, element.corner_top, element.corner_bottom];
+               return [enabled, element.window_opacity, element.opacity, element.color, element.blurtype, element.radius, element.saturation, element.corner_radius, element.corner_top, element.corner_bottom, titlebarsOnly];
             }
-            return [element.enabled, element.window_opacity, ...super._getSettings(false), element.corner_radius, element.corner_top, element.corner_bottom ];
+            return [enabled, element.window_opacity, ...super._getSettings(false), element.corner_radius, element.corner_top, element.corner_bottom, titlebarsOnly ];
          }
       }
-      return [false, 100, 0, undefined, BlurType.None, 0, 100, 0, false, false]
+      return [false, 100, 0, undefined, BlurType.None, 0, 100, 0, false, false, false]
    }
 
    _setClip(compositor) {
@@ -3057,8 +3100,17 @@ class BlurApplications extends BlurBase {
          } else {
             data.background.show();
          }
-
          let rect = data.metaWindow.get_frame_rect();
+
+         // If the window is shaded or the blur is for the titlebar only, then we only want to blur under the title bar.
+         if (data.metaWindow.is_shaded() || data.titlebarsOnly) {
+            let clientRect = data.metaWindow.frame_rect_to_client_rect(rect);
+            rect.height = clientRect.y - rect.y;
+            if (rect.height <= 0) {
+               rect.height = 3; // Hack, bad things happen if we set the height to 0 or less
+               data.background.hide();
+            }
+         }
          // Set the background position to the displays 0,0 based on the compositor's position and the shadow size
          //let windowShadowSizeX = (compositor.get_width() - rect.width) / 2;
          //let windowShadowSizeY = (compositor.get_height() - rect.height) / 2;
@@ -3130,11 +3182,12 @@ class BlurApplications extends BlurBase {
       for (let i = 0; i < windows.length; i++) {
          let compositor = windows[i].get_compositor_private();
          let data = compositor._blurCinnamonDataWindow;
-         let [enabled, window_opacity, opacity, blendColor, blurType, radius, saturation, corner_radius, top, bottom] = this._getSettings(windows[i]);
+         let [enabled, window_opacity, opacity, blendColor, blurType, radius, saturation, corner_radius, top, bottom, titlebarsOnly] = this._getSettings(windows[i]);
          if (compositor._blurCinnamonDataWindow) {
             if (!enabled) {
                this._unblurWindow(compositor);
             } else {
+               data.titlebarsOnly = titlebarsOnly;
                this._updateEffects(data.background, opacity, blendColor, blurType, radius, saturation);
                let cornerEffect = this._getCornerEffect(data.background);
                if (cornerEffect) {
@@ -3191,6 +3244,120 @@ class BlurApplications extends BlurBase {
             Main.messageTray.add(source);
             source.notify(notification);
          }
+      }
+   }
+
+   _getPlankBlurRegion(xid) {
+      let display = Gdk.Display.get_default();
+      let gdkWindow = GdkX11.X11Window.foreign_new_for_display(display, xid);
+      if (!gdkWindow)
+         return null;
+
+      let propAtom = Gdk.Atom.intern('_PLANK_BACKGROUND_BLUR_REGION', false);
+      let typeAtom = Gdk.Atom.intern('CARDINAL', false);
+
+      // length is in 32-bit units for a CARDINAL request; 8 values is plenty, ask for more to be safe
+      let [success, actualType, actualFormat, data] =
+         //gdkWindow.property_get(propAtom, typeAtom, 0, 32 /* longs */, false);
+         Gdk.property_get(gdkWindow, propAtom, typeAtom, 0, 32 /* longs */, false);
+
+      if (!success || !data || actualFormat !== 32)
+         return null;
+
+      // `data` is the raw byte buffer GJS hands back for the property.
+      // Wrap it in a DataView so we can read native-endian uint32s out of it.
+      let bytes = Uint8Array.from(data); // ensure it's a plain byte array
+      let view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+
+      let littleEndian = true; // true on x86/x86_64/ARM Linux (native host order)
+      let values = [];
+      for (let i = 0; i + 4 <= view.byteLength; i += 4)
+         values.push(view.getUint32(i, littleEndian));
+
+      if (values.length < 8)
+         return null;
+
+      return {
+         x: values[0],
+         y: values[1],
+         width: values[2],
+         height: values[3],
+         radiusTopLeft: values[4],
+         radiusTopRight: values[5],
+         radiusBottomLeft: values[6],
+         radiusBottomRight: values[7],
+      };
+   }
+
+   _setClipPlank(metaWindow) {
+      let compositor = metaWindow.get_compositor_private();
+      let data = compositor._blurCinnamonDataWindow;
+      if (!compositor.is_mapped()) {
+         log( "plank is currently unmapped" );
+         if (data)
+            data.background.hide();
+         return;
+      }
+      try {
+         let xid = metaWindow.get_xwindow();
+         let result = this._getPlankBlurRegion(xid);
+         if (result) {
+            let cornerEffect = this._getCornerEffect(data.background);
+            if (cornerEffect) {
+               log( `setclip using corner effect: ${result.x}, ${result.y}, ${result.width}, ${result.height}` );
+               cornerEffect.clip = [result.x+2, result.y+2, result.width-3, result.height-3];
+               this._updateCornerRadius(data.background, radius);
+            } else {
+               log( `setClip using background: ${result.x}, ${result.y}, ${result.width}, ${result.height}` );
+               data.background.set_clip( result.x, result.y, result.width, result.height );
+            }
+            if (cloneManager)
+               cloneManager.backgroundClipChanged(data.background);
+         }
+         /*
+         let command = `xprop -id ${xid} _PLANK_BACKGROUND_BLUR_REGION`;
+         log( `running: ${command}` );
+         let [success, stdout] = GLib.spawn-command-line-sync(command);  // This call is considered unsafe by Cinnamon (because it's sync and code could run for a long time)
+         log( `stdout: ${new TextDecoder().decode(stdout)}` );
+         if (success && stdout) {
+            log( "Got xprop" );
+            let output = new TextDecoder().decode(stdout); //stdout.toString().trim();
+            let match = output.match(/=\s*(.+)$/m);
+            if (match) {
+               log( "It's a match" );
+               let geometryString = match[1].trim();
+               // Only proceed if there is some change to apply
+               if (geometryString == this.lastBlurGeometryString) {
+                  log( "No change" );
+                  return;
+               }
+               // Update cache with the new unique string
+               this.lastBlurGeometryString = geometryString;
+               // Split the output into 4 integers
+               let blurData = geometryString.split(',').map(num => parseInt(num.trim(), 10));
+               if (blurData.length >= 5) {
+                  if (data) {
+                     let [x, y, width, height, radius] = blurData;
+                     log( `got 4 ints: ${x}, ${y}, ${width}, ${height}, ${radius}` );
+                     data.background.show();
+                     let cornerEffect = this._getCornerEffect(data.background);
+                     if (cornerEffect) {
+                        log( `setclip using corner effect: ${x}, ${y}, ${width}, ${height}` );
+                        cornerEffect.clip = [x+2, y+2, width-3, height-3];
+                        this._updateCornerRadius(data.background, radius);
+                     } else {
+                        log( `setClip using background: ${x}, ${y}, ${width}, ${height}` );
+                        data.background.set_clip( x, y, width, height );
+                     }
+                     if (cloneManager)
+                        cloneManager.backgroundClipChanged(data.background);
+                  }
+               }
+            }
+         }
+         */
+      } catch (e) {
+         log( `Got exception:\n${e}` );
       }
    }
 
@@ -3699,6 +3866,7 @@ class BlurSettings {
 
       this.bind('windows-inclusion-list', 'windowInclusionList', updateWindowEffects);
       this.bind('windows-atrifact-mitigation', 'windowArtifactMitigation', updateArtifactMitigation);
+      this.bind('windows-titlebar-blur', `windowsTitlebarBlur`, updateWindowEffects);
 
       this.bind('focused-window-backlight', 'focusedWindowEffect', updateFocusedWindowEffect);
 
