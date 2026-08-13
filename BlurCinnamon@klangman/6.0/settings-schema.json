@@ -27,7 +27,7 @@
       "general-settings" : {
          "type" : "section",
          "title" : "Cinnamon desktop components where effects will be applied",
-         "keys" : ["enable-appswitcher-effects", "enable-desklet-effects", "enable-desktop-effects", "enable-expo-effects", "enable-popup-effects", "enable-notification-effects", "enable-overview-effects", "enable-panels-effects", "enable-tooltips-effects", "enable-window-effects", "focused-window-backlight"]
+         "keys" : ["enable-appswitcher-effects", "enable-desklet-effects", "enable-desktop-effects", "enable-expo-effects", "enable-popup-effects", "enable-notification-effects", "enable-osd-effects", "enable-overview-effects", "enable-panels-effects", "enable-tooltips-effects", "enable-window-effects", "focused-window-backlight"]
       },
 
       "generic-effect-settings" : {
@@ -162,6 +162,7 @@
          "Expo": 3,
          "Menus": 4,
          "Notifications": 5,
+         "OSD": 10,
          "Overview": 6,
          "Panels": 7,
          "Tooltips": 8,
@@ -903,8 +904,7 @@
         "default": 100,
         "dependency" : "enable-desktop-effects & component-selector=2 & enable-desktop-override"
     },
-
-
+    
     "notification-opacity" : {
         "type" : "custom",
         "file" : "CustomWidgets.py",

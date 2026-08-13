@@ -1228,20 +1228,37 @@ class BlurOSD extends BlurBase {
       this._signalManager = new SignalManager.SignalManager(null);
       blurOSDThis = this; // Make "this" available to monkey patched functions
 
+      this.has_own_show = OsdWindow.OsdWindow.prototype.hasOwnProperty('show');
       this.original_show = OsdWindow.OsdWindow.prototype.show;
-      this.original_hide = OsdWindow.OsdWindow.prototype._hide;
       OsdWindow.OsdWindow.prototype.show = this._show;
-      OsdWindow.OsdWindow.prototype._hide = this._hide;
+
+      // 'hide' (modern) or '_hide' (legacy)
+      if (typeof OsdWindow.OsdWindow.prototype.hide === 'function') {
+         this.has_own_hide = OsdWindow.OsdWindow.prototype.hasOwnProperty('hide');
+         this.original_hide = OsdWindow.OsdWindow.prototype.hide;
+         OsdWindow.OsdWindow.prototype.hide = this._hide;
+      }
+      if (typeof OsdWindow.OsdWindow.prototype._hide === 'function') {
+         this.has_own_old_hide = OsdWindow.OsdWindow.prototype.hasOwnProperty('_hide');
+         this.original_old_hide = OsdWindow.OsdWindow.prototype._hide;
+         OsdWindow.OsdWindow.prototype._hide = this._old_hide;
+      }
 
       if (usesWorkspaceOsd) {
+         this.has_own_display = WorkspaceOsd.WorkspaceOsd.prototype.hasOwnProperty('display');
          this.original_display = WorkspaceOsd.WorkspaceOsd.prototype.display;
-         this.original_onTimeout = WorkspaceOsd.WorkspaceOsd.prototype._onTimeout;
          WorkspaceOsd.WorkspaceOsd.prototype.display = this._display;
+
+         this.has_own_onTimeout = WorkspaceOsd.WorkspaceOsd.prototype.hasOwnProperty('_onTimeout');
+         this.original_onTimeout = WorkspaceOsd.WorkspaceOsd.prototype._onTimeout;
          WorkspaceOsd.WorkspaceOsd.prototype._onTimeout = this._onTimeout;
       } else {
+         this.has_own_info_show = ModalDialog.InfoOSD.prototype.hasOwnProperty('show');
          this.original_infoOSD_show = ModalDialog.InfoOSD.prototype.show;
-         this.original_infoOSD_hide = ModalDialog.InfoOSD.prototype.hide;
          ModalDialog.InfoOSD.prototype.show = this._infoOSD_show;
+
+         this.has_own_info_hide = ModalDialog.InfoOSD.prototype.hasOwnProperty('hide');
+         this.original_infoOSD_hide = ModalDialog.InfoOSD.prototype.hide;
          ModalDialog.InfoOSD.prototype.hide = this._infoOSD_hide;
       }
    }
@@ -1254,27 +1271,48 @@ class BlurOSD extends BlurBase {
       return [settings.osdOpacity, settings.osdBlendColor, settings.osdBlurType, settings.osdRadius, settings.osdSaturation];
    }
 
-   // Monkey patch function. The 'this' will be for OsdWindow
    _show(...params) {
-      blurOSDThis.original_show.call(this, ...params);
+      let ret = blurOSDThis.original_show.call(this, ...params);
       if (settings.osdSliderEffects) {
-         blurOSDThis._showBackground(this, this._hbox);
+         try { blurOSDThis._showBackground(this, this._hbox || (this.actor ? this.actor.get_first_child() : null)); } catch (e) { global.logError(e); }
       }
+      return ret;
    }
 
-   // Monkey patch function. The 'this' will be for WorkspaceOsd
+   _hide(...params) {
+      try { blurOSDThis._hideBackground(this, this._hbox || (this.actor ? this.actor.get_first_child() : null)); } catch (e) { global.logError(e); }
+      return blurOSDThis.original_hide ? blurOSDThis.original_hide.call(this, ...params) : undefined;
+   }
+
+   _old_hide(...params) {
+      try { blurOSDThis._hideBackground(this, this._hbox || (this.actor ? this.actor.get_first_child() : null)); } catch (e) { global.logError(e); }
+      return blurOSDThis.original_old_hide ? blurOSDThis.original_old_hide.call(this, ...params) : undefined;
+   }
+
    _display(...params) {
-      blurOSDThis.original_display.call(this, ...params);
+      let ret = blurOSDThis.original_display.call(this, ...params);
       if (settings.osdWorkspaceEffects) {
-         blurOSDThis._showBackground(this, this._vbox);
+         try { blurOSDThis._showBackground(this, this._vbox || (this.actor ? this.actor.get_first_child() : null)); } catch (e) { global.logError(e); }
       }
+      return ret;
+   }
+
+   _onTimeout(...params) {
+      try { blurOSDThis._hideBackground(this, this._vbox || (this.actor ? this.actor.get_first_child() : null)); } catch (e) { global.logError(e); }
+      return blurOSDThis.original_onTimeout.call(this, ...params);
    }
 
    _infoOSD_show(...params) {
-      blurOSDThis.original_infoOSD_show.call(this, ...params);
+      let ret = blurOSDThis.original_infoOSD_show.call(this, ...params);
       if (settings.osdWorkspaceEffects) {
-         blurOSDThis._showBackground.call(blurOSDThis, this.actor, this.actor.get_first_child());
+         try { blurOSDThis._showBackground(this, this.actor ? this.actor.get_first_child() : null); } catch (e) { global.logError(e); }
       }
+      return ret;
+   }
+
+   _infoOSD_hide(...params) {
+      try { blurOSDThis._hideBackground(this, this.actor ? this.actor.get_first_child() : null); } catch (e) { global.logError(e); }
+      return blurOSDThis.original_infoOSD_hide.call(this, ...params);
    }
 
    _showBackground(osd, actor) {
@@ -1284,12 +1322,13 @@ class BlurOSD extends BlurBase {
          }
          this._currentOsd = osd;
          this._currentActor = actor;
+
          if (!actor._blurCinnamonData && settings.allowTransparentColorOSD) {
             actor._blurCinnamonData = { original_color: actor.get_background_color(), original_style: actor.get_style(),
                                       original_class: actor.get_style_class_name(), original_pseudo_class: actor.get_style_pseudo_class() };
             actor.set_style( "background-gradient-direction: vertical; background-gradient-start: transparent; " +
                              "background-gradient-end: transparent; background: transparent;" );
-         } else if (!settings.allowTransparentColorOSD && osd._blurCinnamonData) {
+         } else if (!settings.allowTransparentColorOSD && actor._blurCinnamonData) { 
             actor.set_background_color(actor._blurCinnamonData.original_color);
             actor.set_style(actor._blurCinnamonData.original_style);
             actor.set_style_class_name(actor._blurCinnamonData.original_class);
@@ -1297,58 +1336,64 @@ class BlurOSD extends BlurBase {
             delete actor._blurCinnamonData;
          }
 
-         // Create the effects and the background actor to apply to effects to
          let [opacity, blendColor, blurType, radius, saturation] = this._getSettings(settings.osdOverride);
-         this._blurType = blurType
+         this._blurType = blurType;
+         
          this._background = this._createBackgroundAndEffects(opacity, blendColor, blurType, radius, saturation, global.overlay_group, 10);
          this._background._blurCinnamonName = "OsdWindow";
          osd._blurCinnamonBackground = this._background;
 
-         // If Dynamic Blurring is enabled, create a workspace clone and add the clone to the background
          if (blurType === BlurType.DynamicBlur || blurType === BlurType.DynamicMC || blurType === BlurType.DynamicDK) {
-            debugMsg( "Creating dynamic effect for classic app switcher" );
             this._createDynamicEffect(this._background);
          }
+         
          let themeNode = actor.get_theme_node();
          if (themeNode) {
-            // We are assuming that all corners have the same radius, hope that is true.
-            let radius = themeNode.get_border_radius(St.Corner.TOPLEFT);
-            if (radius === 9999) {
-               radius = actor.height / 2;
-            }
-            this._updateCornerRadius(this._background, (radius)/global.ui_scale);
+           let corner_radius = themeNode.get_border_radius(St.Corner.TOPLEFT);
+           if (corner_radius === 9999) { corner_radius = actor.height / 2; }
+           
+           this._updateCornerRadius(this._background, (corner_radius)/global.ui_scale);
          }
-         this._signalManager.connect(osd, "notify::allocation", () => this._setClip(actor) );
+         
+         if (osd.actor) {
+             this._signalManager.connect(osd.actor, "notify::allocation", () => this._setClip(actor) );
+         }
+         this._signalManager.connect(actor, "notify::allocation", () => this._setClip(actor) );
 
-         this._background.show();
+         if (this._idleId) {
+             Mainloop.source_remove(this._idleId);
+             this._idleId = null;
+         }
+         
+         this._idleId = Mainloop.idle_add(() => {
+             if (this._background) {
+                 this._setClip(actor);
+                 this._background.show();
+
+                 // Re-clip on the next idle cycle to catch layout shifts after the first paint
+                 Mainloop.idle_add(() => {
+                     if (this._background) this._setClip(actor);
+                 });
+             }
+             this._idleId = null;
+         });
+
          this._setClip(actor);
       }
    }
 
-   // Monkey patch function. The 'this' will be for OsdWindow
-   _hide(...params) {
-      blurOSDThis._hideBackground.call(blurOSDThis, this, this._hbox);
-      blurOSDThis.original_hide.call(this, ...params);
-   }
-
-   // Monkey patch function. The 'this' will be for WorkspaceOsd
-   _onTimeout(...params) {
-      blurOSDThis._hideBackground.call(blurOSDThis, this, this._vbox);
-      blurOSDThis.original_onTimeout.call(this, ...params);
-   }
-
-   _infoOSD_hide(...params) {
-      blurOSDThis._hideBackground.call(blurOSDThis, this.actor, this.actor.get_first_child());
-      blurOSDThis.original_infoOSD_hide.call(this, ...params);
-   }
-
    _hideBackground(osd, actor) {
       if (!this._background) return;
+      
+      if (this._idleId) {
+          Mainloop.source_remove(this._idleId);
+          this._idleId = null;
+      }
+      
       if (this._blurType === BlurType.DynamicBlur || this._blurType === BlurType.DynamicMC || this._blurType === BlurType.DynamicDK) {
-         debugMsg( "Removing dynamic effect for classic app switcher" );
          this._destroyDynamicEffect(this._background);
       }
-      if (actor._blurCinnamonData) {
+      if (actor && actor._blurCinnamonData) {
          actor.set_background_color(actor._blurCinnamonData.original_color);
          actor.set_style(actor._blurCinnamonData.original_style);
          actor.set_style_class_name(actor._blurCinnamonData.original_class);
@@ -1356,44 +1401,81 @@ class BlurOSD extends BlurBase {
          delete actor._blurCinnamonData;
       }
       this._signalManager.disconnectAllSignals();
-      global.overlay_group.remove_actor(this._background);
+      
+      if (this._background.get_parent() === global.overlay_group) {
+          global.overlay_group.remove_actor(this._background);
+      } else {
+          let parent = this._background.get_parent();
+          if (parent) parent.remove_child(this._background);
+      }
       super.destroy(this._background);
       this._background.destroy();
       delete this._background;
-      delete osd._blurCinnamonBackground;
+      if (osd) delete osd._blurCinnamonBackground;
+     
+      this._currentOsd = null;
+      this._currentActor = null;
    }
 
    _setClip(actor) {
-      let [x,y] = actor.get_transformed_position();
-      //log( `OsdWindow pos/size: ${x},${y} / ${actor.width},${actor.height}` );
+      if (!actor || !this._background) return;
+      
+      let [x, y] = actor.get_transformed_position();
+      let [scale_x, scale_y] = actor.get_scale(); // Get the scale of the actor
+      let width = actor.width * scale_x;
+      let height = actor.height * scale_y;
+
       let cornerEffect = this._getCornerEffect(this._background);
       if (cornerEffect) {
-         cornerEffect.clip = [x+2, y+2, actor.width-3, actor.height-3];
+         cornerEffect.clip = [
+            x + 2, 
+            y + 2, 
+            Math.max(0, width - 3),
+            Math.max(0, height - 3)
+         ];
       } else {
-         this._background.set_clip(x, y, actor.width, actor.height );
-         if (cloneManager)
-            cloneManager.backgroundClipChanged(this._background);
+         this._background.set_clip(
+            x, 
+            y, 
+            Math.max(0, width),
+            Math.max(0, height)
+         );
       }
+      if (cloneManager && this._background) cloneManager.backgroundClipChanged(this._background);
    }
 
    destroy() {
-      OsdWindow.OsdWindow.prototype.show = this.original_show;
-      OsdWindow.OsdWindow.prototype._hide = this.original_hide;
+      if (this._idleId) {
+         Mainloop.source_remove(this._idleId);
+         this._idleId = null;
+      }
+
+      if (this._signalManager) this._signalManager.disconnectAllSignals();
+     
+      if (this.has_own_show) OsdWindow.OsdWindow.prototype.show = this.original_show;
+      else delete OsdWindow.OsdWindow.prototype.show;
+
+      if (this.has_own_hide) OsdWindow.OsdWindow.prototype.hide = this.original_hide;
+      else if (OsdWindow.OsdWindow.prototype.hide) delete OsdWindow.OsdWindow.prototype.hide;
+
+      if (this.has_own_old_hide) OsdWindow.OsdWindow.prototype._hide = this.original_old_hide;
+      else if (OsdWindow.OsdWindow.prototype._hide) delete OsdWindow.OsdWindow.prototype._hide;
 
       if (usesWorkspaceOsd) {
-         WorkspaceOsd.WorkspaceOsd.prototype.display = this.original_display;
-         WorkspaceOsd.WorkspaceOsd.prototype._onTimeout = this.original_onTimeout;
+         if (this.has_own_display) WorkspaceOsd.WorkspaceOsd.prototype.display = this.original_display;
+         else delete WorkspaceOsd.WorkspaceOsd.prototype.display;
+
+         if (this.has_own_onTimeout) WorkspaceOsd.WorkspaceOsd.prototype._onTimeout = this.original_onTimeout;
+         else delete WorkspaceOsd.WorkspaceOsd.prototype._onTimeout;
       } else {
-         ModalDialog.InfoOSD.prototype.show = this.original_infoOSD_show;
-         ModalDialog.InfoOSD.prototype.hide = this.original_infoOSD_hide;
+         if (this.has_own_info_show) ModalDialog.InfoOSD.prototype.show = this.original_infoOSD_show;
+         else delete ModalDialog.InfoOSD.prototype.show;
 
+         if (this.has_own_info_hide) ModalDialog.InfoOSD.prototype.hide = this.original_infoOSD_hide;
+         else delete ModalDialog.InfoOSD.prototype.hide;
       }
 
-      if (this._background) {
-         global.overlay_group.remove_actor(this._background);
-         super.destroy(this._background);
-         this._background.destroy();
-      }
+      this._hideBackground(this._currentOsd, this._currentActor);
    }
 }
 
@@ -4065,7 +4147,7 @@ function enableOSDChanged() {
       blurOSD.destroy();
       blurOSD = null;
    } else if (!blurOSD && settings.enableOSDEffects) {
-      //blurOSD = new BlurOSD();
+      blurOSD = new BlurOSD();
    }
 }
 
@@ -4109,7 +4191,7 @@ function enable() {
 
    // Create a OsdWindow Effects class instance, the constructor will kick things off
    if (settings.enableOSDEffects) {
-      //blurOSD = new BlurOSD();
+      blurOSD = new BlurOSD();
    }
    // Create a Classic Switcher Effects class instance, the constructor will kick things off
    if (settings.enableAppswitcherEffects && settings.appswitcherAllowClassic) {
