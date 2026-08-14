@@ -3032,10 +3032,8 @@ class BlurApplications extends BlurBase {
             // when either the compositor actor or the MetaWindow reports a position update.
             signalManager.connect(compositor, "notify::allocation", () => this._setClip(compositor) );
             signalManager.connect(metaWindow, "position-changed", () => this._setClip(compositor) );
-            // Resize / reposition the blurred actor
+            // Resize / reposition & make visible the blurred actor
             this._setClip(compositor);
-            // Make the background visible
-            background.show();
          }
 
          if (blurType === BlurType.DynamicBlur || blurType === BlurType.DynamicMC || blurType === BlurType.DynamicDK) {
@@ -3106,8 +3104,9 @@ class BlurApplications extends BlurBase {
             let clientRect = data.metaWindow.frame_rect_to_client_rect(rect);
             rect.height = clientRect.y - rect.y;
             if (rect.height <= 0) {
-               rect.height = 3; // Hack, bad things happen if we set the height to 0 or less
-               data.background.hide();
+               //rect.height = 3;        // Hack, bad things happen if we set the height to 0 or less
+               data.background.hide(); // Hide the background since we can't determine the title bar height
+               return;
             }
          }
          // Set the background position to the displays 0,0 based on the compositor's position and the shadow size
