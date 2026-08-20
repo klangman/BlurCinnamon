@@ -10,6 +10,18 @@ const UUID = "BlurCinnamon@klangman";
 
 const SHADER_CACHE = {};
 
+// How many pyramid passes Dual Kawase needs for a given blur radius. The full
+// 7-pass pyramid is only needed for large radii; using it unconditionally
+// multiplies live Cogl shader programs by 7x per blurred surface regardless
+// of how small the blur is, which is what trips Cogl's ">50 shaders/programs"
+// warning once more than a handful of surfaces are blurred at once.
+function _desiredPassCount(radius) {
+    if (radius <= 0)  return 1;
+    if (radius <= 12) return 3;
+    if (radius <= 35) return 5;
+    return 7;
+}
+
 const DEFAULT_PARAMS = {
     radius: 0, brightness: 1,
     width: 0, height: 0, 
@@ -131,6 +143,16 @@ var DualFilteringBlurEffect =
                 this._radius = value;
 
                 if (this._sub_effects) {
+                    // If the radius moved into a different pass-count tier,
+                    // rebuild the pyramid instead of just re-tuning the
+                    // existing passes' uniforms.
+                    if (this.pass_index === 0 && _desiredPassCount(value) !== this.total_passes) {
+                        let actor = this.get_actor();
+                        if (actor) {
+                            this.vfunc_set_actor(actor);
+                        }
+                    }
+
                     const scale_factor = St.ThemeContext.get_for_stage(global.stage).scale_factor;
                     this._update_uniforms(scale_factor);
                     this.set_enabled(this.radius > 0.);
@@ -272,7 +294,7 @@ var DualFilteringBlurEffect =
                 this._sub_effects = [];
 
                 if (actor !== null && actor !== undefined) {
-                    let total_depth = 7;
+                    let total_depth = _desiredPassCount(this.radius);
 
                     this.total_passes = total_depth;
 

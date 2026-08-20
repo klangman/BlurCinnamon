@@ -461,11 +461,16 @@ function applyNewCloneList(background, windowsToClone, desktopOnly) {
       }
    });
    // Remove all hidden clones on idle to avoid issues (do we really need to do it at idle??)
-   Mainloop.idle_add( () => background._blurCinnamonWinClones.forEach( (clone) => {
-      if (!clone.is_visible()) {
-         destroyWindowClone(clone, background);
+   Mainloop.idle_add( () => {
+      if (!background._blurCinnamonWinClones) {
+         return;
       }
-   }));
+      background._blurCinnamonWinClones.forEach( (clone) => {
+         if (!clone.is_visible()) {
+            destroyWindowClone(clone, background);
+         }
+      });
+   });
 }
 
 function destroyAllNonDesktopClones(background) {
@@ -495,6 +500,12 @@ function cloneWindowsForBackground(background, desktopOnly) {
 // If metaWindowOwner is null, all overlapping windows will be cloned.
 // desktopOnly: bool, true when the background should only show desktop clones
 function cloneWindowsForBackgroundNow(background, desktopOnly) {
+   // addBackground() will create an empty _blurCinnamonWinClones array. If we
+   // don't see that array now then the background must have been already deleted
+   // so we can safely just abort this call.
+   if (!background._blurCinnamonWinClones) {
+      return;
+   }
    let currentWs = global.workspace_manager.get_active_workspace_index();
    let [blurX, blurY, blurWidth, blurHeight] = getBackgroundClip(background);
    if (blurWidth===0 || blurHeight===0 || !background.is_mapped()) {
@@ -3156,8 +3167,16 @@ class BlurApplications extends BlurBase {
          let data = compositor._blurCinnamonDataWindow;
          if (data) {
             debugMsg( "Reapplying effects to window" );
-            Mainloop.idle_add( () => this._unblurWindow(compositor) );
-            Mainloop.idle_add( () => this._blurWindow(metaWindow) );
+            Mainloop.idle_add( () => {
+               if (global.display.list_windows(0).includes(metaWindow)) {
+                  this._unblurWindow(compositor);
+               }
+            });
+            Mainloop.idle_add( () => {
+               if (global.display.list_windows(0).includes(metaWindow)) {
+                  this._blurWindow(metaWindow);
+               }
+            });
          }
       } else {
          // Go through all windows and remove then reapply effects
@@ -3167,8 +3186,16 @@ class BlurApplications extends BlurBase {
             let data = compositor._blurCinnamonDataWindow;
             if (data) {
                debugMsg( "Reapplying effects to window" );
-               Mainloop.idle_add( () => this._unblurWindow(compositor) );
-               Mainloop.idle_add( () => this._blurWindow(windows[i]) );
+               Mainloop.idle_add( () => {
+                  if (global.display.list_windows(0).includes(windows[i])) {
+                     this._unblurWindow(compositor);
+                  }
+               });
+               Mainloop.idle_add( () => {
+                  if (global.display.list_windows(0).includes(windows[i])) {
+                     this._blurWindow(windows[i]);
+                  }
+               });
             }
          }
       }
