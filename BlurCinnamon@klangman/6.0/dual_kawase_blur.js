@@ -230,7 +230,7 @@ var DualFilteringBlurEffect =
             // the greater the initial spacing required to maintain the linearity of the blur effect
             let multiplier;
             switch (this.total_passes) {
-                case 3:  multiplier = 0.21; break;
+                case 3:  multiplier = 0.18; break;
                 case 5:  multiplier = 0.09; break;
                 default: multiplier = 0.08; break;
             }
