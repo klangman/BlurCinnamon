@@ -226,7 +226,15 @@ var DualFilteringBlurEffect =
         _update_uniforms(scale_factor) {
             // Treat the UI radius as an intensity percentage 
             let effective_radius = Math.min(this.radius, 100.0); 
-            let base_offset = effective_radius * 0.08;
+            // The fewer the passes,
+            // the greater the initial spacing required to maintain the linearity of the blur effect
+            let multiplier;
+            switch (this.total_passes) {
+                case 3:  multiplier = 0.18; break;
+                case 5:  multiplier = 0.09; break;
+                default: multiplier = 0.08; break;
+            }
+            let base_offset = effective_radius * multiplier;
 
             // Calculate spatial spread mathematically
             let midpoint = Math.floor(this.total_passes / 2);
