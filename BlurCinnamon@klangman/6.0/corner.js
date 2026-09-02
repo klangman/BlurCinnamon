@@ -93,8 +93,12 @@ var CornerEffect = (typeof global === 'undefined') ?
             this._radius = (params.radius) ? params.radius : DEFAULT_PARAMS.radius;
             this._width = (params.width) ? params.width : DEFAULT_PARAMS.width;
             this._height = (params.height) ? params.height : DEFAULT_PARAMS.height;
-            this._corners_top = (params.corners_top) ? params.corners_top : DEFAULT_PARAMS.corners_top;
-            this._corners_bottom = (params.corners_bottom) ? params.corners_bottom : DEFAULT_PARAMS.corners_bottom;
+            // corners_top/corners_bottom are booleans, so `params.corners_top ? ... : default`
+            // silently discarded an explicit `false` (a falsy value indistinguishable from "not
+            // provided" under that pattern) and fell back to DEFAULT_PARAMS's `true`. Check for
+            // undefined instead, so an explicit false is respected.
+            this._corners_top = (params.corners_top !== undefined) ? params.corners_top : DEFAULT_PARAMS.corners_top;
+            this._corners_bottom = (params.corners_bottom !== undefined) ? params.corners_bottom : DEFAULT_PARAMS.corners_bottom;
             this._clip = (params.clip) ? params.clip : DEFAULT_PARAMS.clip;
 
             // set shader source

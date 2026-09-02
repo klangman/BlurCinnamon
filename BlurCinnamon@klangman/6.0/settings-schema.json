@@ -175,7 +175,7 @@
       "type" : "custom",
       "file" : "CustomWidgets.py",
       "widget" : "About",
-      "description" : "\n<b>Bringing your style into focus</b>\nVersion: ext-version\n\nDeveloped by: Kevin Langman\n<a href=\"https://github.com/klangman/BlurCinnamon\">Github</a> / <a href=\"https://github.com/klangman/BlurCinnamon/issues/new\">Report an issue</a> / <a href=\"https://cinnamon-spices.linuxmint.com/extensions/view/104\">Website</a>\n\nThe rounded corners, Gaussian and Monte Carlo effects are\nbased on code by aunetx (Blur-my-shell <a href=\"https://github.com/aunetx/blur-my-shell\">Github</a> / <a href=\"https://ko-fi.com/aunetx\">Ko-fi</a>)\n\nThe Dual Kawase effect was written by <a href=\"https://github.com/Lucas-X-A\">Lucas-X-A</a>\n\nThe Overview effect is partially based on the BlurOverview extension by nailfarmer",
+      "description" : "\n<b>Bringing your style into focus</b>\nVersion: ext-version\n\nDeveloped by: Kevin Langman\n<a href=\"https://github.com/klangman/BlurCinnamon\">Github</a> / <a href=\"https://github.com/klangman/BlurCinnamon/issues/new\">Report an issue</a> / <a href=\"https://cinnamon-spices.linuxmint.com/extensions/view/104\">Website</a>\n\nThe rounded corners, Gaussian and Monte Carlo effects are\nbased on code by aunetx (Blur-my-shell <a href=\"https://github.com/aunetx/blur-my-shell\">Github</a> / <a href=\"https://ko-fi.com/aunetx\">Ko-fi</a>)\n\nThe Dual Kawase effect was written by <a href=\"https://github.com/Lucas-X-A\">Lucas-X-A</a>\n\nThe Overview effect is partially based on the BlurOverview extension by nailfarmer\nThe Blur Cinnamon icon was designed by <a href=\"https://github.com/Selinaru\">Selinaru</a>",
       "icon" : "/icon.png"
    },
 
