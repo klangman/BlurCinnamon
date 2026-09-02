@@ -1388,8 +1388,29 @@ class BlurOSD extends BlurBase {
 
    _infoOSD_show(...params) {
       let ret = blurOSDThis.original_infoOSD_show.call(this, ...params);
+      let child = this.actor ? this.actor.get_first_child() : null;
+      if (this.actor) {
+         log(
+            `[BlurOSD] InfoOSD actor: ` +
+            `${this.actor.width}x${this.actor.height} ` +
+            `class=${this.actor.get_style_class_name()}`
+         );
+      }
+      if (child) {
+         log(
+            `[BlurOSD] InfoOSD child: ` +
+            `${child.width}x${child.height} ` +
+            `class=${child.get_style_class_name()}`
+         );
+      }
       if (settings.osdWorkspaceEffects) {
-         try { blurOSDThis._showBackground(this, this.actor ? this.actor.get_first_child() : null, true); } catch (e) { global.logError(e); }
+         try {
+            let actor = this.actor ? this.actor.get_first_child() : null;
+            let clipActor = this.actor || actor;
+            blurOSDThis._showBackground(this, actor, true, clipActor);
+         } catch (e) {
+            global.logError(e);
+         }
       }
       return ret;
    }
@@ -1422,7 +1443,6 @@ class BlurOSD extends BlurBase {
    
         this._setClip(actor);
         if (showBackground) background.show();
-   
         // Re-clip on the next idle cycle to catch layout shifts
         // after the first layout/paint cycle
         this._reclipIdleId = Mainloop.idle_add(() => {
@@ -1436,7 +1456,7 @@ class BlurOSD extends BlurBase {
       });
    }
 
-   _showBackground(osd, actor, isWorkspaceOsd = false) {
+   _showBackground(osd, actor, isWorkspaceOsd = false, clipActor = actor) {
       if (!actor)
          return;
       
@@ -1451,7 +1471,7 @@ class BlurOSD extends BlurBase {
         
          // Workspace OSD needs an explicit refresh because its visual
          // source changes when switching workspaces
-         this._scheduleReclip(actor, true);
+         this._scheduleReclip(clipActor, true);
    
          if ((this._blurType === BlurType.DynamicBlur ||
               this._blurType === BlurType.DynamicMC ||
@@ -1542,14 +1562,14 @@ class BlurOSD extends BlurBase {
          this._updateCornerRadius(this._background, corner_radius / global.ui_scale);
       }
    
-      if (osd.actor) {
-         this._signalManager.connect(osd.actor, "notify::allocation", () => this._setClip(actor));
+      if (osd.actor && osd.actor !== clipActor) {
+         this._signalManager.connect(osd.actor, "notify::allocation", () => this._setClip(clipActor));
       }
    
-      this._signalManager.connect(actor, "notify::allocation", () => this._setClip(actor));
+      this._signalManager.connect(clipActor, "notify::allocation", () => this._setClip(clipActor));
    
-      this._setClip(actor);
-      this._scheduleReclip(actor, true);
+      this._setClip(clipActor);
+      this._scheduleReclip(clipActor, true);
    }
 
    _hideBackground(osd, actor) {
