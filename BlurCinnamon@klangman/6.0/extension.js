@@ -1357,8 +1357,47 @@ class BlurOSD extends BlurBase {
 
    _show(...params) {
       let ret = blurOSDThis.original_show.call(this, ...params);
+      if (!usesWorkspaceOsd) {
+        let child =
+          this.actor
+            ? this.actor.get_first_child()
+            : null;
+
+        if (this.actor) {
+          log(
+            `[BlurOSD] OsdWindow actor: ` +
+            `${this.actor.width}x${this.actor.height} ` +
+            `class=${this.actor.get_style_class_name()}`
+          );
+        }
+
+        if (this._hbox) {
+          log(
+            `[BlurOSD] OsdWindow hbox: ` +
+            `${this._hbox.width}x${this._hbox.height} ` +
+            `class=${this._hbox.get_style_class_name()}`
+          );
+        }
+
+        if (child) {
+          log(
+            `[BlurOSD] OsdWindow child: ` +
+            `${child.width}x${child.height} ` +
+            `class=${child.get_style_class_name()}`
+          );
+        }
+      }
       if (settings.osdSliderEffects) {
-         try { blurOSDThis._showBackground(this, this._hbox || (this.actor ? this.actor.get_first_child() : null), false); } catch (e) { global.logError(e); }
+         try {
+            let actor = this._hbox || (this.actor ? this.actor.get_first_child() : null);
+            // On older Cinnamon versions the content actor may only
+            // cover the inner contents of the OSD, while this.actor
+            // represents the entire popup
+            let clipActor = (!usesWorkspaceOsd && this.actor) ? this.actor : actor;
+            blurOSDThis._showBackground(this, actor, false, clipActor);
+         } catch (e) {
+            global.logError(e);
+         }
       }
       return ret;
    }
@@ -1388,21 +1427,6 @@ class BlurOSD extends BlurBase {
 
    _infoOSD_show(...params) {
       let ret = blurOSDThis.original_infoOSD_show.call(this, ...params);
-      let child = this.actor ? this.actor.get_first_child() : null;
-      if (this.actor) {
-         log(
-            `[BlurOSD] InfoOSD actor: ` +
-            `${this.actor.width}x${this.actor.height} ` +
-            `class=${this.actor.get_style_class_name()}`
-         );
-      }
-      if (child) {
-         log(
-            `[BlurOSD] InfoOSD child: ` +
-            `${child.width}x${child.height} ` +
-            `class=${child.get_style_class_name()}`
-         );
-      }
       if (settings.osdWorkspaceEffects) {
          try {
             let actor = this.actor ? this.actor.get_first_child() : null;
@@ -1549,14 +1573,14 @@ class BlurOSD extends BlurBase {
          this._createDynamicEffect(this._background);
       }
    
-      let themeNode = actor.get_theme_node();
+      let radiusActor = clipActor || actor;
+      let themeNode = radiusActor.get_theme_node();
    
       if (themeNode) {
-         let corner_radius =
-            themeNode.get_border_radius(St.Corner.TOPLEFT);
+         let corner_radius = themeNode.get_border_radius(St.Corner.TOPLEFT);
    
          if (corner_radius === 9999) {
-            corner_radius = actor.height / 2;
+            corner_radius = radiusActor / 2;
          }
    
          this._updateCornerRadius(this._background, corner_radius / global.ui_scale);
