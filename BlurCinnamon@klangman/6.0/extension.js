@@ -3959,8 +3959,8 @@ class BlurFocusEffect extends BlurBase {
 
    destroy() {
       this._background.hide();
+      this._signalManager.disconnectAllSignals();
       if (this._focusedCompositor) {
-         this._signalManager.disconnectAllSignals();
          this._focusedCompositor.remove_child(this._background);
       }
       this._focusedWindow = undefined;
