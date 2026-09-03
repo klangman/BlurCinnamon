@@ -1357,36 +1357,6 @@ class BlurOSD extends BlurBase {
 
    _show(...params) {
       let ret = blurOSDThis.original_show.call(this, ...params);
-      if (!usesWorkspaceOsd) {
-        let child =
-          this.actor
-            ? this.actor.get_first_child()
-            : null;
-
-        if (this.actor) {
-          log(
-            `[BlurOSD] OsdWindow actor: ` +
-            `${this.actor.width}x${this.actor.height} ` +
-            `class=${this.actor.get_style_class_name()}`
-          );
-        }
-
-        if (this._hbox) {
-          log(
-            `[BlurOSD] OsdWindow hbox: ` +
-            `${this._hbox.width}x${this._hbox.height} ` +
-            `class=${this._hbox.get_style_class_name()}`
-          );
-        }
-
-        if (child) {
-          log(
-            `[BlurOSD] OsdWindow child: ` +
-            `${child.width}x${child.height} ` +
-            `class=${child.get_style_class_name()}`
-          );
-        }
-      }
       if (settings.osdSliderEffects) {
          try {
             let actor = this._hbox || (this.actor ? this.actor.get_first_child() : null);
@@ -1549,20 +1519,11 @@ class BlurOSD extends BlurBase {
          delete actor._blurCinnamonData;
       }
    
-      let [opacity, blendColor, blurType, radius, saturation] =
-         this._getSettings(settings.osdOverride);
+      let [opacity, blendColor, blurType, radius, saturation] = this._getSettings(settings.osdOverride);
    
       this._blurType = blurType;
    
-      this._background = this._createBackgroundAndEffects(
-         opacity,
-         blendColor,
-         blurType,
-         radius,
-         saturation,
-         global.overlay_group,
-         10
-      );
+      this._background = this._createBackgroundAndEffects(opacity, blendColor, blurType, radius, saturation, global.overlay_group, 10);
    
       this._background._blurCinnamonName = "OsdWindow";
       osd._blurCinnamonBackground = this._background;
@@ -1578,11 +1539,9 @@ class BlurOSD extends BlurBase {
    
       if (themeNode) {
          let corner_radius = themeNode.get_border_radius(St.Corner.TOPLEFT);
-   
          if (corner_radius === 9999) {
-            corner_radius = radiusActor / 2;
+            corner_radius = Math.min(radiusActor.width, radiusActor.height) / 2;
          }
-   
          this._updateCornerRadius(this._background, corner_radius / global.ui_scale);
       }
    
@@ -1636,6 +1595,7 @@ class BlurOSD extends BlurBase {
       super.destroy(this._background);
       this._background.destroy();
       this._background = null;
+      this.parent = null;
       if (osd) delete osd._blurCinnamonBackground;
      
       this._currentOsd = null;
@@ -1706,6 +1666,8 @@ class BlurOSD extends BlurBase {
       }
 
       this._hideBackground(this._currentOsd, this._currentActor);
+     
+      if (blurOSDThis === this) blurOSDThis = null;
    }
 }
 
