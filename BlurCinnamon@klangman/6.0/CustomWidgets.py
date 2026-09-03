@@ -7,7 +7,7 @@ import re
 
 import JsonSettingsWidgets
 from JsonSettingsWidgets import *
-from gi.repository import Gio, Gtk, Gdk, GdkPixbuf, GLib
+from gi.repository import Gio, Gtk, Gdk, GLib
 
 OPERATIONS = ['<=', '>=', '<', '>', '!=', '=']
 
@@ -165,8 +165,7 @@ class About(SettingsWidget):
       self.box = Gtk.Box(spacing=10,orientation=Gtk.Orientation.VERTICAL,margin_start=20, margin_end=20, margin_top=20, margin_left=20, margin_right=20)
       self.label = Gtk.Label("", xalign=0.5, justify=Gtk.Justification.CENTER, expand=True)
       self.label.set_markup(info["description"].replace("ext-version", settings.get_value("ext-version")))
-      pixbuf = GdkPixbuf.Pixbuf.new_from_file_at_scale(extensions_path + UUID + info["icon"], width=192, height=192,  preserve_aspect_ratio=True)
-      self.image = Gtk.Image.new_from_pixbuf(pixbuf)
+      self.image = Gtk.Image.new_from_file(extensions_path + UUID + info["icon"])
       self.box.add(self.image)
       self.box.add(self.label)
       self.pack_start(self.box, True, True, 0)
