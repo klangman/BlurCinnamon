@@ -1429,6 +1429,7 @@ class BlurOSD extends BlurBase {
       }
    
       let background = this._background;
+      let viewport = this._viewport;
    
       this._idleId = Mainloop.idle_add(() => {
         this._idleId = null;
@@ -1437,6 +1438,7 @@ class BlurOSD extends BlurBase {
    
         this._setClip(actor);
         if (showBackground) background.show();
+        if (viewport && this._viewport === viewport) viewport.show();   
         // Re-clip on the next idle cycle to catch layout shifts
         // after the first layout/paint cycle
         this._reclipIdleId = Mainloop.idle_add(() => {
@@ -1453,16 +1455,15 @@ class BlurOSD extends BlurBase {
    _showBackground(osd, actor, isWorkspaceOsd = false, clipActor = actor) {
       if (!actor)
          return;
-      
-      if (osd._blurCinnamonBackground &&
-          osd._blurCinnamonBackground === this._background) {
+   
+      if (osd._blurCinnamonBackground && osd._blurCinnamonBackground === this._background) {
    
          this._currentOsd = osd;
          this._currentActor = actor;
-
+   
          if (!isWorkspaceOsd)
             return;
-        
+   
          // Workspace OSD needs an explicit refresh because its visual
          // source changes when switching workspaces
          this._scheduleReclip(clipActor, true);
@@ -1479,8 +1480,7 @@ class BlurOSD extends BlurBase {
       }
    
       // Stale marker from a background that has already gone away
-      if (osd._blurCinnamonBackground &&
-          osd._blurCinnamonBackground !== this._background) {
+      if (osd._blurCinnamonBackground && osd._blurCinnamonBackground !== this._background) {
          delete osd._blurCinnamonBackground;
       }
    
@@ -1496,7 +1496,8 @@ class BlurOSD extends BlurBase {
             original_color: actor.get_background_color(),
             original_style: actor.get_style(),
             original_class: actor.get_style_class_name(),
-            original_pseudo_class: actor.get_style_pseudo_class()
+            original_pseudo_class:
+               actor.get_style_pseudo_class()
          };
    
          actor.set_style(
@@ -1505,44 +1506,40 @@ class BlurOSD extends BlurBase {
             "background-gradient-end: transparent; " +
             "background: transparent;"
          );
-   
-      } else if (!settings.allowTransparentColorOSD &&
-                 actor._blurCinnamonData) {
-   
+      } else if (!settings.allowTransparentColorOSD && actor._blurCinnamonData) {
          actor.set_background_color(actor._blurCinnamonData.original_color);
          actor.set_style(actor._blurCinnamonData.original_style);
          actor.set_style_class_name(actor._blurCinnamonData.original_class);
-         actor.set_style_pseudo_class(
-            actor._blurCinnamonData.original_pseudo_class
-         );
-   
+         actor.set_style_pseudo_class(actor._blurCinnamonData.original_pseudo_class);
          delete actor._blurCinnamonData;
       }
    
       let [opacity, blendColor, blurType, radius, saturation] = this._getSettings(settings.osdOverride);
-   
       this._blurType = blurType;
-   
-      this._background = this._createBackgroundAndEffects(opacity, blendColor, blurType, radius, saturation, global.overlay_group, 10);
-   
+      let useViewport = this._wantsViewport(blurType);
+
+      this._background = this._createBackgroundAndEffects(opacity, blendColor, blurType, radius, saturation, global.overlay_group, 10, true, true, useViewport);
       this._background._blurCinnamonName = "OsdWindow";
+      this._viewport = this._background._blurCinnamonViewport;
+      if (this._viewport) this._viewport._blurCinnamonName = "OsdWindow";
       osd._blurCinnamonBackground = this._background;
-   
+
       if (blurType === BlurType.DynamicBlur ||
           blurType === BlurType.DynamicMC ||
           blurType === BlurType.DynamicDK) {
+   
          this._createDynamicEffect(this._background);
       }
    
+      // Use the actor that represents the complete popup for
+      // both clipping geometry and corner radius
       let radiusActor = clipActor || actor;
       let themeNode = radiusActor.get_theme_node();
    
       if (themeNode) {
          let corner_radius = themeNode.get_border_radius(St.Corner.TOPLEFT);
-         if (corner_radius === 9999) {
-            corner_radius = Math.min(radiusActor.width, radiusActor.height) / 2;
-         }
-         this._updateCornerRadius(this._background, corner_radius / global.ui_scale);
+         if (corner_radius === 9999) { corner_radius = Math.min(radiusActor.width, radiusActor.height) / 2; }
+         this._updateViewportCornerRadius(this._background, this._viewport, (corner_radius)/global.ui_scale, true, true);
       }
    
       if (osd.actor && osd.actor !== clipActor) {
