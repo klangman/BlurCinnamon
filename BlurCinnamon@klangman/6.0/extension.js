@@ -1750,7 +1750,8 @@ class BlurOSD extends BlurBase {
    
       let [opacity, blendColor, blurType, radius, saturation] = this._getSettings(settings.osdOverride);
       this._blurType = blurType;
-      let useViewport = this._wantsViewport(blurType);
+      // Use viewport for both static and dynamic shader-based OSD blur
+      let useViewport = this._wantsViewport(blurType) || blurType === BlurType.Gaussian || blurType === BlurType.MonteCarlo || blurType === BlurType.DualKawase;
 
       this._background = this._createBackgroundAndEffects(opacity, blendColor, blurType, radius, saturation, global.overlay_group, 10, true, true, useViewport);
       this._background._blurCinnamonName = "OsdWindow";

@@ -294,8 +294,12 @@ var DualFilteringBlurEffect =
                             // Ignores silently if the actor has already been cleaned up by the Cinnamon engine
                         }
                         // Forces the immediate destruction of the GObject
-                        if (typeof effect.run_dispose === 'function') {
-                            effect.run_dispose();
+                        try {
+                           if (typeof effect.run_dispose === 'function') {
+                              effect.run_dispose();
+                           }
+                        } catch (e) {
+                            // Ignores silently if the actor has already been cleaned up by the Cinnamon engine
                         }
                     });
                 }
