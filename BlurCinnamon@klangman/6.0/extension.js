@@ -1750,8 +1750,7 @@ class BlurOSD extends BlurBase {
    
       let [opacity, blendColor, blurType, radius, saturation] = this._getSettings(settings.osdOverride);
       this._blurType = blurType;
-      // Use viewport for both static and dynamic shader-based OSD blur
-      let useViewport = this._wantsViewport(blurType) || blurType === BlurType.Gaussian || blurType === BlurType.MonteCarlo || blurType === BlurType.DualKawase;
+      let useViewport = this._wantsViewport(blurType);
 
       this._background = this._createBackgroundAndEffects(opacity, blendColor, blurType, radius, saturation, global.overlay_group, 10, true, true, useViewport);
       this._background._blurCinnamonName = "OsdWindow";
@@ -1777,11 +1776,13 @@ class BlurOSD extends BlurBase {
          this._updateViewportCornerRadius(this._background, this._viewport, (corner_radius)/global.ui_scale, true, true);
       }
    
-      if (osd.actor && osd.actor !== clipActor) {
-         this._signalManager.connect(osd.actor, "notify::allocation", () => this._setClip(clipActor));
+      // Legacy OSDs wrap an actor while modern OSDs are actors themselves
+      let osdActor = osd.actor || (osd instanceof Clutter.Actor ? osd : null);
+      const scheduleReclip = () => this._scheduleReclip(clipActor, true);
+      if (osdActor && osdActor !== clipActor) {
+         this._signalManager.connect(osdActor, "notify::allocation", scheduleReclip);
       }
-   
-      this._signalManager.connect(clipActor, "notify::allocation", () => this._setClip(clipActor));
+      this._signalManager.connect(clipActor, "notify::allocation", scheduleReclip);
    
       this._setClip(clipActor);
       this._scheduleReclip(clipActor, true);
@@ -1835,14 +1836,16 @@ class BlurOSD extends BlurBase {
    }
 
    _setClip(actor) {
-      if (!actor || !this._background) return;
+      if (!actor || !this._background || !actor.get_stage()) return;
 
-      let [x, y] = actor.get_transformed_position();
-      let [scale_x, scale_y] = actor.get_scale(); 
-      let width = actor.width * scale_x;
-      let height = actor.height * scale_y;
-
-      this._applyBackgroundClip(this._background, this._viewport, x, y, width, height);
+      // Use the allocated bounds: width/height may return the preferred
+      // size, including theme margins, while a relayout is pending
+      const box = Cinnamon.util_get_transformed_allocation(actor);
+      this._applyBackgroundClip(
+         this._background, this._viewport,
+         box.x1, box.y1,
+         box.x2 - box.x1, box.y2 - box.y1
+      );
    }
 
    destroy() {
