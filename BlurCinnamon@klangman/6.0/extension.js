@@ -75,6 +75,11 @@ const BLUR_EFFECT_NAME = "blur";
 const DESAT_EFFECT_NAME = "desat";
 const CORNER_EFFECT_NAME = "corner";
 
+// Detect workspace API availability once when the module is loaded, used by "windowIsOnWorkspace"
+const HAS_LOCATED_ON_WORKSPACE = typeof Meta.Window.prototype.located_on_workspace === 'function';
+const HAS_IS_ON_ALL_WORKSPACES = typeof Meta.Window.prototype.is_on_all_workspaces === 'function';
+const HAS_GET_WORKSPACE = typeof Meta.Window.prototype.get_workspace === 'function';
+
 let originalAnimateOverview;
 let originalAnimateExpo;
 let originalShowAppSwitcher3D;
@@ -522,33 +527,34 @@ function destroyAllNonDesktopClones(background) {
 }
 
 function windowIsOnWorkspace(metaWindow, workspace) {
-    if (!metaWindow || !workspace)
-        return false;
-    
-    if (typeof metaWindow.located_on_workspace === 'function') {
-        try {
-            return metaWindow.located_on_workspace(workspace);
-        } catch (e) {
-            // Fall through to compatibility checks
-        }
+  if (!metaWindow || !workspace)
+    return false;
+
+  if (HAS_LOCATED_ON_WORKSPACE) {
+      try {
+          return metaWindow.located_on_workspace(workspace);
+      } catch (e) {
+         // Fall through to compatibility checks
+      }
+  }
+
+  if (HAS_IS_ON_ALL_WORKSPACES) {
+    try {
+      if (metaWindow.is_on_all_workspaces())
+        return true;
+    } catch (e) {
     }
-  
-    if (typeof metaWindow.is_on_all_workspaces === 'function') {
-        try {
-            if (metaWindow.is_on_all_workspaces())
-                return true;
-        } catch (e) {
-        }
+  }
+
+  if (HAS_GET_WORKSPACE) {
+    try {
+      return metaWindow.get_workspace() === workspace;
+    } catch (e) {
     }
-  
-    if (typeof metaWindow.get_workspace === 'function') {
-        try {
-            return metaWindow.get_workspace() === workspace;
-        } catch (e) {
-        }
-    }
-    // Return true to prevent the window from being excluded on an unsupported Cinnamon/Muffin version.
-    return true;
+  }
+
+  // Avoid excluding windows on unsupported Cinnamon/Muffin versions
+  return true;
 }
 
 // This function just schedules an update to the background clones.
