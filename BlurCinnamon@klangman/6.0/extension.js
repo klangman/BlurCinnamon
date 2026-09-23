@@ -1773,7 +1773,7 @@ class BlurBase {
          effect = this._getDesatEffect(viewport);
          if (effect) {
             viewport.remove_effect(effect);
-            this._releaseDesaaturateEffect(effect);
+            this._releaseDesaturateEffect(effect);
          }
          effect = this._getBlurEffect(viewport);
          if (effect) {
@@ -1959,9 +1959,10 @@ class BlurOSD extends BlurBase {
          // source changes when switching workspaces
          this._scheduleReclip(clipActor, true);
 
-         if (isDynamicBlurType(blurType) && cloneManager) {
+         if (isDynamicBlurType(this.blurType) && cloneManager) {
             cloneManager.refreshBackground(this._background, true);
          }
+         return;
       }
 
       // Stale marker from a background that has already gone away
