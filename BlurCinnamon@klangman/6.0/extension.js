@@ -1959,7 +1959,7 @@ class BlurOSD extends BlurBase {
          // source changes when switching workspaces
          this._scheduleReclip(clipActor, true);
 
-         if (isDynamicBlurType(this.blurType) && cloneManager) {
+         if (isDynamicBlurType(this._blurType) && cloneManager) {
             cloneManager.refreshBackground(this._background, true);
          }
          return;
