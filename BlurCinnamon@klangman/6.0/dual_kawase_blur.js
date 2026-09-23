@@ -28,6 +28,45 @@ const DEFAULT_PARAMS = {
     pass_index: 0, total_passes: 1
 };
 
+// Pools of released pyramid sub-effects, kept separate by role (downsample vs. upsample) since
+// each instance's shader is fixed at construction time (chosen once from pass_index/total_passes
+// in the constructor and never reloaded afterward) - a downsample-shader instance can only ever
+// be reused for another downsample-role slot, never for an upsample one, and vice versa. Reusing
+// one avoids the compiled-shader-per-instance cost of constructing a fresh pyramid on every
+// blur/unblur cycle, which is what originally drove the "over 50 separate shaders" warnings.
+const DOWNSAMPLE_EFFECT_CACHE = [];
+const UPSAMPLE_EFFECT_CACHE = [];
+
+function _acquireSubEffect(is_downsample, params) {
+    let cache = is_downsample ? DOWNSAMPLE_EFFECT_CACHE : UPSAMPLE_EFFECT_CACHE;
+    if (cache.length > 0) {
+        let effect = cache.pop();
+        // Set pass_index/total_passes before anything uniform-dependent: _update_uniforms()
+        // (forced below) depends on both, and their own setters have no side effects, so order
+        // relative to radius/brightness/width/height doesn't matter for those two specifically.
+        effect.pass_index = params.pass_index;
+        effect.total_passes = params.total_passes;
+        effect.radius = params.radius;
+        effect.brightness = params.brightness;
+        effect.width = params.width;
+        effect.height = params.height;
+        // Force a recompute of 'offset' regardless of whether any of the property setters above
+        // actually changed a value - their own early-exit only re-runs _update_uniforms() when
+        // the *value* changes, but 'offset' also depends on pass_index/total_passes, which will
+        // essentially always differ from this instance's previous life in the pyramid.
+        const scale_factor = St.ThemeContext.get_for_stage(global.stage).scale_factor;
+        effect._update_uniforms(scale_factor);
+        effect.set_enabled(effect.radius > 0.);
+        return effect;
+    }
+    return new DualFilteringBlurEffect(params);
+}
+
+function _releaseSubEffect(effect) {
+    let is_downsample = (effect.pass_index <= Math.floor(effect.total_passes / 2));
+    (is_downsample ? DOWNSAMPLE_EFFECT_CACHE : UPSAMPLE_EFFECT_CACHE).push(effect);
+}
+
 var DualFilteringBlurEffect =
     new GObject.registerClass({
         GTypeName: `DualFilteringBlurEffect_${Math.floor(Math.random() * 100000) + 1}`,
@@ -293,11 +332,11 @@ var DualFilteringBlurEffect =
                         } catch (e) {
                             // Ignores silently if the actor has already been cleaned up by the Cinnamon engine
                         }
-                        // Forces the immediate destruction of the GObject
+                        // Release into the shared pool instead of destroying it, so some other
+                        // pyramid can reuse its already-compiled shader later instead of
+                        // triggering a fresh compile.
                         try {
-                           if (typeof effect.run_dispose === 'function') {
-                              effect.run_dispose();
-                           }
+                            _releaseSubEffect(effect);
                         } catch (e) {
                             // Ignores silently if the actor has already been cleaned up by the Cinnamon engine
                         }
@@ -310,8 +349,10 @@ var DualFilteringBlurEffect =
 
                     this.total_passes = total_depth;
 
+                    let midpoint = Math.floor(total_depth / 2);
                     for (let i = 1; i < total_depth; i++) {
-                        let new_pass = new DualFilteringBlurEffect({ 
+                        let is_downsample = (i <= midpoint);
+                        let new_pass = _acquireSubEffect(is_downsample, {
                             radius: this.radius, 
                             brightness: this.brightness, 
                             width: this.width, 

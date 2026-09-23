@@ -15,6 +15,28 @@ const DEFAULT_PARAMS = {
     width: 0, height: 0, direction: 0, chained_effect: null
 };
 
+// Pool of released direction=1 "chained" effects, keyed by nothing in particular - any one of
+// them can serve any future top-level (direction=0) instance's chained partner, since they're
+// all identical in shape and just need their radius/brightness/width/height refreshed. Reusing
+// one avoids the compiled-shader-per-instance cost of constructing a fresh GaussianBlurEffect.
+const CHAINED_EFFECT_CACHE = [];
+
+function _acquireChainedEffect(params) {
+    if (CHAINED_EFFECT_CACHE.length > 0) {
+        let effect = CHAINED_EFFECT_CACHE.pop();
+        effect.radius = params.radius;
+        effect.brightness = params.brightness;
+        effect.width = params.width;
+        effect.height = params.height;
+        return effect;
+    }
+    return new GaussianBlurEffect({ ...params, direction: 1 });
+}
+
+function _releaseChainedEffect(effect) {
+    CHAINED_EFFECT_CACHE.push(effect);
+}
+
 
 const GaussianBlurEffect =
     new GObject.registerClass({
@@ -233,24 +255,42 @@ const GaussianBlurEffect =
             super.vfunc_set_actor(actor);
 
             if (this.direction == 0) {
-                // Clear the old effect, if it exists
                 if (this.chained_effect) {
+                    // Detach the existing chained_effect from its old actor first.
                     try {
                         let current_actor = this.chained_effect.get_actor();
                         if (current_actor) current_actor.remove_effect(this.chained_effect);
                     } catch (e) {}
 
-                    this.chained_effect = null; 
-                }
-
-                // If there is a valid actor, recreate the effect and add it
-                if (actor !== null && actor !== undefined) {
-                    this.chained_effect = new GaussianBlurEffect({
+                    if (actor !== null && actor !== undefined) {
+                        // Reuse the SAME chained_effect instance rather than destroying it and
+                        // constructing a fresh one - refresh its properties (going through the
+                        // normal setters keeps its own uniforms in sync) and just move it to the
+                        // new actor. This is what avoids recompiling its shader program on every
+                        // reattachment (e.g. every time a cached top-level effect - see
+                        // BlurBase's effect caches in extension.js - gets acquired and reattached
+                        // to a different window's actor).
+                        this.chained_effect.radius = this.radius;
+                        this.chained_effect.brightness = this.brightness;
+                        this.chained_effect.width = this.width;
+                        this.chained_effect.height = this.height;
+                        actor.add_effect(this.chained_effect);
+                    } else {
+                        // Real teardown (not just a reattachment) - release the chained_effect
+                        // into the shared pool instead of discarding it, so some other
+                        // GaussianBlurEffect can reuse its already-compiled shader later instead
+                        // of triggering a fresh compile.
+                        _releaseChainedEffect(this.chained_effect);
+                        this.chained_effect = null;
+                    }
+                } else if (actor !== null && actor !== undefined) {
+                    // First attach - acquire one (from the pool if available, otherwise a fresh
+                    // instance) rather than always constructing new.
+                    this.chained_effect = _acquireChainedEffect({
                         radius: this.radius,
                         brightness: this.brightness,
                         width: this.width,
-                        height: this.height,
-                        direction: 1
+                        height: this.height
                     });
                     actor.add_effect(this.chained_effect);
                 }
