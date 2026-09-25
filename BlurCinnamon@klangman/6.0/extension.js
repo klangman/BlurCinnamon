@@ -3080,7 +3080,7 @@ class BlurPopupMenus extends BlurBase {
       for (let i=0 ; i < children.length ; i++ ) {
          let child = children[i];
          if (child._blurCinnamonData === undefined) {
-            if (child instanceof St.Entry) {
+            if (child instanceof St.Entry && !(child.get_parent() instanceof St.BoxLayout && child.get_parent().get_parent() instanceof St.ScrollView)) {
                debugMsg( "found new entry accent actor" );
                this._applyActorStyle(child, this._accentColor);
                menu._blurCinnamonAccentActors.push(child);
@@ -3095,6 +3095,12 @@ class BlurPopupMenus extends BlurBase {
                let name = child.get_name();
                if (name && name.indexOf("notification") !== -1) {
                   debugMsg( "found new notification accent actor" );
+                  this._applyActorStyle(child, this._accentColor);
+                  menu._blurCinnamonAccentActors.push(child);
+               }
+            } else if (child instanceof St.ScrollView) {
+               let name = child.get_name();
+               if (name && name === "menu-search-entry") { // Used by PanelTranslator
                   this._applyActorStyle(child, this._accentColor);
                   menu._blurCinnamonAccentActors.push(child);
                }

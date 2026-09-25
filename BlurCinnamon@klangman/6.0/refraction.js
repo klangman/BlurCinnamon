@@ -330,11 +330,7 @@ const RefractionEffect = new GObject.registerClass({
                 this.set_shader_source(this._source);
 
             this._theme_context = St.ThemeContext.get_for_stage(global.stage);
-            this._theme_context.connectObject(
-                'notify::scale-factor',
-                _ => this.update_scaled_uniforms(),
-                this
-            );
+            this._theme_context.connect( 'notify::scale-factor', () => this.update_scaled_uniforms() );
         }
 
         static get default_params() {
