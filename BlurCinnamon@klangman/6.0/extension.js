@@ -2010,8 +2010,7 @@ class BlurOSD extends BlurBase {
       if (this._viewport) this._viewport._blurCinnamonName = "OsdWindow";
       osd._blurCinnamonBackground = this._background;
 
-      if (isDynamicBlurType()) {
-
+      if (isDynamicBlurType(blurType)) {
          this._createDynamicEffect(this._background);
       }
 
