@@ -365,6 +365,16 @@ const RefractionEffect = new GObject.registerClass({
             }
         }
 
+        // Conservative estimate of the furthest distance (in pixels) from a pixel that the shader samples: the
+        // blur pass's ~3 sigma (as in gaussian_blur.js, sigma = blur_radius / 2) plus the lens displacement,
+        // which is assumed to be no more than edge_size. (Not verified against refraction.glsl's displacement math.)
+        get sample_reach() {
+            const scale_factor = St.ThemeContext.get_for_stage(global.stage).scale_factor;
+            const blur_radius = Math.min(this._blur_radius, MAX_BLUR_RADIUS) * scale_factor;
+            const blur_reach = (blur_radius > 0.01) ? 2 * Math.ceil(1.5 * Math.max(0.1, blur_radius * 0.5)) : 0;
+            return blur_reach + this.edge_size * scale_factor;
+        }
+
         get blur_radius() {
             return this._blur_radius;
         }

@@ -22,6 +22,16 @@ function _desiredPassCount(radius) {
     return 7;
 }
 
+// Base sampling offset (per unit of blur radius) for a pyramid of the given depth. The fewer the
+// passes, the greater the initial spacing required to maintain the linearity of the blur effect.
+function _baseOffsetMultiplier(total_passes) {
+    switch (total_passes) {
+        case 3:  return 0.18;
+        case 5:  return 0.09;
+        default: return 0.08;
+    }
+}
+
 const DEFAULT_PARAMS = {
     radius: 0, brightness: 1,
     width: 0, height: 0, 
@@ -201,6 +211,27 @@ var DualFilteringBlurEffect =
             }
         }
 
+        // The furthest distance (in pixels, along one axis) from a pixel that the whole pyramid can sample.
+        // Every pass runs at full resolution, so the passes' reaches simply add up: a downsample pass
+        // samples out to 0.5 * offset (its diagonal taps) and an upsample pass out to 1.5 * offset (its
+        // cross taps), where the offsets follow _update_uniforms().
+        get sample_reach() {
+            if (this.radius <= 0)
+                return 0;
+            const scale_factor = St.ThemeContext.get_for_stage(global.stage).scale_factor;
+            const total = _desiredPassCount(this.radius);
+            const midpoint = Math.floor(total / 2);
+            const base = Math.min(this.radius, 100.0) * _baseOffsetMultiplier(total) * scale_factor;
+            let reach = 0;
+            for (let i = 0; i < total; i++) {
+                if (i <= midpoint)
+                    reach += 0.5 * base * Math.pow(2.0, i);
+                else
+                    reach += 1.5 * base * Math.pow(2.0, (total - 1) - i);
+            }
+            return reach;
+        }
+
         get brightness() {
             return this._brightness;
         }
@@ -267,12 +298,7 @@ var DualFilteringBlurEffect =
             let effective_radius = Math.min(this.radius, 100.0); 
             // The fewer the passes,
             // the greater the initial spacing required to maintain the linearity of the blur effect
-            let multiplier;
-            switch (this.total_passes) {
-                case 3:  multiplier = 0.18; break;
-                case 5:  multiplier = 0.09; break;
-                default: multiplier = 0.08; break;
-            }
+            let multiplier = _baseOffsetMultiplier(this.total_passes);
             let base_offset = effective_radius * multiplier;
 
             // Calculate spatial spread mathematically

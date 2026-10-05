@@ -163,6 +163,15 @@ const GaussianBlurEffect =
             }
         }
 
+        // The furthest distance (in pixels, along one axis) from a pixel that gaussian_blur.glsl samples:
+        // the loop takes 2*ceil(1.5*sigma) steps out from the centre, i.e. about 3 sigma.
+        get sample_reach() {
+            if (this._radius <= 0)
+                return 0;
+            const scale_factor = St.ThemeContext.get_for_stage(global.stage).scale_factor;
+            return 2 * Math.ceil(1.5 * (this._radius * scale_factor / 2));
+        }
+
         get brightness() {
             return this._brightness;
         }

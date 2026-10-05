@@ -162,6 +162,16 @@ const MonteCarloBlurEffect =
             }
         }
 
+        // The furthest distance (in pixels, in any direction) from a pixel that monte_carlo_blur.glsl samples:
+        // the shader offsets each sample by rv.x * dir * (16 * radius), with |rv.x| <= 1 and dir a unit vector.
+        // (this._radius is already the UI radius / 10 here.)
+        get sample_reach() {
+            if (this._radius <= 0 || this._iterations <= 0)
+                return 0;
+            const scale_factor = St.ThemeContext.get_for_stage(global.stage).scale_factor;
+            return 16 * this._radius * scale_factor;
+        }
+
         get brightness() {
             return this._brightness;
         }

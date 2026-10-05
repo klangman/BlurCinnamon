@@ -44,6 +44,7 @@ const Cinnamon        = imports.gi.Cinnamon;
 const DeskletManager  = imports.ui.deskletManager;
 const OsdWindow       = imports.ui.osdWindow;
 const GLib            = imports.gi.GLib;
+const GObject         = imports.gi.GObject;
 
 // For Plank support (reading X11 property)
 imports.gi.versions.Gdk = '3.0';
@@ -75,6 +76,23 @@ const AUTOHIDE_ANIMATION_TIME = 0.2;  // This is a copy of "Panel.AUTOHIDE_ANIMA
 const BLUR_EFFECT_NAME = "blur";
 const DESAT_EFFECT_NAME = "desat";
 const CORNER_EFFECT_NAME = "corner";
+const NOCULL_EFFECT_NAME = "blurcinnamon-nocull";
+
+// An effect that does nothing at all. Muffin's window culling (meta-cullable.c) skips any window actor
+// that has an enabled effect: such a window is not treated as hiding the windows underneath it, so
+// those windows are painted in full rather than only where they are visible on screen. Our window
+// clones paint through the same culled window actors, so without this the parts of the windows
+// underneath that are hidden by a title-bar-blurred window's opaque body come out empty, and the
+// blur's sampling margin below the title bar picks up bare wallpaper. A plain Clutter.Effect has no
+// offscreen pass, so attaching it costs nothing beyond the extra overdraw of the windows underneath.
+const NoCullEffect = GObject.registerClass({
+   GTypeName: `BlurCinnamonNoCullEffect_${Math.floor(Math.random() * 100000) + 1}`
+}, class NoCullEffect extends Clutter.Effect {});
+
+// Inline style BlurPanels appends to a panel's own inline style so the theme background doesn't hide the blurred background
+const PANEL_TRANSPARENT_STYLE = "border-image: none;  border-color: transparent;  box-shadow: 0 0 transparent; " +
+                                "background-gradient-direction: vertical; background-gradient-start: transparent; " +
+                                "background-gradient-end: transparent;    background: transparent; ";
 
 // Detect workspace API availability once when the module is loaded, used by "windowIsOnWorkspace"
 const HAS_LOCATED_ON_WORKSPACE = typeof Meta.Window.prototype.located_on_workspace === 'function';
@@ -405,11 +423,42 @@ function isAbove(a, b) {
    return windows[0] === b;
 }
 
+// The blur shaders clamp their sample position to 3 px inside their texture (see getTexture() in
+// gaussian_blur.glsl and sampleBoundary() in dual_filtering_*.glsl), so the outermost 3 px of a
+// viewport's FBO are never real content.
+const VIEWPORT_EDGE_PAD = 3;
+
+// How many pixels a wrapped viewport must extend past the visible rect, on every side, so that the blur
+// effect always has real, correctly cloned content to sample for every visible pixel. Each blur effect
+// reports its own maximum sampling distance through sample_reach (see the .js file of each effect).
+function getViewportMargin(viewport) {
+   let effect = viewport.get_effect(BLUR_EFFECT_NAME);
+   if (!effect || !effect.sample_reach)
+      return 0;
+   return Math.ceil(effect.sample_reach) + VIEWPORT_EDGE_PAD;
+}
+
+// The visible rect grown by margin on every side, as [x, y, width, height]. It is never grown past the
+// stage: there is nothing out there to sample, so the shaders' own edge clamp still applies at a screen
+// edge exactly as it did before, and we don't pay for FBO area that can't contain anything. The result
+// always contains the visible rect, even when the visible rect itself sticks out of the stage.
+function getExpandedRect(x, y, width, height, margin) {
+   let x1 = Math.min(x, Math.max(0, x - margin));
+   let y1 = Math.min(y, Math.max(0, y - margin));
+   let x2 = Math.max(x + width,  Math.min(global.stage.width,  x + width  + margin));
+   let y2 = Math.max(y + height, Math.min(global.stage.height, y + height + margin));
+   return [x1, y1, x2 - x1, y2 - y1];
+}
+
 function getBackgroundClip(background) {
-   // When a background has been wrapped in a small "viewport" actor (see
+   // When a background has been wrapped in a "viewport" actor (see
    // BlurBase._createBackgroundAndEffects's useViewport), the corner/blur/desaturate effects live on
-   // the viewport instead, but background itself still carries a plain Clutter clip matching the same
-   // visible rect (see _setClip()), so the fallback below still reads the right value either way.
+   // the viewport instead, and background itself carries a plain Clutter clip matching the viewport's
+   // *expanded* rect (the visible rect plus the blur's sampling margin - see _applyBackgroundClip()).
+   // That expanded rect is what CloneManager must use to decide which windows need cloning, since the
+   // blur samples the whole margin, not just the visible rect.
+   if (background._blurCinnamonViewport)
+      return background.get_clip();
    let effect = background.get_effect(CORNER_EFFECT_NAME);
    let clip;
    if (effect) {
@@ -496,10 +545,124 @@ function createWindowClone(metaWindow, background, desktopOnly) {
       if (settings.windowArtifactMitigation && owner) {
          windowClone._paintEventId = windowClone.connect( "paint", (actor) => clonePainted(background, actor));
       }
+      // Follow the window actor's opacity and any Burn-My-Windows effect container (see
+      // syncWindowCloneWithSource()). Done after the clone is in the group, since an effect
+      // clone gets inserted right above it.
+      windowClone._blurCinnamonSource = compositor;
+      windowClone._blurCinnamonOpacityId = compositor.connect("notify::opacity", () => syncWindowCloneWithSource(background, windowClone));
+      syncWindowCloneWithSource(background, windowClone);
       return windowClone;
    } else {
       debugMsg( "Not creating an unnecessary clone." );
    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Burn-My-Windows (CinnamonBurnMyWindows@klangman) interop
+//
+// A Clutter.Clone ignores its source's opacity (ClutterClone overrides the source's paint opacity
+// with its own), and BMW effects that need more room than the window (Apparition, Broken Glass,
+// Doom, Matrix, Snap, T-Rex) or draw on several layers (Aperture Panels, Morph, Wormhole) don't
+// draw on the window actor at all: they set actor.opacity = 0 and render a clone of the window,
+// with the shader, on a separate actor in Main.uiGroup (above global.window_group). Without the
+// code below, every blurred background keeps showing the plain, un-animated window for the whole
+// animation.
+//
+// BMW's contract (see _setupEffect() and the effects' createLayers()):
+//   * actor._bmwEffectContainer is set BEFORE actor.opacity drops to 0 and cleared BEFORE it is
+//     restored to 255, so a notify::opacity handler always sees the right container.
+//   * The container only ever holds a clone of the animating window itself (never clones of other
+//     windows), so cloning it can't recurse any more than cloning the window already could.
+//   * Effects that draw directly on the window actor (most of them) need nothing: the offscreen
+//     shader paints its FBO with the current modelview, so it renders correctly through clones.
+// ---------------------------------------------------------------------------------------------
+
+// Stage position of an actor, from the x/y properties of it and its ancestors. BMW containers are
+// never scaled or rotated, and x/y (unlike the allocation) are up to date as soon as BMW moves
+// them from its timeline, so the clone never lags a frame behind.
+function _stagePosition(actor) {
+   let x = 0, y = 0;
+   for (let a = actor ; a && a !== global.stage ; a = a.get_parent()) {
+      x += a.x;
+      y += a.y;
+   }
+   return [x, y];
+}
+
+function _positionEffectClone(windowClone) {
+   let fx = windowClone._blurCinnamonEffectClone;
+   if (fx && windowClone._blurCinnamonEffectSource) {
+      let [x, y] = _stagePosition(windowClone._blurCinnamonEffectSource);
+      fx.set_position(Math.round(x), Math.round(y));
+   }
+}
+
+function _destroyEffectClone(windowClone) {
+   let fx = windowClone._blurCinnamonEffectClone;
+   if (!fx) return;
+   for (let [obj, id] of windowClone._blurCinnamonEffectHandlers) {
+      try {
+         obj.disconnect(id);
+      } catch (e) {
+         // Already destroyed together with the BMW container.
+      }
+   }
+   delete windowClone._blurCinnamonEffectHandlers;
+   delete windowClone._blurCinnamonEffectSource;
+   delete windowClone._blurCinnamonEffectClone;
+   let parent = fx.get_parent();
+   if (parent) parent.remove_child(fx);
+   fx.destroy();
+}
+
+// Keep the effect clone directly above its window clone (call after restacking windowClone).
+function restackEffectClone(windowClone) {
+   let fx = windowClone._blurCinnamonEffectClone;
+   let parent = windowClone.get_parent();
+   if (fx && parent && fx.get_parent() === parent) {
+      parent.set_child_above_sibling(fx, windowClone);
+   }
+}
+
+// Make windowClone look like its source window actor right now: same opacity, and while a BMW
+// effect runs elsewhere, a clone of the BMW effect container stacked right above it.
+function syncWindowCloneWithSource(background, windowClone) {
+   let source = windowClone._blurCinnamonSource;
+   if (!source) return;
+   windowClone.opacity = source.opacity;
+
+   let container = source._bmwEffectContainer || null;
+   // The BMW container is a plain Clutter.Actor on the stage. Never clone one that contains this
+   // background (impossible with the current BMW code, but it would recurse forever if it did).
+   if (container && (container.contains(background) || !container.get_stage())) {
+      container = null;
+   }
+   if (container === (windowClone._blurCinnamonEffectSource || null)) {
+      return;
+   }
+   _destroyEffectClone(windowClone);
+   if (!container) {
+      return;
+   }
+   let parent = windowClone.get_parent();
+   if (!parent) {
+      return;
+   }
+   let fx = new Clutter.Clone({source: container, reactive: false});
+   parent.insert_child_above(fx, windowClone);
+   windowClone._blurCinnamonEffectClone = fx;
+   windowClone._blurCinnamonEffectSource = container;
+   // BMW moves the canvas (unscaled-canvas effects) or the layer group holding the container
+   // (layered effects) once a frame while a window opens; follow any of them.
+   let handlers = [];
+   for (let a = container ; a && a !== global.stage ; a = a.get_parent()) {
+      handlers.push([a, a.connect("notify::x", () => _positionEffectClone(windowClone))]);
+      handlers.push([a, a.connect("notify::y", () => _positionEffectClone(windowClone))]);
+   }
+   handlers.push([container, container.connect("destroy", () => _destroyEffectClone(windowClone))]);
+   windowClone._blurCinnamonEffectHandlers = handlers;
+   _positionEffectClone(windowClone);
+   debugMsg( `Cloned the Burn-My-Windows effect of "${windowClone._metaWindow ? windowClone._metaWindow.get_title() : "?"}" into background ${background._blurCinnamonName}` );
 }
 
 // Destroy a clone, but does not remove the clone reference
@@ -516,6 +679,16 @@ function _destroyWindowClone(windowClone, background) {
       windowClone.disconnect( windowClone._paintEventId );
       delete windowClone._paintEventId;
    }
+   if (windowClone._blurCinnamonOpacityId) {
+      try {
+         windowClone._blurCinnamonSource.disconnect(windowClone._blurCinnamonOpacityId);
+      } catch (e) {
+         // The window actor is already gone (closed window), its handlers went with it.
+      }
+      delete windowClone._blurCinnamonOpacityId;
+   }
+   delete windowClone._blurCinnamonSource;
+   _destroyEffectClone(windowClone);
    background._blurCinnamonGroup.remove_child(windowClone);
    windowClone.destroy();
    cloneCount--;
@@ -569,6 +742,7 @@ function applyNewCloneList(background, windowsToClone, desktopOnly) {
             } else {
                background._blurCinnamonGroup.insert_child_below(clones[idx], background._blurCinnamonDimmer);
             }
+            restackEffectClone(clones[idx]);
          } else {
             createWindowClone(metaWindow, background, desktopOnly);
          }
@@ -990,6 +1164,7 @@ class CloneManager {
                         // This background is for a non-window element (i.e panel, notification, tooltip etc), so this clone now needs to be on top of all other clones
                         debugMsg( "Moving clone to top due to focus change" );
                         group.set_child_below_sibling(windowClone, dimmer);
+                        restackEffectClone(windowClone);
                      }
                      // There can only be one clone of a window in any given background, so we can break once we find a clone of the focused window
                      break;
@@ -1304,8 +1479,12 @@ class BlurBase {
       }
       if (saturation < 100)
          desatEffect = this._aquireDesaturateEffect( (100-saturation)/100 );
-      if (cornerRadius>0)
-         cornerEffect = this._aquireCornerEffect(cornerRadius, top, bottom);
+      // A wrapped viewport always needs a corner effect, even with no rounding (radius 0): the viewport is
+      // sized to the *expanded* rect (visible rect + the blur's sampling margin - see _applyBackgroundClip)
+      // and its corner effect's clip is what cuts that margin away again. Without one, the viewport would
+      // paint its blurred and tinted content over the whole margin, outside the visible bounds.
+      if (cornerRadius>0 || useViewport)
+         cornerEffect = this._aquireCornerEffect(Math.max(0, cornerRadius), top, bottom);
 
       // Create the background actor where the effects will be applied
       if (!Meta.is_wayland_compositor() && blurType !== BlurType.Transparent) {
@@ -1373,18 +1552,16 @@ class BlurBase {
          effectTarget.add_effect_with_name( BLUR_EFFECT_NAME, blurEffect );
       this._syncLiquidGlassCornerRadius(effectTarget);
 
-      // When wrapped, viewport (fully opaque except for the transparent rounded-corner cutouts the
-      // corner effect just applied) sits directly above background and is assumed to fully hide
-      // background's own paint. That's true everywhere except those cutouts: background only gets a
-      // plain rectangular clip (see _setClip), so without a matching mask of its own, its square,
-      // un-blurred corners show straight through the transparent notches viewport's rounding leaves
-      // behind. Create a second CornerEffect instance (same radius/corners_top/corners_bottom) and add
-      // it to background itself so its corners get masked to the same shape - _setClip() keeps its clip
-      // in sync with viewport's.
-      if (useViewport && cornerRadius > 0) {
-         let backgroundCornerEffect = new CornerEffect.CornerEffect( metaData.uuid, {radius: cornerRadius, corners_top: top, corners_bottom: bottom} );
-         background.add_effect_with_name( CORNER_EFFECT_NAME, backgroundCornerEffect );
-      }
+      // When wrapped, viewport paints the blurred result and background is only kept mapped and shown as
+      // the source of viewport's Clutter.Clone. background's clip is now the *expanded* viewport rect
+      // (the visible rect plus the blur's sampling margin - see _applyBackgroundClip), so painting it
+      // directly would show a raw, un-blurred (and tinted) ring around the visible rect. A Clutter.Clone
+      // paints its source at the clone's own opacity, ignoring the source's, so making background itself
+      // fully transparent hides that direct paint without changing what the clone samples. (This replaces
+      // the mirrored CornerEffect background used to carry to hide its own square corners: none of
+      // background is visible directly any more.)
+      if (viewport)
+         background.set_opacity(0);
 
       background.hide();
       if (viewport) viewport.hide();
@@ -1617,14 +1794,18 @@ class BlurBase {
 
       let dimmerColor = this._getColor( blendColor, opacity );
       background._blurCinnamonDimmer.set_background_color(dimmerColor);
+
+      // The blur's sampling reach - and so viewport's margin - depends on the blur type and radius, so
+      // re-derive the expanded rect now (consumers of _applyBackgroundClip only; windows do the same
+      // from BlurApplications.updateEffects()).
+      if (viewport._blurCinnamonVisibleRect)
+         this._applyBackgroundClip(background, viewport, ...viewport._blurCinnamonVisibleRect);
    }
 
-   // Refreshes corner_radius/top/bottom on whichever actor(s) actually carry a corner effect for
-   // this background - the wrapped viewport's real one, and (when wrapped) background's own
-   // mirrored one (see _createBackgroundAndEffects) - so both stay in sync with settings changes
-   // instead of the mirrored one drifting back to square. Safe to call unconditionally; a no-op
-   // half when viewport is null (nothing to mirror) or when corner_radius is 0 and no corner effect
-   // exists yet (_updateCornerRadius already handles that).
+   // Refreshes corner_radius/top/bottom on whichever actor carries the corner effect for this
+   // background: viewport when wrapped (see _createBackgroundAndEffects's useViewport), background
+   // otherwise. Safe to call unconditionally; _updateCornerRadius already handles a corner_radius of 0
+   // with no corner effect yet.
    _updateViewportCornerRadius(background, viewport, corner_radius, top, bottom) {
       let effectsActor = viewport || background;
       let cornerEffect = this._getCornerEffect(effectsActor);
@@ -1633,14 +1814,6 @@ class BlurBase {
          cornerEffect.corners_bottom = bottom;
       }
       this._updateCornerRadius(effectsActor, corner_radius, top, bottom);
-      if (viewport) {
-         let backgroundCornerEffect = this._getCornerEffect(background);
-         if (backgroundCornerEffect) {
-            backgroundCornerEffect.corners_top = top;
-            backgroundCornerEffect.corners_bottom = bottom;
-         }
-         this._updateCornerRadius(background, corner_radius, top, bottom);
-      }
    }
 
    // Generic viewport-aware clip/position helper for every consumer besides windows (which use
@@ -1652,29 +1825,37 @@ class BlurBase {
    // BlurApplications._setClip needs compositor.get_transformed_position().
    //
    // x/y/width/height is the target visible rect, in that same global/stage coordinate space.
-   // background always gets a plain rectangular set_clip() to that rect (redundant when a corner
-   // effect already clips it via its own shader-side `clip` uniform, but harmless. When viewport
-   // is non-null (background was wrapped - see _createBackgroundAndEffects's useViewport), viewport
-   // is sized/positioned to the same rect, its scene clone offset to crop the matching sub-region of
-   // background, and viewport's own corner effect (if any) is clipped to the same inset formula for
-   // BlurApplications uses. background's own *mirrored* corner effect (see
-   // _createBackgroundAndEffects) is kept in sync either way, since _getCornerEffect(background)
-   // finds it whether or not background is wrapped.
+   // When viewport is null (background isn't wrapped - see _createBackgroundAndEffects's useViewport)
+   // background alone is clipped to that rect, and masked by its own corner effect if it has one.
+   // When viewport is non-null, viewport and background are instead sized/clipped to the *expanded*
+   // rect: the visible rect grown by the blur's sampling margin (see getViewportMargin()), so the blur
+   // always has real, correctly cloned content to sample right up to the visible edge. viewport's scene
+   // clone is offset to crop the matching sub-region of background, and viewport's own corner effect
+   // is clipped to the visible rect, which also cuts the margin away again (the corner shader makes
+   // everything outside its clip transparent).
    _applyBackgroundClip(background, viewport, x, y, width, height) {
       width = Math.max(0, width);
       height = Math.max(0, height);
-      background.set_clip(x, y, width, height);
-      let backgroundCornerEffect = this._getCornerEffect(background);
-      if (backgroundCornerEffect) {
-         backgroundCornerEffect.clip = [x+2, y+2, Math.max(0, width-3), Math.max(0, height-3)];
-      }
       if (viewport) {
-         viewport.set_position(x, y);
-         viewport.set_size(width, height);
-         viewport._blurCinnamonSceneClone.set_position(-x, -y);
+         // Remember the visible rect so the margin can be re-derived if the blur radius/type changes
+         viewport._blurCinnamonVisibleRect = [x, y, width, height];
+         let margin = (width > 0 && height > 0) ? getViewportMargin(viewport) : 0;
+         let [ex, ey, ew, eh] = getExpandedRect(x, y, width, height, margin);
+         background.set_clip(ex, ey, ew, eh);
+         viewport.set_position(ex, ey);
+         viewport.set_size(ew, eh);
+         viewport._blurCinnamonSceneClone.set_position(-ex, -ey);
          let cornerEffect = this._getCornerEffect(viewport);
          if (cornerEffect) {
-            cornerEffect.clip = [2, 2, Math.max(0, width-3), Math.max(0, height-3)];
+            // Local to the viewport and exactly the visible rect (corner.glsl pads its own mapping by
+            // 3px, so no inset is needed - same as BlurApplications._setClip).
+            cornerEffect.clip = [x-ex, y-ey, width, height];
+         }
+      } else {
+         background.set_clip(x, y, width, height);
+         let backgroundCornerEffect = this._getCornerEffect(background);
+         if (backgroundCornerEffect) {
+            backgroundCornerEffect.clip = [x+2, y+2, Math.max(0, width-3), Math.max(0, height-3)];
          }
       }
       if (cloneManager)
@@ -2501,6 +2682,87 @@ class BlurPanels extends BlurBase {
       }
    }
 
+   // Some extensions (e.g. Centered Cinnamon Dock) restyle panel.actor by calling set_style() on it directly, which
+   // replaces the whole inline style including our transparency CSS. They also re-apply their own style whenever the
+   // panel's style changes, so re-appending our CSS from a style-changed handler would ping-pong forever. Instead we
+   // intercept set_style() calls on the panel actor, remember the caller's style as externalStyle, and always set
+   // externalStyle + our transparency CSS. St ignores a set_style() with an unchanged string (no style-changed is
+   // emitted), so both sides converge after one round.
+   _wrapPanelSetStyle(panel) {
+      let blurredPanel = panel.__blurredPanel;
+      if (!blurredPanel || blurredPanel.setStyleWrapped) return;
+      let actor = panel.actor;
+      blurredPanel.setStyleWrapped = true;
+      actor.set_style = (style) => {
+         if (panel.__blurredPanel === blurredPanel) {
+            blurredPanel.externalStyle = style || "";
+            this._applyPanelStyle(panel);
+         } else {
+            St.Widget.prototype.set_style.call(actor, style);
+         }
+      };
+   }
+
+   _unwrapPanelSetStyle(panel) {
+      let blurredPanel = panel.__blurredPanel;
+      if (blurredPanel && blurredPanel.setStyleWrapped) {
+         delete panel.actor.set_style;
+         blurredPanel.setStyleWrapped = false;
+      }
+   }
+
+   // Set the panel's inline style to externalStyle followed by our transparency CSS (when the panel should be transparent)
+   _applyPanelStyle(panel) {
+      let blurredPanel = panel.__blurredPanel;
+      if (!blurredPanel) return;
+      let style = blurredPanel.externalStyle || "";
+      if (settings.allowTransparentColorPanels && blurredPanel.transparent !== false) {
+         if (style.length && !style.trim().endsWith(";")) style += ";";
+         style += (style.length ? " " : "") + PANEL_TRANSPARENT_STYLE + (blurredPanel.customCSS || "");
+      }
+      St.Widget.prototype.set_style.call(panel.actor, style.length ? style : null);
+   }
+
+   // The panel's border radius can change at any time (e.g. Centered Cinnamon Dock rounds the panel's corners via its
+   // inline style), so keep the blurred background's corner radius in sync. style-changed fires often (the dock
+   // re-styles every frame while animating its width), so only touch the effects when the radius actually changed.
+   _syncPanelCornerRadius(panel, force=false) {
+      let blurredPanel = panel.__blurredPanel;
+      if (!blurredPanel || !blurredPanel.background || !panel.actor.get_stage()) return;
+      let themeNode = panel.actor.get_theme_node();
+      if (!themeNode) return;
+      // TODO: Need to be able to independently round all four corners, needs improvements to the corner effect code!
+      let topRadius = themeNode.get_border_radius(St.Corner.TOPLEFT);
+      let bottomRadius = themeNode.get_border_radius(St.Corner.BOTTOMLEFT);
+      if (!force && topRadius === blurredPanel.topRadius && bottomRadius === blurredPanel.bottomRadius) return;
+      blurredPanel.topRadius = topRadius;
+      blurredPanel.bottomRadius = bottomRadius;
+      this._updateViewportCornerRadius(blurredPanel.background, blurredPanel.viewport, Math.max(topRadius, bottomRadius), topRadius!==0, bottomRadius!==0);
+      // A newly created corner effect needs its clip region set
+      this._setClip(panel);
+   }
+
+   // Some extensions (e.g. Centered Cinnamon Dock's auto-hide) fade the panel out by animating its opacity and then
+   // scale it to zero, rather than calling Panel.disable(), so make the blurred background follow the panel's
+   // opacity and scale.
+   _syncPanelOpacity(panel) {
+      let blurredPanel = panel.__blurredPanel;
+      if (!blurredPanel || !blurredPanel.background) return;
+      let actor = panel.actor;
+      let opacity = (actor.scale_x === 0 || actor.scale_y === 0) ? 0 : actor.opacity;
+      if (blurredPanel.viewport) {
+         // When wrapped, background is never painted directly: it is clipped to the viewport's *expanded* rect
+         // (visible rect + the blur's sampling margin), so its own paint would show un-blurred, tinted content
+         // outside the panel. viewport paints background through a Clutter.Clone (which overrides the source's
+         // opacity with its own), so background stays at 0 (see _createBackgroundAndEffects) and only viewport
+         // follows the panel's opacity.
+         blurredPanel.viewport.opacity = opacity;
+         blurredPanel.background.opacity = 0;
+      } else {
+         blurredPanel.background.opacity = opacity;
+      }
+   }
+
    // Apply the blur effects to all the existing panels
    _blurExistingPanels() {
       let panels = Main.getPanels();
@@ -2534,17 +2796,16 @@ class BlurPanels extends BlurBase {
       }
       if (!blurredPanel) {
          // Save the current panel setting if we don't already have the data saved
-         blurredPanel = { original_color: actor.get_background_color(), original_style: actor.get_style(), original_class: actor.get_style_class_name(),
+         // externalStyle is the inline style last set on the panel by anyone other than us (see _wrapPanelSetStyle)
+         blurredPanel = { original_color: actor.get_background_color(), externalStyle: actor.get_style() || "", original_class: actor.get_style_class_name(),
                           original_pseudo_class: actor.get_style_pseudo_class(), background: null, effect: null, panel: panel };
          panel.__blurredPanel = blurredPanel;
          this._blurredPanels.push(blurredPanel);
       }
-      if (settings.allowTransparentColorPanels) {
-         // Make the panel transparent
-         actor.set_style( "border-image: none;  border-color: transparent;  box-shadow: 0 0 transparent; " +
-                          "background-gradient-direction: vertical; background-gradient-start: transparent; " +
-                          "background-gradient-end: transparent;    background: transparent; " + customCSS );
-      }
+      blurredPanel.customCSS = customCSS;
+      this._wrapPanelSetStyle(panel);
+      // Make the panel transparent (when allowTransparentColorPanels is enabled)
+      this._applyPanelStyle(panel);
       // Determine the corner radius
       let themeNode = actor.get_theme_node();
       if (themeNode) {
@@ -2553,6 +2814,9 @@ class BlurPanels extends BlurBase {
          bottomRadius = themeNode.get_border_radius(St.Corner.BOTTOMLEFT);
          cornerRadius = Math.max(topRadius, bottomRadius);
       }
+
+      blurredPanel.topRadius = topRadius;
+      blurredPanel.bottomRadius = bottomRadius;
 
       let useViewport = this._wantsViewport(blurType);
       let background = this._createBackgroundAndEffects(opacity, blendColor, blurType, radius, saturation, global.overlay_group, cornerRadius, topRadius!==0, bottomRadius!==0, useViewport);
@@ -2570,6 +2834,14 @@ class BlurPanels extends BlurBase {
       blurredPanel.signalManager.connect(actor, "notify::allocation", () => this._setClip(panel) );
       blurredPanel.signalManager.connect(actor, "enter-event", () => this._onEnterEvent(panel) );
       blurredPanel.signalManager.connect(actor, "leave-event", () => this._onLeaveEvent(panel) );
+      // Other code (e.g. the Centered Cinnamon Dock extension) can restyle, fade, scale or hide the panel directly
+      // without going through Panel.enable()/disable(), so follow those changes too
+      blurredPanel.signalManager.connect(actor, "style-changed",   () => this._syncPanelCornerRadius(panel) );
+      blurredPanel.signalManager.connect(actor, "notify::opacity", () => this._syncPanelOpacity(panel) );
+      blurredPanel.signalManager.connect(actor, "notify::scale-x", () => this._syncPanelOpacity(panel) );
+      blurredPanel.signalManager.connect(actor, "notify::scale-y", () => this._syncPanelOpacity(panel) );
+      blurredPanel.signalManager.connect(actor, "notify::visible", () => this._setClip(panel) );
+      this._syncPanelOpacity(panel);
       //blurredPanel.signalManager.connect(actor, 'notify::size', () => {this._setClip(panel);} );
       //blurredPanel.signalManager.connect(actor, 'notify::position', () => {this._setClip(panel);} );
 
@@ -2653,8 +2925,11 @@ class BlurPanels extends BlurBase {
          let actor = panel.actor;
          let blurredPanel = panel.__blurredPanel
          if (blurredPanel) {
+            this._unwrapPanelSetStyle(panel);
             actor.set_background_color(blurredPanel.original_color);
-            actor.set_style(blurredPanel.original_style);
+            // Restore the style most recently set by someone other than us rather than a snapshot from when we blurred
+            // the panel, in case another extension has restyled (or un-styled) the panel since then
+            actor.set_style(blurredPanel.externalStyle || null);
             actor.set_style_class_name(blurredPanel.original_class);
             actor.set_style_pseudo_class(blurredPanel.original_pseudo_class);
             if (blurredPanel.background) {
@@ -2685,21 +2960,18 @@ class BlurPanels extends BlurBase {
       let actor = panel.actor;
       blurredPanel.transparent = transparent;
       if (transparent) {
-         if (settings.allowTransparentColorPanels) {
-            let panelSettings = this._getPanelSettings(panel);
-            if (!panelSettings ) return;
-            let [opacity, blendColor, blurType, radius, saturation, customCSS] = panelSettings;
-            // Make the panel transparent
-            actor.set_style( "border-image: none;  border-color: transparent;  box-shadow: 0 0 transparent; " +
-                             "background-gradient-direction: vertical; background-gradient-start: transparent; " +
-                             "background-gradient-end: transparent;    background: transparent; " + customCSS);
-         }
+         let panelSettings = this._getPanelSettings(panel);
+         if (!panelSettings ) return;
+         blurredPanel.customCSS = panelSettings[5];
+         // Append our transparency CSS to the panel's own style (when allowTransparentColorPanels is enabled)
+         this._applyPanelStyle(panel);
          //Mainloop.idle_add( () => { this._setClip(panel) } ); // This call to _setClip causes the blurred background to disappear for some reason.
       } else {
          actor.set_background_color(blurredPanel.original_color);
-         actor.set_style(blurredPanel.original_style);
          actor.set_style_class_name(blurredPanel.original_class);
          actor.set_style_pseudo_class(blurredPanel.original_pseudo_class);
+         // blurredPanel.transparent is false now, so this applies only the panel's own (external) style
+         this._applyPanelStyle(panel);
       }
    }
 
@@ -2732,27 +3004,13 @@ class BlurPanels extends BlurBase {
                   }
                   this._setClip(panels[i]);
                   let actor = panels[i].actor;
-                  // The customeCSS might have changed, so we need to restore the defaults and reapply the changes.
-                  if (settings.allowTransparentColorPanels) {
-                     actor.set_style(blurredPanel.original_style);
-                     actor.set_style_class_name(blurredPanel.original_class);
-                     actor.set_style_pseudo_class(blurredPanel.original_pseudo_class);
-                     actor.set_style( "border-image: none;  border-color: transparent;  box-shadow: 0 0 transparent; " +
-                                      "background-gradient-direction: vertical; background-gradient-start: transparent; " +
-                                      "background-gradient-end: transparent;    background: transparent; " + customCSS );
-                  }
-                  // The corner radius might have chnaged via the customCSS, so determine the corner radius
-                  let themeNode = actor.get_theme_node();
-                  let cornerRadius = 0;
-                  let topRadius = 0;
-                  let bottomRadius = 0;
-                  if (themeNode) {
-                     // TODO: Need to be able to independently round all four corners, needs improvements to the corner effect code!
-                     topRadius = themeNode.get_border_radius(St.Corner.TOPLEFT);
-                     bottomRadius = themeNode.get_border_radius(St.Corner.BOTTOMLEFT);
-                     cornerRadius = Math.max(topRadius, bottomRadius);
-                  }
-                  this._updateViewportCornerRadius(blurredPanel.background, blurredPanel.viewport, cornerRadius, topRadius!==0, bottomRadius!==0);
+                  // The customCSS (or allowTransparentColorPanels) might have changed, so re-compose the panel's style
+                  blurredPanel.customCSS = customCSS;
+                  actor.set_style_class_name(blurredPanel.original_class);
+                  actor.set_style_pseudo_class(blurredPanel.original_pseudo_class);
+                  this._applyPanelStyle(panels[i]);
+                  // The corner radius might have changed via the customCSS, so re-sync it
+                  this._syncPanelCornerRadius(panels[i], true);
                } else {
                   this._blurPanel(panels[i]);
                   blurredPanel = panels[i].__blurredPanel;
@@ -2835,6 +3093,10 @@ class BlurPanels extends BlurBase {
       blurPanelsThis._originalPanelDisable.apply(this, params);
    }
 }
+
+// Inline style appended to a popup menu's actor so the theme background doesn't hide the blurred background
+const MENU_TRANSPARENT_STYLE = "background-gradient-direction: vertical; background-gradient-start: transparent; " +
+                               "background-gradient-end: transparent; background: transparent;";
 
 class BlurPopupMenus extends BlurBase {
    constructor() {
@@ -2953,9 +3215,18 @@ class BlurPopupMenus extends BlurBase {
                   this._updateViewportCornerRadius( this._background, this._viewport, radius/global.ui_scale, true, true );
             }
 
-            // Since menu.actor style is reset every time anyhow, we don't need to remember it's style, but we do have to set it every time
-            menu.actor.set_style(  "background-gradient-direction: vertical; background-gradient-start: transparent; " +
-                                   "background-gradient-end: transparent;    background: transparent;"  );
+            // PopupMenu.open() calls setMaxHeight() just before emitting 'open-state-changed', which replaces
+            // menu.actor's inline style with "max-height: Npx; max-width: Npx;". We must append to that style
+            // rather than replace it, otherwise the max-height is lost: the menu can then grow past the monitor
+            // and PopupSubMenu._needsScrollbar() sees no max-height, so sub-menu scrollbars are disabled
+            // (see cinnamon-spices-extensions issue #1117, Radio3.0 applet). setMaxHeight() resets the style on
+            // every open, but guard against duplicating our fragment in case a menu overrides setMaxHeight().
+            let curStyle = menu.actor.get_style() || "";
+            if (!curStyle.includes(MENU_TRANSPARENT_STYLE)) {
+               if (curStyle.length > 0 && !curStyle.trimEnd().endsWith(";"))
+                  curStyle += ";";
+               menu.actor.set_style( (curStyle.length > 0 ? curStyle + " " : "") + MENU_TRANSPARENT_STYLE );
+            }
          }
 
          this._currentMenu = menu;
@@ -3889,40 +4160,35 @@ class BlurApplications extends BlurBase {
 
          if (data.viewport) {
             // Wrapped: the corner/blur/desaturate effects live on the viewport now, not on
-            // background, so background just gets a plain rectangular clip matching the visible
-            // rect - the same clip the legacy (unwrapped) path below would give it if it had no
-            // corner effect. That confines background's own raw, un-blurred paint to exactly the
-            // area viewport is about to paint over.
-            data.background.set_clip( rect.x, rect.y, rect.width, rect.height );
+            // background. Both actors are sized/clipped to the *expanded* rect - the visible rect grown
+            // by the blur's sampling margin (see getViewportMargin()) - so the blur always has real,
+            // correctly cloned content to sample right up to the visible edge. This is also the rect
+            // CloneManager uses to decide which windows to clone (see getBackgroundClip()).
+            let margin = getViewportMargin(data.viewport);
+            let [ex, ey, ew, eh] = getExpandedRect(rect.x, rect.y, rect.width, rect.height, margin);
+            data.background.set_clip( ex, ey, ew, eh );
 
-            // But a rectangular clip alone isn't enough when corners are rounded: viewport's own
-            // corner effect cuts its 4 corners to transparent, so at those cutouts viewport no
-            // longer covers background at all, and background's square un-blurred corner shows
-            // straight through underneath. Mirror the same clip onto background's own corner
-            // effect (see _createBackgroundAndEffects), using the legacy unwrapped formula's
-            // coordinates (background isn't offset the way viewport is - see above), so its
-            // corners get masked to the same rounded shape and nothing shows through there either.
-            let backgroundCornerEffect = this._getCornerEffect(data.background);
-            if (backgroundCornerEffect) {
-               backgroundCornerEffect.clip = [rect.x+2, rect.y+2, rect.width-3, rect.height-3];
-            }
+            // Title-bar-only blur: the margin below the title bar lies over this window's own opaque body,
+            // and Muffin doesn't paint the parts of the windows underneath that it hides - not even through
+            // our clones of them - so the blur would sample bare wallpaper there. Stop this window from
+            // culling the windows below it (see NoCullEffect) so the margin has real content.
+            this._setCullsWindowsBelow(compositor, !data.titlebarsOnly);
 
-            // Size/position the small viewport actor to exactly the visible clip rect (converted
-            // from global/stage coordinates to compositor-local, since the viewport is a child of
-            // the compositor), and offset its clone of the background so the matching crop of the
-            // background/window-clone composite lands inside it. This is what keeps the blur shader
-            // from ever sampling un-cloned regions of the screen past the clip's edges, and what
-            // shrinks the texture it has to process down to just the clip area. Painted directly on
-            // top of background (see _blurWindow's z-order), it fully covers background's own,
-            // unblurred paint of the same rect.
-            data.viewport.set_position(rect.x - rx, rect.y - ry);
-            data.viewport.set_size(rect.width, rect.height);
-            data.viewport._blurCinnamonSceneClone.set_position(-rect.x, -rect.y);
+            // Size/position the viewport to the expanded rect (converted from global/stage coordinates
+            // to compositor-local, since the viewport is a child of the compositor), and offset its
+            // clone of the background so the matching crop of the background/window-clone composite
+            // lands inside it. Painted directly on top of background (see _blurWindow's z-order);
+            // background itself is transparent (see _createBackgroundAndEffects) so only viewport shows.
+            data.viewport.set_position(ex - rx, ey - ry);
+            data.viewport.set_size(ew, eh);
+            data.viewport._blurCinnamonSceneClone.set_position(-ex, -ey);
 
             let cornerEffect = this._getCornerEffect(data.viewport);
             if (cornerEffect) {
-               // Local to the viewport now (the viewport *is* the clip rect), not global.
-               cornerEffect.clip = [2, 2, rect.width-3, rect.height-3];
+               // Local to the viewport, and sized to exactly the visible rect - cuts the margin away
+               // again (corner.glsl's padded mapping means an exact rect-sized clip covers it edge to
+               // edge with no inset needed; see the "un-blurred strip" fix this replaces).
+               cornerEffect.clip = [rect.x - ex, rect.y - ey, rect.width, rect.height];
             }
          } else {
             let cornerEffect = this._getCornerEffect(data.background);
@@ -3937,10 +4203,21 @@ class BlurApplications extends BlurBase {
       }
    }
 
+   // Add or remove the NoCullEffect on a window actor (see NoCullEffect)
+   _setCullsWindowsBelow(compositor, culls) {
+      let effect = compositor.get_effect(NOCULL_EFFECT_NAME);
+      if (culls && effect) {
+         compositor.remove_effect(effect);
+      } else if (!culls && !effect) {
+         compositor.add_effect_with_name(NOCULL_EFFECT_NAME, new NoCullEffect());
+      }
+   }
+
    _unblurWindow(compositor) {
       if (compositor._blurCinnamonDataWindow) {
          let data = compositor._blurCinnamonDataWindow;
          data.signalManager.disconnectAllSignals();
+         this._setCullsWindowsBelow(compositor, true);
          this._destroyDynamicEffect(data.background);
          // Strip every effect (background's own, and viewport's when wrapped - see
          // BlurBase.destroy()) one at a time *before* destroying either actor, so a multi-pass
@@ -4050,15 +4327,9 @@ class BlurApplications extends BlurBase {
                }
                this._updateCornerRadius(effectsActor, corner_radius, top, bottom);
                if (data.viewport) {
-                  // Keep background's mirrored corner effect (see _createBackgroundAndEffects/
-                  // _setClip) in sync with viewport's the same way, so its corners stay masked to
-                  // match rather than reverting to square once settings change.
-                  let backgroundCornerEffect = this._getCornerEffect(data.background);
-                  if (backgroundCornerEffect) {
-                     backgroundCornerEffect.corners_top = top;
-                     backgroundCornerEffect.corners_bottom = bottom;
-                  }
-                  this._updateCornerRadius(data.background, corner_radius, top, bottom);
+                  // The blur's sampling reach - and so the viewport's margin - may have changed
+                  // along with the blur type or radius.
+                  this._setClip(compositor);
                }
                if (!window_opacity || window_opacity < 10 || window_opacity > 100 )
                   window_opacity = 100;
