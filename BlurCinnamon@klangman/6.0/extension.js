@@ -1935,7 +1935,7 @@ class BlurBase {
          if (cornerEffect) {
             // Local to the viewport and exactly the visible rect (corner.glsl pads its own mapping by
             // 3px, so no inset is needed - same as BlurApplications._setClip).
-            cornerEffect.clip = [x-ex, y-ey, width, height];
+            cornerEffect.set_viewport_clip([x - ex, y - ey, width, height]);
          }
       } else {
          background.set_clip(x, y, width, height);
@@ -4274,7 +4274,7 @@ class BlurApplications extends BlurBase {
                // Local to the viewport, and sized to exactly the visible rect - cuts the margin away
                // again (corner.glsl's padded mapping means an exact rect-sized clip covers it edge to
                // edge with no inset needed; see the "un-blurred strip" fix this replaces).
-               cornerEffect.clip = [rect.x - ex, rect.y - ey, rect.width, rect.height];
+               cornerEffect.set_viewport_clip([rect.x - ex, rect.y - ey, rect.width, rect.height]);
             }
          } else {
             let cornerEffect = this._getCornerEffect(data.background);

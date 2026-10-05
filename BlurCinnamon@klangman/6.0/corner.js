@@ -201,6 +201,15 @@ var CornerEffect = (typeof global === 'undefined') ?
             this.update_radius();
         }
 
+        set_viewport_clip(value) {
+            [this._clip_x0, this._clip_y0, this._clip_width, this._clip_height] = value;
+            this.set_uniform_value('clip_x0', parseFloat(this._clip_x0 + 2 - 1e-6));
+            this.set_uniform_value('clip_y0', parseFloat(this._clip_y0 + 2 - 1e-6));
+            this.set_uniform_value('clip_width', parseFloat(Math.max(1e-6, this._clip_width - 1e-6)));
+            this.set_uniform_value('clip_height', parseFloat(Math.max(1e-6, this._clip_height - 1e-6)));
+            this.update_radius();
+        }
+
         vfunc_set_actor(actor) {
             if (this._actor_connection_size_id) {
                 let old_actor = this.get_actor();
