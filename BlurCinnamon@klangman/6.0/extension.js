@@ -469,34 +469,123 @@ function getBackgroundClip(background) {
    return clip;
 }
 
-// Hack: To fix artifacts after painting a lower z-order clone, redraw the clone that is one higher in the z-order (the widow directly above).
+// Hack: To fix artifacts after a lower z-order clone is updated, redraw the clone that is one higher in the z-order (the window directly above).
 // This is only needed for application window backgrounds.
-function clonePainted(background, actor) {
-   if (actor._blurCinnamonForcedRedraw) {
-      // This paint happened because WE called queue_redraw() below, not because the window's own
-      // content changed. Stop the chain here instead of forcing the next clone up as well.
-      actor._blurCinnamonForcedRedraw = false;
-      return;
+//
+// Preferred trigger: the source window actor's "damaged" signal. It fires only when that window's content
+// really changes, and before the stage paints, so the extra redraw lands in the same frame.
+//
+// Fallback (Muffin builds without "damaged"): the clone's "paint" signal. That fires whenever the blur group
+// repaints (for any reason, every clone in it), and queue_redraw() called from inside a paint is serviced in
+// the NEXT frame, where every clone paints again and would queue its neighbour again, forever. So the frame
+// our redraws cause is a "forced frame" in which clonePainted() does nothing; the stage then goes idle.
+let artifactUseDamaged = true;       // Cleared the first time connecting to "damaged" fails
+let artifactRedrawQueued = false;   // We queued redraws during the frame currently being painted
+let artifactForcedFrame = false;    // The frame currently being painted was caused by our redraws
+let artifactAfterPaintId = 0;
+
+function artifactAfterPaint() {
+   artifactForcedFrame = artifactRedrawQueued;
+   artifactRedrawQueued = false;
+   if (!artifactForcedFrame) {
+      // Idle again, no need to watch the stage until clonePainted() queues something.
+      stopArtifactMitigationGuard();
    }
+}
+
+function stopArtifactMitigationGuard() {
+   if (artifactAfterPaintId) {
+      global.stage.disconnect(artifactAfterPaintId);
+      artifactAfterPaintId = 0;
+   }
+   artifactRedrawQueued = false;
+   artifactForcedFrame = false;
+}
+
+// Queue a redraw of the first drawn clone above "actor" in background's z-order, if the two windows overlap.
+// Returns true if a redraw was queued.
+function redrawCloneAbove(background, actor) {
    let clones = background._blurCinnamonWinClones;
    if (!clones) {
-      return;
+      return false;
    }
    // Use the already-maintained, already-ordered (bottom -> top) clone list instead of asking Clutter
    // for the group's full child list (which also holds the dimmer, corner-effect actor, desklet clone,
-   // etc.) and linear-scanning it every single paint.
+   // etc.) and linear-scanning it every time.
    let idx = clones.indexOf(actor);
-   if (idx != -1 && idx < clones.length-1) {
-      let next = clones[idx+1];
+   if (idx === -1) {
+      return false;
+   }
+   // Find the first clone above that is actually drawn. A clone whose window is hidden or at opacity 0
+   // (e.g. Burn-My-Windows hides the real window and draws its effect container instead) gets no paint,
+   // so redrawing it does nothing; its effect clone, if any, is what is visible in its place.
+   for (let i = idx+1 ; i < clones.length ; i++) {
+      let next = clones[i];
+      let fx = next._blurCinnamonEffectClone;
+      let nextDrawn = next.visible && next.opacity > 0;
+      if (!nextDrawn && !fx) {
+         continue;
+      }
       // Skip clones that can't possibly show the artifact: if the two windows don't overlap on screen
       // there's no shared seam between them for a stale-pixel gap to appear in.
       let a = actor._metaWindow.get_buffer_rect();
       let b = next._metaWindow.get_buffer_rect();
       if (rectOverlap(a.x, a.y, a.x + a.width, a.y + a.height, b.x, b.y, b.x + b.width, b.y + b.height)) {
-         //log( `paint for ${actor._metaWindow.get_title()}, queuing redraw for ${next._metaWindow.get_title()}` );
-         next._blurCinnamonForcedRedraw = true;
-         next.queue_redraw();
+         //log( `[artifact] ${actor._metaWindow.get_title()} updated, queuing redraw for ${next._metaWindow.get_title()}` );
+         if (nextDrawn) {
+            next.queue_redraw();
+         }
+         if (fx) {
+            fx.queue_redraw();
+         }
+         return true;
       }
+      return false;
+   }
+   return false;
+}
+
+// Fallback trigger, see above.
+function clonePainted(background, actor) {
+   if (artifactForcedFrame) {
+      return;
+   }
+   if (redrawCloneAbove(background, actor)) {
+      artifactRedrawQueued = true;
+      if (!artifactAfterPaintId) {
+         artifactAfterPaintId = global.stage.connect("after-paint", artifactAfterPaint);
+      }
+   }
+}
+
+function connectArtifactMitigation(background, windowClone, compositor) {
+   if (windowClone._artifactHandler) {
+      return;
+   }
+   if (artifactUseDamaged && compositor) {
+      try {
+         let id = compositor.connect("damaged", () => redrawCloneAbove(background, windowClone));
+         windowClone._artifactHandler = { obj: compositor, id: id };
+         return;
+      } catch (e) {
+         // This Muffin has no "damaged" signal on window actors.
+         artifactUseDamaged = false;
+         debugMsg( `No "damaged" signal on window actors, using the paint signal for artifact mitigation` );
+      }
+   }
+   let id = windowClone.connect("paint", () => clonePainted(background, windowClone));
+   windowClone._artifactHandler = { obj: windowClone, id: id };
+}
+
+function disconnectArtifactMitigation(windowClone) {
+   let h = windowClone._artifactHandler;
+   if (h) {
+      try {
+         h.obj.disconnect(h.id);
+      } catch (e) {
+         // The window actor is already gone (closed window), its handlers went with it.
+      }
+      delete windowClone._artifactHandler;
    }
 }
 
@@ -543,7 +632,7 @@ function createWindowClone(metaWindow, background, desktopOnly) {
       background._blurCinnamonWinClones.push(windowClone);
       windowClone._metaWindow = metaWindow;
       if (settings.windowArtifactMitigation && owner) {
-         windowClone._paintEventId = windowClone.connect( "paint", (actor) => clonePainted(background, actor));
+         connectArtifactMitigation(background, windowClone, compositor);
       }
       // Follow the window actor's opacity and any Burn-My-Windows effect container (see
       // syncWindowCloneWithSource()). Done after the clone is in the group, since an effect
@@ -675,10 +764,7 @@ function _destroyWindowClone(windowClone, background) {
    } else {
       debugMsg( `Removing clone ${windowClone} of "${windowClone._metaWindow.get_title()}"/${windowClone._metaWindow.get_id()} from background ${background._blurCinnamonName} with ${background._blurCinnamonWinClones.length} clones` );
    }
-   if (windowClone._paintEventId) {
-      windowClone.disconnect( windowClone._paintEventId );
-      delete windowClone._paintEventId;
-   }
+   disconnectArtifactMitigation(windowClone);
    if (windowClone._blurCinnamonOpacityId) {
       try {
          windowClone._blurCinnamonSource.disconnect(windowClone._blurCinnamonOpacityId);
@@ -936,11 +1022,10 @@ class CloneManager {
       this._backgrounds.forEach( (background) => {
          if (background._blurCinnamonMetaWindowOwner) {
             background._blurCinnamonWinClones.forEach( (windowClone) => {
-               if (settings.windowArtifactMitigation && !windowClone._paintEventId) {
-                  windowClone._paintEventId = windowClone.connect( "paint", (actor) => clonePainted(background, windowClone));
-               } else if (!settings.windowArtifactMitigation && windowClone._paintEventId) {
-                  windowClone.disconnect( windowClone._paintEventId );
-                  delete windowClone._paintEventId;
+               if (settings.windowArtifactMitigation) {
+                  connectArtifactMitigation(background, windowClone, windowClone._metaWindow.get_compositor_private());
+               } else {
+                  disconnectArtifactMitigation(windowClone);
                }
             });
          }
@@ -1234,6 +1319,7 @@ class CloneManager {
 
    destroy() {
       this._signalManager.disconnectAllSignals();
+      stopArtifactMitigationGuard();
       this._backgrounds.forEach( (background) => {
          this.removeBackground(background);
       });
