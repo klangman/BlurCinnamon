@@ -666,9 +666,10 @@ function createWindowClone(metaWindow, background, desktopOnly) {
 //     shader paints its FBO with the current modelview, so it renders correctly through clones.
 // ---------------------------------------------------------------------------------------------
 
-// Stage position of an actor, from the x/y properties of it and its ancestors. BMW containers are
-// never scaled or rotated, and x/y (unlike the allocation) are up to date as soon as BMW moves
-// them from its timeline, so the clone never lags a frame behind.
+// Stage position of an actor, from the x/y properties of it and its ancestors, ignoring any
+// scale/pivot. BMW containers are never scaled or rotated, and x/y (unlike the allocation) are up
+// to date as soon as BMW moves them from its timeline, so the clone never lags a frame behind.
+// Also used to position a window's blur inside its (possibly BMW-scaled) compositor actor.
 function _stagePosition(actor) {
    let x = 0, y = 0;
    for (let a = actor ; a && a !== global.stage ; a = a.get_parent()) {
@@ -1908,7 +1909,7 @@ class BlurBase {
    // other consumer parents background (and viewport, when used) directly into global.overlay_group
    // via _createBackgroundAndEffects's default `parent` fallback, so both actors already live in
    // plain global/stage coordinates - no compositor-relative translation is needed here the way
-   // BlurApplications._setClip needs compositor.get_transformed_position().
+   // BlurApplications._setClip needs the compositor's stage position.
    //
    // x/y/width/height is the target visible rect, in that same global/stage coordinate space.
    // When viewport is null (background isn't wrapped - see _createBackgroundAndEffects's useViewport)
@@ -4236,9 +4237,15 @@ class BlurApplications extends BlurBase {
          //let [x,y] = data.background.get_position();
          //data.background.set_position( x-rx, y-ry );
          // The blur background lives inside the window compositor actor, so it must be
-         // offset by the compositor's transformed stage position, not by its own previous
-         // transformed position. Otherwise the blur and the real window can drift apart.
-         let [rx, ry] = compositor.get_transformed_position();
+         // offset by the compositor's stage position, not by its own previous transformed
+         // position. Otherwise the blur and the real window can drift apart.
+         // Use the compositor's *untransformed* position (see _stagePosition()), not
+         // get_transformed_position(): background is in the compositor's local, pre-scale
+         // coordinates and inherits whatever scale the compositor has. Burn-My-Windows scales the
+         // window actor around its center while it opens/closes, and resets the scale to 1 at the
+         // end without any allocation change, so a scaled transformed position computed here
+         // mid-animation left the blur offset until the window was next moved.
+         let [rx, ry] = _stagePosition(compositor);
 
          // data.background is repositioned to global (0,0) exactly as it always was, whether or not
          // it's wrapped in a viewport - it stays a real, normally-shown/mapped actor either way.
@@ -4692,7 +4699,8 @@ class BlurFocusEffect extends BlurBase {
          //let [x,y] = this._background.get_position();
          //this._background.set_position( x-rx, y-ry );
          // Keep the focus background aligned with the compositor actor in stage coordinates.
-         let [rx, ry] = this._focusedCompositor.get_transformed_position();
+         // Untransformed position, see BlurApplications._setClip() (window scale animations)
+         let [rx, ry] = _stagePosition(this._focusedCompositor);
          this._background.set_position(-rx, -ry);
 
          // Deliberately NOT viewport-wrapped and NOT hard-clipped via background.set_clip() either
