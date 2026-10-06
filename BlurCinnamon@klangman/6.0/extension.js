@@ -119,6 +119,8 @@ let blurFocusEffect;
 let metaData;
 
 let cloneManager;
+let wallpaperTracker = null;
+let screenSizeTracker = null;
 
 var blurClassicSwitcherThis;
 var blurPanelsThis;
@@ -600,6 +602,9 @@ function createWindowClone(metaWindow, background, desktopOnly) {
          return null;
       }
    }
+   // The wallpaper already comes from the WallpaperTracker clone at the bottom of the group
+   if (hasStaticWallpaper(background) && isWallpaperWindow(metaWindow))
+      return null;
    let owner = background._blurCinnamonMetaWindowOwner;
    if (background.is_mapped() && owner !== metaWindow && (!desktopOnly || metaWindow.get_window_type() === Meta.WindowType.DESKTOP) &&
       (!owner || owner.get_window_type() !== Meta.WindowType.DESKTOP || metaWindow.get_window_type() === Meta.WindowType.DESKTOP) ) {
@@ -926,7 +931,8 @@ function cloneWindowsForBackgroundNow(background, desktopOnly) {
       if (compositor.visible &&
          (!filterByWorkspace || windowIsOnWorkspace(metaWindow, activeWorkspace)) &&
          (!desktopOnly || metaWindow.get_window_type() === Meta.WindowType.DESKTOP) &&
-          metaWindow.get_window_type() !== Meta.WindowType.OVERRIDE_OTHER /*&& metaWindow.get_wm_class() !== "Nemo-desktop"*/) {
+          metaWindow.get_window_type() !== Meta.WindowType.OVERRIDE_OTHER /*&& metaWindow.get_wm_class() !== "Nemo-desktop"*/ &&
+          !(hasStaticWallpaper(background) && isWallpaperWindow(metaWindow))) {
         
           let winRect = metaWindow.get_buffer_rect();
           let winX = winRect.x;
@@ -1338,6 +1344,262 @@ class CloneManager {
    }
 }
 
+// ---------------------------------------------------------------------------------------------
+// Wayland wallpaper source for the static blur types
+//
+// On X11 the static (non-Dynamic) blur types get the wallpaper from a Meta.X11BackgroundActor,
+// which paints the root window's background pixmap that csd-background draws into. Wayland has no
+// root window: csd-background draws the wallpaper into its own DESKTOP-type window instead
+// (wm_class "Csd-background", bottom of the stack, with Nemo-desktop's icon window just above it).
+// So on Wayland every non-Transparent background gets a Clutter.Clone of that window at the bottom
+// of its _blurCinnamonGroup, standing in for the X11BackgroundActor. Only csd-background is cloned,
+// not every DESKTOP window, so desktop icons don't show through a static blur (same as on X11).
+//
+// Dynamic backgrounds get the same clone, and CloneManager skips csd-background for any background
+// that has one (see hasStaticWallpaper()), so the wallpaper is never in a group twice and a
+// static <-> dynamic switch doesn't need any special handling.
+//
+// Signal handlers on window actors / backgrounds use the signal's own emitter argument rather than
+// closing over the actor, so no handler holds a JS reference back to the object it's connected to.
+// ---------------------------------------------------------------------------------------------
+const WALLPAPER_WM_CLASS = "Csd-background";
+
+function isWallpaperWindow(metaWindow) {
+   return !!metaWindow && metaWindow.get_window_type() === Meta.WindowType.DESKTOP && metaWindow.get_wm_class() === WALLPAPER_WM_CLASS;
+}
+
+// True when background carries WallpaperTracker clones (Wayland, non-Transparent)
+function hasStaticWallpaper(background) {
+   return !!background._blurCinnamonWallpaperClones;
+}
+
+// Give background a wallpaper clone (Wayland only). Safe to call repeatedly.
+function addStaticWallpaper(background) {
+   if (!Meta.is_wayland_compositor())
+      return;
+   if (!wallpaperTracker)
+      wallpaperTracker = new WallpaperTracker();
+   wallpaperTracker.addBackground(background);
+}
+
+// Remove background's wallpaper clone, if any. Safe to call for any background, on X11 too.
+function removeStaticWallpaper(background) {
+   if (!wallpaperTracker)
+      return;
+   wallpaperTracker.removeBackground(background);
+   if (wallpaperTracker.getBackgroundCount() === 0) {
+      wallpaperTracker.destroy();
+      wallpaperTracker = null;
+   }
+}
+
+class WallpaperTracker {
+
+   constructor() {
+      this._backgrounds = [];
+      this._windows = [];   // csd-background MetaWindows being cloned (one, or possibly one per monitor)
+      // Wayland clients may not have their app_id (wm_class) yet when the window is created, so
+      // pick csd-background up when it maps instead. A restarted csd-background is caught the same way.
+      this._mapId = global.window_manager.connect("map", (wm, actor) => this._onWindowMapped(actor));
+      this._scanWindows();
+   }
+
+   getBackgroundCount() {
+      return this._backgrounds.length;
+   }
+
+   addBackground(background) {
+      if (this._backgrounds.indexOf(background) !== -1)
+         return;
+      background._blurCinnamonWallpaperClones = [];
+      background._blurCinnamonWallpaperDestroyId = background.connect("destroy", (self) => removeStaticWallpaper(self));
+      this._backgrounds.push(background);
+      if (this._windows.length === 0)
+         this._scanWindows();
+      this._windows.forEach( (metaWindow) => this._addClone(background, metaWindow) );
+      // If this background was already dynamic, drop CloneManager's own csd-background clone
+      if (background._blurCinnamonWinClones)
+         destroyClones(background, (clone) => isWallpaperWindow(clone._metaWindow));
+      debugMsg( `Added wallpaper clone(s) to background "${background._blurCinnamonName}", ${this._backgrounds.length} wallpaper backgrounds` );
+   }
+
+   removeBackground(background) {
+      let idx = this._backgrounds.indexOf(background);
+      if (idx === -1)
+         return;
+      this._backgrounds.splice(idx, 1);
+      background._blurCinnamonWallpaperClones.forEach( (clone) => this._destroyClone(clone) );
+      delete background._blurCinnamonWallpaperClones;
+      background.disconnect(background._blurCinnamonWallpaperDestroyId);
+      delete background._blurCinnamonWallpaperDestroyId;
+   }
+
+   _scanWindows() {
+      global.get_window_actors().forEach( (actor) => this._onWindowMapped(actor) );
+   }
+
+   _onWindowMapped(actor) {
+      let metaWindow = actor.get_meta_window ? actor.get_meta_window() : null;
+      if (!isWallpaperWindow(metaWindow) || this._windows.indexOf(metaWindow) !== -1)
+         return;
+      let compositor = metaWindow.get_compositor_private();
+      if (!compositor)
+         return;
+      this._windows.push(metaWindow);
+      metaWindow._blurCinnamonWallpaperPosId = metaWindow.connect("position-changed", (self) => this._syncClonePosition(self));
+      metaWindow._blurCinnamonWallpaperSizeId = metaWindow.connect("size-changed", (self) => this._syncClonePosition(self));
+      compositor._blurCinnamonWallpaperDestroyId = compositor.connect("destroy", (self) => this._onWindowActorDestroyed(self));
+      this._backgrounds.forEach( (background) => this._addClone(background, metaWindow) );
+      debugMsg( `Tracking wallpaper window "${metaWindow.get_wm_class()}"/${metaWindow.get_id()}` );
+   }
+
+   _onWindowActorDestroyed(compositor) {
+      let idx = this._windows.findIndex( (metaWindow) => metaWindow.get_compositor_private() === compositor );
+      if (idx === -1)
+         return;
+      this._untrackWindow(this._windows[idx]);
+   }
+
+   _untrackWindow(metaWindow) {
+      let idx = this._windows.indexOf(metaWindow);
+      if (idx === -1)
+         return;
+      this._windows.splice(idx, 1);
+      if (metaWindow._blurCinnamonWallpaperPosId) {
+         metaWindow.disconnect(metaWindow._blurCinnamonWallpaperPosId);
+         metaWindow.disconnect(metaWindow._blurCinnamonWallpaperSizeId);
+         delete metaWindow._blurCinnamonWallpaperPosId;
+         delete metaWindow._blurCinnamonWallpaperSizeId;
+      }
+      let compositor = metaWindow.get_compositor_private();
+      if (compositor && compositor._blurCinnamonWallpaperDestroyId) {
+         compositor.disconnect(compositor._blurCinnamonWallpaperDestroyId);
+         delete compositor._blurCinnamonWallpaperDestroyId;
+      }
+      this._backgrounds.forEach( (background) => {
+         let clones = background._blurCinnamonWallpaperClones;
+         for (let i = clones.length-1 ; i >= 0 ; i--) {
+            if (clones[i]._metaWindow === metaWindow) {
+               this._destroyClone(clones[i]);
+               clones.splice(i, 1);
+            }
+         }
+      });
+   }
+
+   _addClone(background, metaWindow) {
+      let compositor = metaWindow.get_compositor_private();
+      if (!compositor || !background._blurCinnamonGroup)
+         return;
+      // Backgrounds sit at the stage origin, so the window's buffer rect is the clone's position
+      // in the group - same convention as createWindowClone().
+      let rect = metaWindow.get_buffer_rect();
+      let clone = new Clutter.Clone({source: compositor, reactive: false, x: rect.x, y: rect.y});
+      clone._metaWindow = metaWindow;
+      // Bottom of the group: below any dynamic window clones, the desklet clone and the dimmer
+      background._blurCinnamonGroup.insert_child_at_index(clone, 0);
+      background._blurCinnamonWallpaperClones.push(clone);
+   }
+
+   _destroyClone(clone) {
+      let parent = clone.get_parent();
+      if (parent)
+         parent.remove_child(clone);
+      clone.destroy();
+   }
+
+   _syncClonePosition(metaWindow) {
+      let rect = metaWindow.get_buffer_rect();
+      this._backgrounds.forEach( (background) => {
+         background._blurCinnamonWallpaperClones.forEach( (clone) => {
+            if (clone._metaWindow === metaWindow)
+               clone.set_position(rect.x, rect.y);
+         });
+      });
+   }
+
+   destroy() {
+      global.window_manager.disconnect(this._mapId);
+      this._backgrounds.slice().forEach( (background) => this.removeBackground(background) );
+      this._windows.slice().forEach( (metaWindow) => this._untrackWindow(metaWindow) );
+   }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Screen-size tracking for plain Clutter.Actor backgrounds
+//
+// A Meta.X11BackgroundActor follows the screen size by itself, but the plain Clutter.Actor used on
+// Wayland (and for Transparent on X11) is sized once, at creation. ScreenSizeTracker resizes every
+// such background when the monitor layout changes; each background's own notify::size handler then
+// resizes its group and dimmer. Setting the size (rather than a BindConstraint) keeps the actor's
+// preferred size right too, which the viewport's Clutter.Clone of background is allocated from.
+// ---------------------------------------------------------------------------------------------
+function trackScreenSize(background) {
+   if (!screenSizeTracker)
+      screenSizeTracker = new ScreenSizeTracker();
+   screenSizeTracker.addBackground(background);
+}
+
+function untrackScreenSize(background) {
+   if (!screenSizeTracker)
+      return;
+   screenSizeTracker.removeBackground(background);
+   if (screenSizeTracker.getBackgroundCount() === 0) {
+      screenSizeTracker.destroy();
+      screenSizeTracker = null;
+   }
+}
+
+// Keep background's group and dimmer the same size as background. Uses the signal's own emitter
+// argument so the handler holds no JS reference to background (see _createBackgroundAndEffects).
+function connectDimmerResize(background) {
+   background.connect("notify::size", (self) => {
+      if (self._blurCinnamonGroup)
+         self._blurCinnamonGroup.set_size(self.width, self.height);
+      if (self._blurCinnamonDimmer)
+         self._blurCinnamonDimmer.set_size(self.width, self.height);
+   });
+}
+
+class ScreenSizeTracker {
+
+   constructor() {
+      this._backgrounds = [];
+      this._monitorsChangedId = Main.layoutManager.connect("monitors-changed", () => this._monitorsChanged());
+   }
+
+   getBackgroundCount() {
+      return this._backgrounds.length;
+   }
+
+   addBackground(background) {
+      if (this._backgrounds.indexOf(background) !== -1)
+         return;
+      this._backgrounds.push(background);
+      background._blurCinnamonScreenSizeDestroyId = background.connect("destroy", (self) => untrackScreenSize(self));
+      background.set_size(global.screen_width, global.screen_height);
+   }
+
+   removeBackground(background) {
+      let idx = this._backgrounds.indexOf(background);
+      if (idx === -1)
+         return;
+      this._backgrounds.splice(idx, 1);
+      background.disconnect(background._blurCinnamonScreenSizeDestroyId);
+      delete background._blurCinnamonScreenSizeDestroyId;
+   }
+
+   _monitorsChanged() {
+      debugMsg( `Resizing ${this._backgrounds.length} plain backgrounds to ${global.screen_width}x${global.screen_height}` );
+      this._backgrounds.forEach( (background) => background.set_size(global.screen_width, global.screen_height) );
+   }
+
+   destroy() {
+      Main.layoutManager.disconnect(this._monitorsChangedId);
+      this._backgrounds.slice().forEach( (background) => this.removeBackground(background) );
+   }
+}
+
 class BlurBase {
    static cornerEffectCache     = [];
    static simpleBlurEffectCache = [];
@@ -1405,6 +1667,8 @@ class BlurBase {
    }
 
    _releaseLiquidGlassEffect(effect) {
+      // Don't let a viewport's glass rect follow the effect to its next user
+      effect.glass_rect = null;
       BlurBase.liquidGlassEffectCache.push(effect);
    }
 
@@ -1578,6 +1842,7 @@ class BlurBase {
          background = Meta.X11BackgroundActor.new_for_display(global.display);
       } else {
          background = new Clutter.Actor({width: global.stage.width, height: global.stage.height});
+         trackScreenSize(background);
       }
 
       // Add a dimmer child to the background so we can change the colorization and dimming of the background
@@ -1609,6 +1874,10 @@ class BlurBase {
       });
       background._blurCinnamonDimmer = dimmer;
       background._blurCinnamonGroup = group;
+
+      // Wayland has no X11BackgroundActor, so clone csd-background's wallpaper window instead
+      if (Meta.is_wayland_compositor() && blurType !== BlurType.Transparent)
+         addStaticWallpaper(background);
 
       let effectTarget = background;
       if (useViewport) {
@@ -1670,7 +1939,22 @@ class BlurBase {
       if (blurEffect instanceof Refraction.RefractionEffect) {
          let cornerEffect = this._getCornerEffect(actor);
          blurEffect.corner_radius = (cornerEffect && cornerEffect.corners_top && cornerEffect.corners_bottom) ? cornerEffect.radius : 0;
+         // A Liquid Glass effect newly added to a viewport picks up the last visible rect
+         if (actor._blurCinnamonGlassRect)
+            blurEffect.glass_rect = actor._blurCinnamonGlassRect;
       }
+   }
+
+   // Liquid Glass draws its glass shape (edges, rim reflections, corners) over the actor's clip, or the
+   // whole actor when it has none. A viewport has no clip and is sized to the *expanded* rect, so the glass
+   // edge ended up out in the sampling margin, where the viewport's corner effect then cut it away - on every
+   // side except where getExpandedRect() clamps the margin to the screen edge (e.g. a panel's outer edge).
+   // rect is the visible rect in viewport-local coordinates, the same rect the corner effect clips to.
+   _setLiquidGlassRect(viewport, rect) {
+      viewport._blurCinnamonGlassRect = rect;
+      let blurEffect = this._getBlurEffect(viewport);
+      if (blurEffect instanceof Refraction.RefractionEffect)
+         blurEffect.glass_rect = rect;
    }
 
    _getDesatEffect(background) {
@@ -1696,7 +1980,14 @@ class BlurBase {
          this._destroyDynamicEffect(background);
       }
       // Create the background actor and attach the corner & desat effects
-      if (blurType !== BlurType.Transparent && !(background instanceof Meta.X11BackgroundActor)) {
+      if (Meta.is_wayland_compositor()) {
+         // No X11BackgroundActor on Wayland: background stays a plain Clutter.Actor and only the
+         // csd-background wallpaper clone is added/removed (see WallpaperTracker)
+         if (blurType !== BlurType.Transparent)
+            addStaticWallpaper(background);
+         else
+            removeStaticWallpaper(background);
+      } else if (blurType !== BlurType.Transparent && !(background instanceof Meta.X11BackgroundActor)) {
          let dimmer = background._blurCinnamonDimmer;
          background._blurCinnamonGroup.remove_child(background._blurCinnamonDimmer);
          this.parent.remove_child(background);
@@ -1710,6 +2001,7 @@ class BlurBase {
          background.add_child(group);
          background._blurCinnamonGroup = group
          background._blurCinnamonDimmer = dimmer;
+         connectDimmerResize(background);
          if (cornerEffect) { background.add_effect_with_name( CORNER_EFFECT_NAME, cornerEffect ); }
          if (desatEffect) { background.add_effect_with_name( DESAT_EFFECT_NAME, desatEffect ); }
          this.parent.add_child(background);
@@ -1752,6 +2044,10 @@ class BlurBase {
          }
          let blurEffect = this._aquireLiquidGlassEffect(radius);
          background.add_effect_with_name( BLUR_EFFECT_NAME, blurEffect );
+      } else if (blurType === BlurType.Transparent && Meta.is_wayland_compositor() && curEffect) {
+         // Wayland keeps the same actor when switching to Transparent, so just drop the blur
+         background.remove_effect(curEffect);
+         this._releaseBlurEffect(curEffect);
       } else if (blurType === BlurType.Transparent && background instanceof Meta.X11BackgroundActor) {
          if (curEffect) {
             background.remove_effect(curEffect);
@@ -1765,8 +2061,16 @@ class BlurBase {
          let stageWidth = global.stage.width;
          let stageHeight = global.stage.height;
          background = new Clutter.Actor({width: stageWidth, height: stageHeight});
-         background.add_actor(dimmer);
+         // Same group/dimmer layout as _createBackgroundAndEffects, so switching back to a blurred
+         // type (which removes the dimmer from _blurCinnamonGroup) works
+         let group = new St.Group({clip_to_allocation: true});
+         group.set_size(stageWidth, stageHeight);
+         group.add_child(dimmer);
+         background.add_child(group);
+         background._blurCinnamonGroup = group;
          background._blurCinnamonDimmer = dimmer;
+         connectDimmerResize(background);
+         trackScreenSize(background);
          if (cornerEffect) { background.add_effect_with_name( CORNER_EFFECT_NAME, cornerEffect ); }
          if (desatEffect) { background.add_effect_with_name( DESAT_EFFECT_NAME, desatEffect ); }
          this.parent.add_actor(background);
@@ -1938,6 +2242,7 @@ class BlurBase {
             // 3px, so no inset is needed - same as BlurApplications._setClip).
             cornerEffect.clip = [x-ex, y-ey, width, height];
          }
+         this._setLiquidGlassRect(viewport, [x-ex, y-ey, width, height]);
       } else {
          background.set_clip(x, y, width, height);
          let backgroundCornerEffect = this._getCornerEffect(background);
@@ -2005,6 +2310,8 @@ class BlurBase {
    }
 
    destroy(background) {
+      removeStaticWallpaper(background);
+      untrackScreenSize(background);
       if (background._blurCinnamonDimmer) {
          background._blurCinnamonGroup.remove_child(background._blurCinnamonDimmer);
          background._blurCinnamonDimmer.destroy();
@@ -3568,9 +3875,17 @@ class BlurPopupMenus extends BlurBase {
 }
 
 class BlurDesktop extends BlurBase {
+   // The effects and dimmer go on the actor that paints the wallpaper (see _findTarget()): on X11 that's
+   // global.background_actor. Wayland has no root-window background, so csd-background draws the wallpaper
+   // in its own DESKTOP window (see WallpaperTracker) and that window's actor is the target instead. It
+   // may not exist yet when this class starts, and csd-background can be restarted, so on Wayland the
+   // target is picked up when the window maps and dropped when its actor is destroyed.
    constructor() {
       super();
       this._signalManager = new SignalManager.SignalManager(null);
+      this._target = null;
+      this._targetDestroyId = 0;
+      this._mapId = 0;
 
       let [opacity, blendColor, blurType, radius, saturation] = this._getSettings(settings.desktopOverride);
 
@@ -3582,14 +3897,18 @@ class BlurDesktop extends BlurBase {
          this._blurEffect = new MonteCarloBlur.MonteCarloBlurEffect( { radius: radius, iterations: settings.montecarloIterations, prefer_closer_pixels: settings.montecarloPerferCloserPixels, use_base_pixel: settings.montecarloUseBasePixel, brightness: 1, width: 0, height: 0 } );
       else if (blurType === BlurType.DualKawase)
          this._blurEffect = new DualKawaseBlur.DualFilteringBlurEffect( { radius: radius, brightness: 1, width: 0, height: 0 } );
+      this._blurEnabled = !!this._blurEffect;
       this._desatEffect = new Clutter.DesaturateEffect({ factor: (100 - saturation) / 100 });
-      if (this._blurEffect)
-         global.background_actor.add_effect_with_name( BLUR_EFFECT_NAME, this._blurEffect );
-      global.background_actor.add_effect_with_name( DESAT_EFFECT_NAME, this._desatEffect );
-      // Add a dimmer child to the background so we can change the colorization and dimming of the background
+      // A dimmer child of the target so we can change the colorization and dimming of the background
       let dimmerColor = this._getColor( blendColor, opacity );
       this._dimmer = new Clutter.Actor({x_expand: true, y_expand: true, width: global.screen_width, height: global.screen_height, background_color: dimmerColor});
-      global.background_actor.add_child(this._dimmer);
+
+      // Always keep the dimmer at the screen size (this used to be connected only with the "without focus" option)
+      this._monitorsChangedId = Main.layoutManager.connect("monitors-changed", () => this._monitorsChanged());
+      if (Meta.is_wayland_compositor())
+         this._mapId = global.window_manager.connect("map", (wm, actor) => this._onWindowMapped(actor));
+
+      this._setTarget(this._findTarget());
       this.updateEffects();
    }
 
@@ -3602,6 +3921,70 @@ class BlurDesktop extends BlurBase {
 
    _getUniqueSettings() {
       return [settings.desktopOpacity, settings.desktopBlendColor, settings.desktopBlurType, settings.desktopRadius, settings.desktopSaturation];
+   }
+
+   _findTarget() {
+      if (!Meta.is_wayland_compositor())
+         return global.background_actor;
+      let actor = global.get_window_actors().find( (a) => isWallpaperWindow(a.get_meta_window()) );
+      return actor || null;
+   }
+
+   _onWindowMapped(actor) {
+      if (actor !== this._target && isWallpaperWindow(actor.get_meta_window ? actor.get_meta_window() : null))
+         this._setTarget(actor);
+   }
+
+   // The "destroy" signal's default handler (which destroys children) runs after this, so the dimmer is
+   // taken off the dying window actor here before it would be destroyed along with it.
+   _onTargetDestroyed(actor) {
+      if (actor === this._target)
+         this._setTarget(null);
+   }
+
+   // Move our effects and dimmer from the current target (if any) to target (may be null)
+   _setTarget(target) {
+      if (target === this._target)
+         return;
+      let old = this._target;
+      if (old) {
+         if (this._targetDestroyId) {
+            old.disconnect(this._targetDestroyId);
+            this._targetDestroyId = 0;
+         }
+         if (this._blurEffect && old.get_effect(BLUR_EFFECT_NAME) === this._blurEffect)
+            old.remove_effect(this._blurEffect);
+         if (old.get_effect(DESAT_EFFECT_NAME) === this._desatEffect)
+            old.remove_effect(this._desatEffect);
+         if (this._dimmer.get_parent() === old)
+            old.remove_child(this._dimmer);
+      }
+      this._target = target;
+      if (target) {
+         if (target !== global.background_actor)
+            this._targetDestroyId = target.connect("destroy", (self) => this._onTargetDestroyed(self));
+         if (this._blurEnabled)
+            target.add_effect_with_name( BLUR_EFFECT_NAME, this._blurEffect );
+         target.add_effect_with_name( DESAT_EFFECT_NAME, this._desatEffect );
+         target.add_child(this._dimmer);
+         debugMsg( `Desktop effects attached to ${target}` );
+      }
+   }
+
+   // Make the target's blur effect match this._blurEffect/this._blurEnabled
+   _syncBlurOnTarget() {
+      if (!this._target)
+         return;
+      let curEffect = this._target.get_effect(BLUR_EFFECT_NAME);
+      if (this._blurEnabled) {
+         if (curEffect !== this._blurEffect) {
+            if (curEffect)
+               this._target.remove_effect(curEffect);
+            this._target.add_effect_with_name( BLUR_EFFECT_NAME, this._blurEffect );
+         }
+      } else if (curEffect) {
+         this._target.remove_effect(curEffect);
+      }
    }
 
    updateEffects() {
@@ -3618,39 +4001,24 @@ class BlurDesktop extends BlurBase {
          this._connected = false
       } else if(!this._connected && settings.desktopWithoutFocus) {
          this._signalManager.connect(global.display, "notify::focus-window", () => this._onFocusChanged());
-         this._signalManager.connect(Main.layoutManager, "monitors-changed", () => this._monitorsChanged());
          this._connected = true;
       }
-      let curEffect = global.background_actor.get_effect(BLUR_EFFECT_NAME);
-      if (blurType === BlurType.None && curEffect) {
-         global.background_actor.remove_effect(curEffect);
-      } else if (blurType === BlurType.Simple && !(this._blurEffect instanceof Clutter.BlurEffect)) {
-         if (curEffect) {
-            global.background_actor.remove_effect(curEffect);
-         }
-         this._blurEffect = new Clutter.BlurEffect();
-         global.background_actor.add_effect_with_name( BLUR_EFFECT_NAME, this._blurEffect );
-      } else if (blurType === BlurType.Gaussian && !(this._blurEffect instanceof GaussianBlur.GaussianBlurEffect)) {
-         if (curEffect) {
-            global.background_actor.remove_effect(curEffect);
-         }
-         this._blurEffect = new GaussianBlur.GaussianBlurEffect( {radius: radius, brightness: 1, width: 0, height: 0} );
-         global.background_actor.add_effect_with_name( BLUR_EFFECT_NAME, this._blurEffect );
-      } else if (blurType === BlurType.MonteCarlo && !(this._blurEffect instanceof MonteCarloBlur.MonteCarloBlurEffect)) {
-         if (curEffect) {
-            global.background_actor.remove_effect(curEffect);
-         }
-         this._blurEffect = new MonteCarloBlur.MonteCarloBlurEffect( { radius: radius, iterations: settings.montecarloIterations, prefer_closer_pixels: settings.montecarloPerferCloserPixels, use_base_pixel: settings.montecarloUseBasePixel, brightness: 1, width: 0, height: 0 } );
-         global.background_actor.add_effect_with_name( BLUR_EFFECT_NAME, this._blurEffect );
-      } else if (blurType === BlurType.DualKawase && !(this._blurEffect instanceof DualKawaseBlur.DualFilteringBlurEffect)) {
-         if (curEffect) {
-            global.background_actor.remove_effect(curEffect);
-         }
-         this._blurEffect = new DualKawaseBlur.DualFilteringBlurEffect( { radius: radius, brightness: 1, width: 0, height: 0 } );
-         global.background_actor.add_effect_with_name( BLUR_EFFECT_NAME, this._blurEffect );
-      } else if (blurType !== BlurType.None && curEffect === null) {
-         global.background_actor.add_effect_with_name( BLUR_EFFECT_NAME, this._blurEffect );
+      // Switch to a new blur effect when the type changed (any other type keeps the current one, as before)
+      let newEffect = this._blurEffect;
+      if (blurType === BlurType.Simple && !(newEffect instanceof Clutter.BlurEffect)) {
+         newEffect = new Clutter.BlurEffect();
+      } else if (blurType === BlurType.Gaussian && !(newEffect instanceof GaussianBlur.GaussianBlurEffect)) {
+         newEffect = new GaussianBlur.GaussianBlurEffect( {radius: radius, brightness: 1, width: 0, height: 0} );
+      } else if (blurType === BlurType.MonteCarlo && !(newEffect instanceof MonteCarloBlur.MonteCarloBlurEffect)) {
+         newEffect = new MonteCarloBlur.MonteCarloBlurEffect( { radius: radius, iterations: settings.montecarloIterations, prefer_closer_pixels: settings.montecarloPerferCloserPixels, use_base_pixel: settings.montecarloUseBasePixel, brightness: 1, width: 0, height: 0 } );
+      } else if (blurType === BlurType.DualKawase && !(newEffect instanceof DualKawaseBlur.DualFilteringBlurEffect)) {
+         newEffect = new DualKawaseBlur.DualFilteringBlurEffect( { radius: radius, brightness: 1, width: 0, height: 0 } );
       }
+      if (newEffect !== this._blurEffect && this._target && this._blurEffect && this._target.get_effect(BLUR_EFFECT_NAME) === this._blurEffect)
+         this._target.remove_effect(this._blurEffect);
+      this._blurEffect = newEffect;
+      this._blurEnabled = blurType !== BlurType.None && !!this._blurEffect;
+      this._syncBlurOnTarget();
       // Adjust the effects
       if ((this._blurEffect instanceof GaussianBlur.GaussianBlurEffect || this._blurEffect instanceof MonteCarloBlur.MonteCarloBlurEffect || this._blurEffect instanceof DualKawaseBlur.DualFilteringBlurEffect) && this._blurEffect.radius != radius) {
          this._blurEffect.radius = radius;
@@ -3702,17 +4070,14 @@ class BlurDesktop extends BlurBase {
 
    destroy() {
       this._signalManager.disconnectAllSignals();
-      let effect = global.background_actor.get_effect(BLUR_EFFECT_NAME);
-      if (effect) {
-         global.background_actor.remove_effect(effect);
+      Main.layoutManager.disconnect(this._monitorsChangedId);
+      if (this._mapId) {
+         global.window_manager.disconnect(this._mapId);
+         this._mapId = 0;
       }
-      effect = global.background_actor.get_effect(DESAT_EFFECT_NAME);
-      if (effect) {
-         global.background_actor.remove_effect(effect);
-      }
-      if (this._dimmer) {
-         global.background_actor.remove_child(this._dimmer);
-      }
+      this._setTarget(null);
+      this._dimmer.destroy();
+      this._dimmer = null;
    }
 }
 
@@ -4038,6 +4403,9 @@ class BlurApplications extends BlurBase {
       // WindowTracker so we can map windows to application
       this._windowTracker = Cinnamon.WindowTracker.get_default();
 
+      // Wayland windows still waiting for their wm_class (see _windowAdded)
+      this._windowsWaitingForWmClass = [];
+
       // Add a "Default window settings" if one does not exist
       let element = settings.windowInclusionList.find( (element) => {if (element.application == _("Default window settings")) {return true;}} );
       if (!element) {
@@ -4049,7 +4417,7 @@ class BlurApplications extends BlurBase {
       // Check existing windows to see if any need to be blurred
       let windows = global.display.list_windows(0);
       for (let i = 0; i < windows.length; i++) {
-         this._blurWindow(windows[i]);
+         this._windowAdded(null, windows[i]);
       }
    }
 
@@ -4082,12 +4450,56 @@ class BlurApplications extends BlurBase {
    }
 
    _windowAdded(workspace, metaWindow) {
+      // A native Wayland client sets its app_id (which becomes the wm_class) only after its MetaWindow
+      // exists, so window-added usually arrives before there is a wm_class, and before
+      // Cinnamon.WindowTracker can map the window to an app. _getSettings() would then match nothing in
+      // the inclusion list and the window would never be blurred. Wait for the wm_class instead. X11
+      // clients (including Xwayland) set WM_CLASS before mapping, so they're handled right away as before.
+      if (!metaWindow.get_wm_class() && metaWindow.get_client_type() === Meta.WindowClientType.WAYLAND) {
+         this._waitForWmClass(metaWindow);
+         return;
+      }
       this._blurWindow(metaWindow);
+   }
+
+   // Blur metaWindow once it has a wm_class. Handlers use the emitting MetaWindow argument rather than
+   // closing over metaWindow, so neither holds a JS reference back to the object it's connected to.
+   _waitForWmClass(metaWindow) {
+      if (metaWindow._blurCinnamonWmClassId)
+         return;
+      metaWindow._blurCinnamonWmClassId = metaWindow.connect("notify::wm-class", (self) => {
+         if (!self.get_wm_class())
+            return;
+         this._cancelWaitForWmClass(self);
+         // Let Cinnamon.WindowTracker see the new wm_class first, so _getAppForWindow() finds the real app
+         Mainloop.idle_add( () => {
+            if (this._windowsWaitingForWmClass && self.get_compositor_private())
+               this._blurWindow(self);
+            return false;
+         });
+      });
+      metaWindow._blurCinnamonUnmanagedId = metaWindow.connect("unmanaged", (self) => this._cancelWaitForWmClass(self));
+      this._windowsWaitingForWmClass.push(metaWindow);
+   }
+
+   _cancelWaitForWmClass(metaWindow) {
+      if (!metaWindow._blurCinnamonWmClassId)
+         return;
+      metaWindow.disconnect(metaWindow._blurCinnamonWmClassId);
+      metaWindow.disconnect(metaWindow._blurCinnamonUnmanagedId);
+      delete metaWindow._blurCinnamonWmClassId;
+      delete metaWindow._blurCinnamonUnmanagedId;
+      let idx = this._windowsWaitingForWmClass.indexOf(metaWindow);
+      if (idx !== -1)
+         this._windowsWaitingForWmClass.splice(idx, 1);
    }
 
    _blurWindow(metaWindow) {
       // Get the windows compositor actor
       let compositor = metaWindow.get_compositor_private();
+      // Nothing to blur yet, or already blurred (e.g. the wm_class wait and a settings change both got here)
+      if (!compositor || compositor._blurCinnamonDataWindow)
+         return;
 
       // Get the effect setting that should apply to Application windows
       let [enabled, window_opacity, opacity, blendColor, blurType, radius, saturation, corner_radius, top, bottom, titlebarsOnly] = this._getSettings(metaWindow);
@@ -4283,6 +4695,7 @@ class BlurApplications extends BlurBase {
                // edge with no inset needed; see the "un-blurred strip" fix this replaces).
                cornerEffect.clip = [rect.x - ex, rect.y - ey, rect.width, rect.height];
             }
+            this._setLiquidGlassRect(data.viewport, [rect.x - ex, rect.y - ey, rect.width, rect.height]);
          } else {
             let cornerEffect = this._getCornerEffect(data.background);
             if (cornerEffect) {
@@ -4592,6 +5005,8 @@ class BlurApplications extends BlurBase {
 
    destroy() {
       this._signalManager.disconnectAllSignals();
+      this._windowsWaitingForWmClass.slice().forEach( (metaWindow) => this._cancelWaitForWmClass(metaWindow) );
+      this._windowsWaitingForWmClass = null;
       // Go through all windows and remove effects when a windows compositor has a _blurCinnamonDataWindow field
       let windows = global.display.list_windows(0);
       for (let i = 0; i < windows.length; i++) {
@@ -5594,6 +6009,16 @@ function disable() {
    if (blurDesklets) {
       blurDesklets.destroy();
       blurDesklets = null;
+   }
+
+   // Every component's backgrounds have released their wallpaper clones by now; this is just a safety net
+   if (wallpaperTracker) {
+      wallpaperTracker.destroy();
+      wallpaperTracker = null;
+   }
+   if (screenSizeTracker) {
+      screenSizeTracker.destroy();
+      screenSizeTracker = null;
    }
 
    // If disabled was called to remove the extension entirely rather than a reload

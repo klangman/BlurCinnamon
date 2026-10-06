@@ -321,6 +321,7 @@ const RefractionEffect = new GObject.registerClass({
             this._stabilize_clip_x = false;
             this._stabilize_clip_y = false;
             this._clip_settle_timeout_id = null;
+            this._glass_rect = null;
 
             Utils.setup_params(this, params);
 
@@ -675,6 +676,36 @@ const RefractionEffect = new GObject.registerClass({
             this.update_scaled_uniforms();
         }
 
+        // Optional bounds for the glass shape (edges, rim, corners), in actor-local pixels, used instead
+        // of the actor's clip. BlurCinnamon's viewport actors have no clip and are larger than the visible
+        // area (they include the blur's sampling margin), so without this the glass edge would be drawn out
+        // in that margin and then cut away by the corner effect. null goes back to following the actor's clip.
+        get glass_rect() {
+            return this._glass_rect;
+        }
+
+        set glass_rect(rect) {
+            const new_rect = rect ? [...rect] : null;
+            const old_rect = this._glass_rect;
+            if (new_rect === old_rect ||
+                (new_rect && old_rect && new_rect.every((v, i) => v === old_rect[i])))
+                return;
+
+            this._glass_rect = new_rect;
+            const actor = this.get_actor();
+            if (new_rect || actor)
+                this.clip = this._bounds_for_actor(actor);
+
+            if (this.chained_effect)
+                this.chained_effect.glass_rect = new_rect;
+        }
+
+        _bounds_for_actor(actor) {
+            if (this._glass_rect)
+                return this._glass_rect;
+            return (actor && actor.has_clip) ? actor.get_clip() : [0, 0, -10, -10];
+        }
+
         get opacity_factor() {
             return this._opacity_factor;
         }
@@ -837,9 +868,9 @@ const RefractionEffect = new GObject.registerClass({
                     this.height = actor.height;
                 });
 
-                this.clip = actor.has_clip ? actor.get_clip() : [0, 0, -10, -10];
+                this.clip = this._bounds_for_actor(actor);
                 this._actor_connection_clip_rect_id = actor.connect('notify::clip-rect', _ => {
-                    this.clip = actor.has_clip ? actor.get_clip() : [0, 0, -10, -10];
+                    this.clip = this._bounds_for_actor(actor);
                 });
             }
             else {
@@ -879,6 +910,7 @@ const RefractionEffect = new GObject.registerClass({
 
                     this.chained_effect = new RefractionEffect(chained_params);
                 }
+                this.chained_effect.glass_rect = this._glass_rect;
 
                 if (actor !== null)
                     actor.add_effect(this.chained_effect);
