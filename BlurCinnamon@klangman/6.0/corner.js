@@ -202,6 +202,21 @@ var CornerEffect = (typeof global === 'undefined') ?
         }
 
         set_viewport_clip(value) {
+            if (!Array.isArray(value) || value.length !== 4 ||
+                !Number.isFinite(value[0]) || !Number.isFinite(value[1]) ||
+                !Number.isFinite(value[2]) || !Number.isFinite(value[3]) ||
+                value[2] <= 0 || value[3] <= 0) {
+              
+                this._clip_x0 = this._clip_y0 = this._clip_width = this._clip_height = 0;
+
+                // Puts the mask outside the texture
+                this.set_uniform_value('clip_x0', -1.000001);
+                this.set_uniform_value('clip_y0', -1.000001);
+                this.set_uniform_value('clip_width', 1e-6);
+                this.set_uniform_value('clip_height', 1e-6);
+                this.update_radius();
+                return;
+            }
             [this._clip_x0, this._clip_y0, this._clip_width, this._clip_height] = value;
             this.set_uniform_value('clip_x0', parseFloat(this._clip_x0 + 2 - 1e-6));
             this.set_uniform_value('clip_y0', parseFloat(this._clip_y0 + 2 - 1e-6));

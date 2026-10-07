@@ -443,10 +443,15 @@ function getViewportMargin(viewport) {
 // edge exactly as it did before, and we don't pay for FBO area that can't contain anything. The result
 // always contains the visible rect, even when the visible rect itself sticks out of the stage.
 function getExpandedRect(x, y, width, height, margin) {
-   let x1 = Math.min(x, Math.max(0, x - margin));
-   let y1 = Math.min(y, Math.max(0, y - margin));
-   let x2 = Math.max(x + width,  Math.min(global.stage.width,  x + width  + margin));
-   let y2 = Math.max(y + height, Math.min(global.stage.height, y + height + margin));
+   if (![x, y, width, height, margin].every(Number.isFinite) || width <= 0 || height <= 0)
+      return [0, 0, 0, 0];
+
+   margin = Math.max(0, margin);
+   let x1 = Math.floor(Math.min(x, Math.max(0, x - margin)));
+   let y1 = Math.floor(Math.min(y, Math.max(0, y - margin)));
+   let x2 = Math.ceil(Math.max(x + width, Math.min(global.stage.width, x + width + margin)));
+   let y2 = Math.ceil(Math.max(y + height, Math.min(global.stage.height, y + height + margin)));
+
    return [x1, y1, x2 - x1, y2 - y1];
 }
 
@@ -1920,6 +1925,9 @@ class BlurBase {
    // is clipped to the visible rect, which also cuts the margin away again (the corner shader makes
    // everything outside its clip transparent).
    _applyBackgroundClip(background, viewport, x, y, width, height) {
+      if (![x, y, width, height].every(Number.isFinite))
+        x = y = width = height = 0;
+      
       width = Math.max(0, width);
       height = Math.max(0, height);
       if (viewport) {
