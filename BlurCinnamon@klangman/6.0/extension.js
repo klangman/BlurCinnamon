@@ -33,6 +33,7 @@ const Panel           = imports.ui.panel;
 const Main            = imports.ui.main;
 const Meta            = imports.gi.Meta;
 const Mainloop        = imports.mainloop;
+const Signals         = imports.signals;
 const AppletManager   = imports.ui.appletManager;
 const Lang            = imports.lang;
 const UPowerGlib      = imports.gi.UPowerGlib;
@@ -990,6 +991,26 @@ function cloneWindowsForBackgroundNow(background, desktopOnly) {
    windowsToClone.forEach( (window) => createWindowClone(window, background, desktopOnly) );
 
    return;
+}
+
+// Shared notifier between this extension and the "Rounded Corners" extension, published as
+// global.roundedCornersNotifier. Whichever extension loads first creates it, and neither ever removes
+// it, so either can connect to it at any time, whatever the load order. Each extension disconnects only
+// its own handlers. Rounded Corners emits:
+//   "enabled"                     it started; metaWindow._roundedCornersRadius is now set on every window it rounds
+//   "radius-changed" (metaWindow) that window's _roundedCornersRadius ([top, bottom] in logical pixels,
+//                                 null where Rounded Corners isn't rounding those corners) was set, changed
+//                                 or cleared (undefined)
+//   "disabled"                    it stopped; no window has _roundedCornersRadius any more
+// and keeps notifier.enabled true while it's running.
+function getRoundedCornersNotifier() {
+   let notifier = global.roundedCornersNotifier;
+   if (!notifier || typeof notifier.connect !== "function" || typeof notifier.emit !== "function") {
+      notifier = { enabled: false };
+      Signals.addSignalMethods(notifier);
+      global.roundedCornersNotifier = notifier;
+   }
+   return notifier;
 }
 
 // Manage the window clones that are attached to blurred backgrounds when Dynamic Blurring is enabled on one or more components.
@@ -4405,7 +4426,6 @@ class BlurApplications extends BlurBase {
       // BlurApplication global listeners
       this._signalManager = new SignalManager.SignalManager(null);
       this._signalManager.connect(global.screen, "window-added", this._windowAdded, this);
-      this._signalManager.connect(global.display, "notify::focus-window", this._onFocusChanged, this);
       this._signalManager.connect(global.display, "grab-op-begin", this._onWindowGrabbed, this);
 
       // WindowTracker so we can map windows to application
@@ -4413,6 +4433,12 @@ class BlurApplications extends BlurBase {
 
       // Wayland windows still waiting for their wm_class (see _windowAdded)
       this._windowsWaitingForWmClass = [];
+
+      // Follow the corner radius the "Rounded Corners" extension gives each window (see
+      // _connectRoundedCornersNotifier). Done before blurring the existing windows so they pick it up.
+      this._roundedCornersPending = new Set();
+      this._roundedCornersIdleId = 0;
+      this._connectRoundedCornersNotifier();
 
       // Add a "Default window settings" if one does not exist
       let element = settings.windowInclusionList.find( (element) => {if (element.application == _("Default window settings")) {return true;}} );
@@ -4605,12 +4631,124 @@ class BlurApplications extends BlurBase {
          }
          if (element) {
             if (element.override) {
-               return [enabled, element.window_opacity, element.opacity, element.color, element.blurtype, element.radius, element.saturation, element.corner_radius, element.corner_top, element.corner_bottom, titlebarsOnly];
+               return this._applyRoundedCornersRadius(metaWindow, [enabled, element.window_opacity, element.opacity, element.color, element.blurtype, element.radius, element.saturation, element.corner_radius, element.corner_top, element.corner_bottom, titlebarsOnly]);
             }
-            return [enabled, element.window_opacity, ...super._getSettings(false), element.corner_radius, element.corner_top, element.corner_bottom, titlebarsOnly ];
+            return this._applyRoundedCornersRadius(metaWindow, [enabled, element.window_opacity, ...super._getSettings(false), element.corner_radius, element.corner_top, element.corner_bottom, titlebarsOnly ]);
          }
       }
       return [false, 100, 0, undefined, BlurType.None, 0, 100, 0, false, false, false]
+   }
+
+   // When the "Rounded Corners" extension is rounding metaWindow, use its corner radius in place of the
+   // inclusion list's corner_radius/corner_top/corner_bottom so the blur's corners match the window's.
+   // Rounded Corners reports [top, bottom]; an entry is null when it isn't rounding those corners, and
+   // then the inclusion list's values are used for that pair (they describe the app's own, e.g. client
+   // side decoration, corners). Windows it isn't rounding at all (excluded, maximized, fullscreen...)
+   // have no _roundedCornersRadius, or [null, null], and keep the inclusion list's values entirely.
+   // settingsArray is the _getSettings() result: [..., corner_radius(7), top(8), bottom(9), titlebarsOnly(10)]
+   _applyRoundedCornersRadius(metaWindow, settingsArray) {
+      if (!settings.windowsRoundedCornersSync || !this._roundedCornersNotifier || !this._roundedCornersNotifier.enabled)
+         return settingsArray;
+      let rcRadius = metaWindow._roundedCornersRadius;
+      if (!Array.isArray(rcRadius) || rcRadius.length < 2)
+         return settingsArray;
+      let rcValue = (value) => {
+         if (value === null || value === undefined)
+            return null;
+         let num = Number(value);
+         return Number.isFinite(num) ? Math.max(0, num) : null;
+      };
+      let rcTop = rcValue(rcRadius[0]);
+      let rcBottom = rcValue(rcRadius[1]);
+      if (rcTop === null && rcBottom === null)
+         return settingsArray;
+      // Fall back to Blur Cinnamon's own settings for any corners Rounded Corners isn't rounding
+      let ownRadius = Math.max(0, Number(settingsArray[7]) || 0);
+      let topRadius    = (rcTop    !== null) ? rcTop    : (settingsArray[8] ? ownRadius : 0);
+      let bottomRadius = (rcBottom !== null) ? rcBottom : (settingsArray[9] ? ownRadius : 0);
+      // A title-bar-only blur ends where the window body starts, the window's bottom corners aren't part of it
+      if (settingsArray[10])
+         bottomRadius = 0;
+      // The corner effect has a single radius for the corners it rounds, so if the top and bottom
+      // radii differ (one from Rounded Corners, one from our settings) the larger one is used for both.
+      settingsArray[7] = Math.max(topRadius, bottomRadius);
+      settingsArray[8] = topRadius > 0;
+      settingsArray[9] = bottomRadius > 0;
+      return settingsArray;
+   }
+
+   // Follow the "Rounded Corners" extension through the notifier shared with it (see
+   // getRoundedCornersNotifier()). It's there whatever order the extensions load in.
+   _connectRoundedCornersNotifier() {
+      let notifier = getRoundedCornersNotifier();
+      this._roundedCornersNotifier = notifier;
+      this._roundedCornersSignalIds = [
+         notifier.connect("radius-changed", (emitter, metaWindow) => this._queueRoundedCornersUpdate(metaWindow)),
+         notifier.connect("enabled",  () => this._queueRoundedCornersUpdate(null)),
+         notifier.connect("disabled", () => this._queueRoundedCornersUpdate(null))
+      ];
+   }
+
+   _disconnectRoundedCornersNotifier() {
+      if (this._roundedCornersNotifier) {
+         for (let id of this._roundedCornersSignalIds)
+            this._roundedCornersNotifier.disconnect(id);
+      }
+      this._roundedCornersSignalIds = [];
+      this._roundedCornersNotifier = null;
+   }
+
+   // Rounded Corners unrounds and re-rounds every window when its settings change, so collect the
+   // windows and update each once from an idle callback. metaWindow null means every window.
+   _queueRoundedCornersUpdate(metaWindow) {
+      if (!this._roundedCornersPending)
+         return;
+      if (metaWindow) {
+         this._roundedCornersPending.add(metaWindow);
+      } else {
+         global.display.list_windows(0).forEach( (win) => this._roundedCornersPending.add(win) );
+      }
+      if (!this._roundedCornersIdleId) {
+         this._roundedCornersIdleId = Mainloop.idle_add( () => {
+            this._roundedCornersIdleId = 0;
+            this._processRoundedCornersUpdates();
+            return false;
+         });
+      }
+   }
+
+   _processRoundedCornersUpdates() {
+      if (!this._roundedCornersPending)
+         return;
+      let pending = Array.from(this._roundedCornersPending);
+      this._roundedCornersPending.clear();
+      let windows = global.display.list_windows(0);
+      for (let metaWindow of pending) {
+         if (!windows.includes(metaWindow))
+            continue;
+         let compositor = metaWindow.get_compositor_private();
+         if (!compositor || !compositor._blurCinnamonDataWindow)
+            continue;
+         let [enabled, , , , , , , corner_radius, top, bottom] = this._getSettings(metaWindow);
+         if (enabled)
+            this._updateWindowCorners(compositor, corner_radius, top, bottom);
+      }
+   }
+
+   // Apply a corner radius to a blurred window and re-sync its clip (a newly created corner effect
+   // needs its clip set, and a viewport's margin may have changed)
+   _updateWindowCorners(compositor, corner_radius, top, bottom) {
+      let data = compositor._blurCinnamonDataWindow;
+      if (!data)
+         return;
+      let effectsActor = data.viewport || data.background;
+      let cornerEffect = this._getCornerEffect(effectsActor);
+      if (cornerEffect) {
+         cornerEffect.corners_top = top;
+         cornerEffect.corners_bottom = bottom;
+      }
+      this._updateCornerRadius(effectsActor, corner_radius, top, bottom);
+      this._setClip(compositor);
    }
 
    _getTitlebarHeight(metaWindow) {
@@ -4834,17 +4972,9 @@ class BlurApplications extends BlurBase {
                } else {
                   this._updateEffects(data.background, opacity, blendColor, blurType, radius, saturation);
                }
-               let cornerEffect = this._getCornerEffect(effectsActor);
-               if (cornerEffect) {
-                  cornerEffect.corners_top = top;
-                  cornerEffect.corners_bottom = bottom;
-               }
-               this._updateCornerRadius(effectsActor, corner_radius, top, bottom);
-               if (data.viewport) {
-                  // The blur's sampling reach - and so the viewport's margin - may have changed
-                  // along with the blur type or radius.
-                  this._setClip(compositor);
-               }
+               // Also re-syncs the clip: the blur's sampling reach - and so the viewport's margin -
+               // may have changed along with the blur type or radius.
+               this._updateWindowCorners(compositor, corner_radius, top, bottom);
                if (!window_opacity || window_opacity < 10 || window_opacity > 100 )
                   window_opacity = 100;
                windows[i].set_opacity(Math.round(window_opacity*2.55));
@@ -4868,32 +4998,163 @@ class BlurApplications extends BlurBase {
       return null;
    }
 
-   _onFocusChanged() {
-      this.prev_focused_window = this.last_focused_window;
-      this.last_focused_window = global.display.get_focus_window();
+   // ---- Window picker ----
+   // Started from the "Pick a window to blur" button in the settings dialog. The user clicks the window
+   // they mean and its application is added to the window inclusion list. While picking, a transparent
+   // modal overlay covers the screen: it highlights the window under the pointer and names it, a left
+   // click picks it, and Esc, any other button or a 30 second timeout cancels.
+   pickWindow() {
+      if (this._picker)
+         return;
+      let overlay = new St.Widget({ reactive: true, can_focus: true, x: 0, y: 0,
+                                    width: global.screen_width, height: global.screen_height });
+      let highlight = new St.Widget({ visible: false,
+         style: "border: 2px solid rgba(53,132,228,1); background-color: rgba(53,132,228,0.2); border-radius: 6px;" });
+      let highlightLabel = new St.Label({ x: 10, y: 10,
+         style: "background-color: rgba(0,0,0,0.8); color: white; padding: 4px 10px; border-radius: 4px; font-weight: bold;" });
+      highlight.add_child(highlightLabel);
+      overlay.add_child(highlight);
+      let hint = new St.Label({ text: _("Click a window to add its application to the Blur Cinnamon window list.  Esc or right-click to cancel."),
+         style: "background-color: rgba(0,0,0,0.85); color: white; padding: 10px 18px; border-radius: 8px; font-size: 11pt;" });
+      overlay.add_child(hint);
+      Main.uiGroup.add_child(overlay);
+      Main.uiGroup.set_child_above_sibling(overlay, null);
+      let monitor = Main.layoutManager.primaryMonitor;
+      let [, hintWidth] = hint.get_preferred_width(-1);
+      hint.set_position(monitor.x + Math.floor((monitor.width - hintWidth) / 2), monitor.y + 60);
+
+      if (!Main.pushModal(overlay)) {
+         overlay.destroy();
+         Main.notify(metaData.name, _("Couldn't start the window picker. Close any open menus and try again."));
+         return;
+      }
+      this._picker = { overlay: overlay, highlight: highlight, label: highlightLabel, window: null, timeoutId: 0 };
+      overlay.grab_key_focus();
+      if (Cinnamon.Cursor && Cinnamon.Cursor.CROSSHAIR !== undefined)
+         global.set_cursor(Cinnamon.Cursor.CROSSHAIR);
+
+      overlay.connect("motion-event", (actor, event) => {
+         let [x, y] = event.get_coords();
+         this._pickerHover(x, y);
+         return Clutter.EVENT_STOP;
+      });
+      overlay.connect("button-press-event", () => Clutter.EVENT_STOP);
+      overlay.connect("scroll-event", () => Clutter.EVENT_STOP);
+      // Act on the release, so it doesn't reach the window underneath once the grab is gone
+      overlay.connect("button-release-event", (actor, event) => {
+         if (event.get_button() === 1) {
+            let [x, y] = event.get_coords();
+            let metaWindow = this._windowAtPoint(x, y);
+            if (metaWindow) {   // a click on the desktop or a panel just keeps picking
+               this._endPick();
+               this._addWindowToList(metaWindow);
+            }
+         } else {
+            this._endPick();
+         }
+         return Clutter.EVENT_STOP;
+      });
+      overlay.connect("key-press-event", (actor, event) => {
+         if (event.get_key_symbol() === Clutter.KEY_Escape)
+            this._endPick();
+         return Clutter.EVENT_STOP;
+      });
+      // Never leave the desktop grabbed if something goes wrong
+      this._picker.timeoutId = GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, 30, () => {
+         if (this._picker)
+            this._picker.timeoutId = 0;
+         this._endPick();
+         return GLib.SOURCE_REMOVE;
+      });
+
+      let [px, py] = global.get_pointer();
+      this._pickerHover(px, py);
    }
 
-   // Add a new app window list row for the application of the last focused window
-   window_add_button_pressed() {
-      if (this.prev_focused_window) {
-         let app = this._getAppForWindow(this.prev_focused_window);
-         if (app && !app.is_window_backed()) {
-            let windowList = settings.settings.getValue("windows-inclusion-list");
-            windowList.push( {enabled:true, application:app.get_id(), override: true, opacity:0, color:"rgb(0,0,0)", blurtype:BlurType.Gaussian, radius:10, saturation:100, corner_radius: 10, corner_top: true, corner_bottom: false  } );
-            settings.settings.setValue("windows-inclusion-list", windowList);
-         } else if (this.prev_focused_window.get_wm_class()) {
-            let windowList = settings.settings.getValue("windows-inclusion-list");
-            windowList.push( {enabled:true, application:this.prev_focused_window.get_wm_class(), override: true, opacity:0, color:"rgb(0,0,0)", blurtype:BlurType.Gaussian, radius:10, saturation:100, corner_radius: 10, corner_top: true, corner_bottom: false } );
-            settings.settings.setValue("windows-inclusion-list", windowList);
-         } else {
-            let source = new MessageTray.Source(this.meta.name);
-            let notification = new MessageTray.Notification(source, _("Error") + ": " + this.meta.name,
-               _("Unable to determine the application or the WM_CLASS of the previously focused window, therefore Blur Cinnamon effects can not be applied to that window"),
-               {icon: new St.Icon({icon_name: "cinnamon-burn-my-window", icon_type: St.IconType.FULLCOLOR, icon_size: source.ICON_SIZE })}
-               );
-            Main.messageTray.add(source);
-            source.notify(notification);
-         }
+   _endPick() {
+      let picker = this._picker;
+      if (!picker)
+         return;
+      this._picker = null;
+      if (picker.timeoutId)
+         GLib.source_remove(picker.timeoutId);
+      global.unset_cursor();
+      Main.popModal(picker.overlay);
+      picker.overlay.destroy();
+   }
+
+   // Highlight the window under the pointer and show the name it would be added as
+   _pickerHover(x, y) {
+      let picker = this._picker;
+      if (!picker)
+         return;
+      let metaWindow = this._windowAtPoint(x, y);
+      if (metaWindow === picker.window)
+         return;
+      picker.window = metaWindow;
+      if (!metaWindow) {
+         picker.highlight.hide();
+         return;
+      }
+      let rect = metaWindow.get_frame_rect();
+      picker.highlight.set_position(rect.x, rect.y);
+      picker.highlight.set_size(rect.width, rect.height);
+      picker.label.text = this._getWindowListName(metaWindow) || _("(unknown application)");
+      picker.highlight.show();
+   }
+
+   // The topmost visible window on the current workspace whose frame contains (x, y), or null.
+   // Docks (i.e. Plank) and desktop windows (i.e. Conky) can be blurred so they can be picked too,
+   // but not the Nemo desktop or the wallpaper window, which cover the whole screen.
+   _windowAtPoint(x, y) {
+      let workspace = (global.workspace_manager || global.screen).get_active_workspace();
+      let types = [Meta.WindowType.NORMAL, Meta.WindowType.DIALOG, Meta.WindowType.MODAL_DIALOG, Meta.WindowType.UTILITY,
+                   Meta.WindowType.DOCK, Meta.WindowType.DESKTOP];
+      let windows = global.display.list_windows(0).filter(w =>
+         types.includes(w.get_window_type()) && !w.minimized && w.showing_on_its_workspace() &&
+         w.get_wm_class() !== "Nemo-desktop" && !isWallpaperWindow(w) &&
+         (w.is_on_all_workspaces() || w.get_workspace() === workspace));
+      windows = global.display.sort_windows_by_stacking(windows);   // bottom to top
+      for (let i = windows.length - 1; i >= 0; i--) {
+         let rect = windows[i].get_frame_rect();
+         if (x >= rect.x && x < rect.x + rect.width && y >= rect.y && y < rect.y + rect.height)
+            return windows[i];
+      }
+      return null;
+   }
+
+   // The name a picked window is added to the list as: its desktop file id, or failing that its WM_CLASS
+   _getWindowListName(metaWindow) {
+      let app = this._getAppForWindow(metaWindow);
+      if (app && !app.is_window_backed())
+         return app.get_id();
+      return metaWindow.get_wm_class() || null;
+   }
+
+   // Add the window's application to the inclusion list, or enable its entry if it's there but disabled
+   _addWindowToList(metaWindow) {
+      // The blur is drawn behind the window, so it can't be seen through an opaque one
+      let note = "\n\n" + _("Note: The blur is only visible behind transparent windows. If this application doesn't support transparency, set its \"Opacity\" in the window list to less than 100.");
+      let name = this._getWindowListName(metaWindow);
+      if (!name) {
+         Main.notify(metaData.name, _("Unable to determine the application or the WM_CLASS of that window, therefore Blur Cinnamon effects can not be applied to it."));
+         return;
+      }
+      let app = this._getAppForWindow(metaWindow);
+      let ids = [metaWindow.get_wm_class(), app ? app.get_id() : null].filter(id => id);
+      let windowList = settings.settings.getValue("windows-inclusion-list");
+      let existing = windowList.find(element => ids.includes(element.application));
+      if (existing && existing.enabled) {
+         Main.notify(metaData.name, _("\"%s\" is already in the window list.").format(existing.application) + note);
+         return;
+      } else if (existing) {
+         existing.enabled = true;
+         settings.settings.setValue("windows-inclusion-list", windowList);
+         Main.notify(metaData.name, _("Enabled \"%s\" in the window list.").format(existing.application) + note);
+      } else {
+         windowList.push( {enabled:true, application:name, window_opacity:100, override: true, opacity:0, color:"rgb(0,0,0)", blurtype:BlurType.Gaussian, radius:10, saturation:100, corner_radius: 10, corner_top: true, corner_bottom: false } );
+         settings.settings.setValue("windows-inclusion-list", windowList);
+         Main.notify(metaData.name, _("Added \"%s\" to the window list. Adjust its effect settings in the table.").format(name) + note);
       }
    }
 
@@ -5012,9 +5273,16 @@ class BlurApplications extends BlurBase {
    }
 
    destroy() {
+      this._endPick();
       this._signalManager.disconnectAllSignals();
       this._windowsWaitingForWmClass.slice().forEach( (metaWindow) => this._cancelWaitForWmClass(metaWindow) );
       this._windowsWaitingForWmClass = null;
+      this._disconnectRoundedCornersNotifier();
+      if (this._roundedCornersIdleId) {
+         Mainloop.source_remove(this._roundedCornersIdleId);
+         this._roundedCornersIdleId = 0;
+      }
+      this._roundedCornersPending = null;
       // Go through all windows and remove effects when a windows compositor has a _blurCinnamonDataWindow field
       let windows = global.display.list_windows(0);
       for (let i = 0; i < windows.length; i++) {
@@ -5571,6 +5839,7 @@ class BlurSettings {
       this.bind('windows-inclusion-list', 'windowInclusionList', updateWindowEffects);
       this.bind('windows-atrifact-mitigation', 'windowArtifactMitigation', updateArtifactMitigation);
       this.bind('windows-titlebar-blur', `windowsTitlebarBlur`, updateWindowEffects);
+      this.bind('windows-rounded-corners-sync', 'windowsRoundedCornersSync', updateWindowEffects);
 
       this.bind('focused-window-backlight', 'focusedWindowEffect', updateFocusedWindowEffect);
 
@@ -6056,9 +6325,9 @@ const Callbacks = {
       Util.spawnCommandLineAsync("cinnamon-settings windows -t 2");
    },
 
-   on_window_add_button_pressed: function() {
+   on_window_pick_button_pressed: function() {
       if (blurApplications) {
-         blurApplications.window_add_button_pressed();
+         blurApplications.pickWindow();
       }
    }
 }
