@@ -4677,6 +4677,8 @@ class BlurApplications extends BlurBase {
             // by the blur's sampling margin (see getViewportMargin()) - so the blur always has real,
             // correctly cloned content to sample right up to the visible edge. This is also the rect
             // CloneManager uses to decide which windows to clone (see getBackgroundClip()).
+            data.viewport._blurCinnamonSamplingRect = [rect.x, rect.y, rect.width, rect.height];
+            
             let margin = getViewportMargin(data.viewport);
             let [ex, ey, ew, eh] = getExpandedRect(rect.x, rect.y, rect.width, rect.height, margin);
             data.background.set_clip( ex, ey, ew, eh );

@@ -318,6 +318,18 @@ var DualFilteringBlurEffect =
             this.set_uniform_value('offset', parseFloat(calculated_offset - 1e-6));
         }
 
+        _update_chain_uniforms() {
+            const scale_factor = St.ThemeContext.get_for_stage(global.stage).scale_factor;
+        
+            this._update_uniforms(scale_factor);
+            this.queue_repaint();
+        
+            for (const effect of this._sub_effects ?? []) {
+                effect._update_uniforms(scale_factor);
+                effect.queue_repaint();
+            }
+        }
+
         vfunc_set_actor(actor) {
             if (this._actor_connection_size_id) {
                 let old_actor = this.get_actor();
@@ -339,9 +351,7 @@ var DualFilteringBlurEffect =
                         this.height = actor.height;
                     });
 
-                    this._scale_connection_id = St.ThemeContext.get_for_stage(global.stage).connect('notify::scale-factor', () => {
-                        this._update_uniforms(St.ThemeContext.get_for_stage(global.stage).scale_factor);
-                    });
+                    this._scale_connection_id = St.ThemeContext.get_for_stage(global.stage).connect('notify::scale-factor', () => this._update_chain_uniforms());
                 }
             } else {
                 this._actor_connection_size_id = null;
@@ -390,6 +400,9 @@ var DualFilteringBlurEffect =
                         this._sub_effects.push(new_pass);
                         actor.add_effect(new_pass);
                     }
+                  
+                    if (actor)
+                        this._update_chain_uniforms();
                 }
             }
         }
