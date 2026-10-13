@@ -28,7 +28,7 @@ function _baseOffsetMultiplier(total_passes) {
     switch (total_passes) {
         case 3:  return 0.18;
         case 5:  return 0.09;
-        default: return 0.08;
+        default: return 0.07;
     }
 }
 
