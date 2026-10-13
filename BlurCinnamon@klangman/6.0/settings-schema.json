@@ -67,7 +67,7 @@
                     "notification-warning", "enable-notification-override", "allow-transparent-color-notifications", "notification-opacity", "notification-blendColor", "notification-blurType", "notification-radius", "notification-saturation", "notification-test-button",
                     "appswitcher-warning", "enable-appswitcher-override", "appswitcher-disable-3d-panels", "appswitcher-allow-classic", "allow-transparent-color-switcher", "appswitcher-allow-3d", "window-settings-button", "appswitcher-opacity", "appswitcher-blendColor", "appswitcher-blurType", "appswitcher-radius", "appswitcher-saturation",
                     "tooltips-warning", "enable-tooltips-override", "allow-transparent-color-tooltips", "tooltips-opacity", "tooltips-blendColor", "tooltips-blurType", "tooltips-radius", "tooltips-saturation",
-                    "windows-warning", "windows-inclusion-list", "windows-label", "windows-add-button", "windows-titlebar-blur", "windows-atrifact-mitigation", "windows-compiz-mitigation",
+                    "windows-warning", "windows-inclusion-list", "windows-label", "windows-add-button", "windows-titlebar-blur", "windows-rounded-corners-sync", "windows-atrifact-mitigation", "windows-compiz-mitigation",
                     "desklets-warning", "enable-desklets-override", "enable-desklets-unique-settings", "desklets-opacity", "desklets-blendColor", "desklets-blurType", "desklets-radius", "desklets-saturation", "desklets-list", "desklets-auto", "desklets-label",
                     "info-label"
                   ]
@@ -1462,10 +1462,10 @@
 
    "windows-add-button" : {
       "type" : "button",
-      "description" : "Add entry for the application of the most recently focused window",
-      "callback" : "on_window_add_button_pressed",
+      "description" : "Pick a window to blur…",
+      "callback" : "on_window_pick_button_pressed",
       "dependency" : "enable-window-effects & component-selector=9",
-      "tooltip" : "Focus a window you want to enable window effects on then return here and press this button."
+      "tooltip" : "Click this, then click any window to add its application to the window list above with effects enabled. If the application is already in the list but disabled, it is enabled instead. Press Esc or right-click to cancel."
     },
 
     "windows-compiz-mitigation": {
@@ -1490,6 +1490,14 @@
         "description": "Blur window title bars (please read tooltip)",
         "dependency" : "enable-window-effects & component-selector=9",
         "tooltip": "When enabled, the title bar area under most windows will be blurred excluding GTK4 windows and windows with custom title bars. This behaves like \"Default window settings\" entry above and even uses its settings, but with this option only title bar areas are blurred rather than the entire window. Note: The title bar blurring will only be visible when the title bars are configured to be semi-transparent which MUST be done using CSS. See the Blur Cinnamon website for instructions."
+    },
+
+    "windows-rounded-corners-sync": {
+        "type": "switch",
+        "default": true,
+        "description": "Match the corner radius set by the \"Rounded Corners\" extension",
+        "dependency" : "enable-window-effects & component-selector=9",
+        "tooltip": "When enabled, windows rounded by the \"Rounded Corners\" extension will use that extension's corner radius for their Blur Cinnamon effects instead of the corner settings in the table above. Windows, or the top/bottom corners of a window, that \"Rounded Corners\" is not rounding (e.g. maximized windows) still use the table settings. This option will have no effect unless the \"Rounded Corners\" extension is installed and active."
     },
 
     "desklets-auto": {
