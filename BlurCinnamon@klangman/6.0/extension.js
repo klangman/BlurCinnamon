@@ -2400,6 +2400,7 @@ class BlurOSD extends BlurBase {
    constructor() {
       super();
       this._signalManager = new SignalManager.SignalManager(null);
+      this._reclipLaterId = 0;
       blurOSDThis = this; // Make "this" available to monkey patched functions
 
       this.has_own_show = OsdWindow.OsdWindow.prototype.hasOwnProperty('show');
@@ -2422,10 +2423,6 @@ class BlurOSD extends BlurBase {
          this.has_own_display = WorkspaceOsd.WorkspaceOsd.prototype.hasOwnProperty('display');
          this.original_display = WorkspaceOsd.WorkspaceOsd.prototype.display;
          WorkspaceOsd.WorkspaceOsd.prototype.display = this._display;
-
-         this.has_own_onTimeout = WorkspaceOsd.WorkspaceOsd.prototype.hasOwnProperty('_onTimeout');
-         this.original_onTimeout = WorkspaceOsd.WorkspaceOsd.prototype._onTimeout;
-         WorkspaceOsd.WorkspaceOsd.prototype._onTimeout = this._onTimeout;
       } else {
          this.has_own_info_show = ModalDialog.InfoOSD.prototype.hasOwnProperty('show');
          this.original_infoOSD_show = ModalDialog.InfoOSD.prototype.show;
@@ -2480,17 +2477,12 @@ class BlurOSD extends BlurBase {
       return ret;
    }
 
-   _onTimeout(...params) {
-      try { blurOSDThis._hideBackground(this, this._vbox || (this.actor ? this.actor.get_first_child() : null)); } catch (e) { global.logError(e); }
-      return blurOSDThis.original_onTimeout.call(this, ...params);
-   }
-
    _infoOSD_show(...params) {
       let ret = blurOSDThis.original_infoOSD_show.call(this, ...params);
       if (settings.osdWorkspaceEffects) {
          try {
-            let actor = this.actor ? this.actor.get_first_child() : null;
-            let clipActor = this.actor || actor;
+            let actor = this.actor;
+            let clipActor = actor;
             blurOSDThis._showBackground(this, actor, true, clipActor);
          } catch (e) {
             global.logError(e);
@@ -2500,85 +2492,20 @@ class BlurOSD extends BlurBase {
    }
 
    _infoOSD_hide(...params) {
-      try { blurOSDThis._hideBackground(this, this.actor ? this.actor.get_first_child() : null); } catch (e) { global.logError(e); }
+      try {blurOSDThis._hideBackground(this, this.actor);} catch (e) {global.logError(e);}
       return blurOSDThis.original_infoOSD_hide.call(this, ...params);
    }
 
-   _scheduleReclip(actor, showBackground = false) {
-      if (!actor || !this._background)
-         return;
-
-      if (this._idleId) {
-         Mainloop.source_remove(this._idleId);
-         this._idleId = null;
+   _cancelReclip() {
+      if (this._reclipLaterId) {
+         Meta.later_remove(this._reclipLaterId);
+         this._reclipLaterId = 0;
       }
-
-      if (this._reclipIdleId) {
-         Mainloop.source_remove(this._reclipIdleId);
-         this._reclipIdleId = null;
-      }
-
-      let background = this._background;
-      let viewport = this._viewport;
-
-      this._idleId = Mainloop.idle_add(() => {
-        this._idleId = null;
-
-        if (this._background !== background) return false;
-
-        this._setClip(actor);
-        if (showBackground) {
-          background.show();
-          if (viewport && this._viewport === viewport) viewport.show();
-        }
-        // Re-clip on the next idle cycle to catch layout shifts
-        // after the first layout/paint cycle
-        this._reclipIdleId = Mainloop.idle_add(() => {
-            this._reclipIdleId = null;
-            if (this._background === background) {
-               this._setClip(actor);
-            }
-            return false;
-         });
-         return false;
-      });
    }
 
-   _showBackground(osd, actor, isWorkspaceOsd = false, clipActor = actor) {
-      if (!actor)
-         return;
-
-      if (osd._blurCinnamonBackground && osd._blurCinnamonBackground === this._background) {
-
-         this._currentOsd = osd;
-         this._currentActor = actor;
-
-         if (!isWorkspaceOsd)
-            return;
-
-         // Workspace OSD needs an explicit refresh because its visual
-         // source changes when switching workspaces
-         this._scheduleReclip(clipActor, true);
-
-         if (isDynamicBlurType(this._blurType) && cloneManager) {
-            cloneManager.refreshBackground(this._background, true);
-         }
-         return;
-      }
-
-      // Stale marker from a background that has already gone away
-      if (osd._blurCinnamonBackground && osd._blurCinnamonBackground !== this._background) {
-         delete osd._blurCinnamonBackground;
-      }
-
-      if (this._background) {
-         this._hideBackground(this._currentOsd, this._currentActor);
-      }
-
-      this._currentOsd = osd;
-      this._currentActor = actor;
-
-      if (!actor._blurCinnamonData && settings.allowTransparentColorOSD) {
+   _syncActorStyle(actor, transparent) {
+      if (!actor) return;
+      if (transparent && settings.allowTransparentColorOSD && !actor._blurCinnamonData) {
          actor._blurCinnamonData = {
             original_color: actor.get_background_color(),
             original_style: actor.get_style(),
@@ -2593,13 +2520,83 @@ class BlurOSD extends BlurBase {
             "background-gradient-end: transparent; " +
             "background: transparent;"
          );
-      } else if (!settings.allowTransparentColorOSD && actor._blurCinnamonData) {
+      } else if ((!transparent || !settings.allowTransparentColorOSD) && actor._blurCinnamonData) {
          actor.set_background_color(actor._blurCinnamonData.original_color);
          actor.set_style(actor._blurCinnamonData.original_style);
          actor.set_style_class_name(actor._blurCinnamonData.original_class);
          actor.set_style_pseudo_class(actor._blurCinnamonData.original_pseudo_class);
          delete actor._blurCinnamonData;
       }
+   }
+
+   _syncBackgroundOpacity() {
+      const target = this._viewport || this._background;
+      if (target && this._currentOsdActor)
+         target.set_opacity(this._currentOsdActor.get_paint_opacity());
+   }
+
+   _scheduleReclip(actor, showBackground = false) {
+      if (!actor || !this._background)
+         return;
+
+      this._cancelReclip();
+      const osd = this._currentOsd;
+      const panel = this._currentActor;
+      const background = this._background;
+      const viewport = this._viewport;
+
+      // Run before paint and require a valid allocated rectangle
+      this._reclipLaterId = Meta.later_add(Meta.LaterType.BEFORE_REDRAW, () => {
+         this._reclipLaterId = 0;
+         if (this._currentOsd !== osd || this._currentActor !== panel ||
+             this._currentClipActor !== actor || this._background !== background ||
+             this._viewport !== viewport || !actor.is_mapped())
+            return false;
+
+         if (!this._setClip(actor))
+            return false;
+
+         if (showBackground) {
+            this._syncBackgroundOpacity();
+            background.show();
+            if (viewport) viewport.show();
+            if (isDynamicBlurType(this._blurType))
+               cloneWindowsForBackgroundNow(background, background._blurCinnamonDesktopOnly);
+            this._syncActorStyle(panel, true);
+         }
+         return false;
+      });
+   }
+
+   _showBackground(osd, actor, isWorkspaceOsd = false, clipActor = actor) {
+      if (!actor)
+         return;
+
+      if (osd._blurCinnamonBackground && osd._blurCinnamonBackground === this._background &&
+          this._currentActor === actor && this._currentClipActor === clipActor) {
+
+         this._currentOsd = osd;
+         this._currentActor = actor;
+
+         // Workspace OSD needs an explicit refresh because its visual
+         // source changes when switching workspaces
+         this._scheduleReclip(clipActor, true);
+
+         return;
+      }
+
+      // Stale marker from a background that has already gone away
+      if (osd._blurCinnamonBackground && osd._blurCinnamonBackground !== this._background) {
+         delete osd._blurCinnamonBackground;
+      }
+
+      if (this._background) {
+         this._hideBackground(this._currentOsd, this._currentActor);
+      }
+
+      this._currentOsd = osd;
+      this._currentActor = actor;
+      this._currentClipActor = clipActor;
 
       let [opacity, blendColor, blurType, radius, saturation] = this._getSettings(settings.osdOverride);
       this._blurType = blurType;
@@ -2628,11 +2625,18 @@ class BlurOSD extends BlurBase {
 
       // Legacy OSDs wrap an actor while modern OSDs are actors themselves
       let osdActor = osd.actor || (osd instanceof Clutter.Actor ? osd : null);
+      this._currentOsdActor = osdActor;
+      if (osdActor) {
+         this._signalManager.connect(osdActor, "notify::opacity", () => this._syncBackgroundOpacity());
+         this._signalManager.connect(osdActor, "destroy", () => this._hideBackground(osd, actor));
+      }
       const scheduleReclip = () => this._scheduleReclip(clipActor, true);
       if (osdActor && osdActor !== clipActor) {
          this._signalManager.connect(osdActor, "notify::allocation", scheduleReclip);
+         this._signalManager.connect(osdActor, "notify::mapped", scheduleReclip);
       }
       this._signalManager.connect(clipActor, "notify::allocation", scheduleReclip);
+      this._signalManager.connect(clipActor, "notify::mapped", scheduleReclip);
 
       this._setClip(clipActor);
       this._scheduleReclip(clipActor, true);
@@ -2647,26 +2651,12 @@ class BlurOSD extends BlurBase {
          return;
       }
 
-      if (this._idleId) {
-         Mainloop.source_remove(this._idleId);
-         this._idleId = null;
-      }
-
-      if (this._reclipIdleId) {
-         Mainloop.source_remove(this._reclipIdleId);
-         this._reclipIdleId = null;
-      }
+      this._cancelReclip();
 
       if (isDynamicBlurType(this._blurType)) {
          this._destroyDynamicEffect(this._background);
       }
-      if (actor && actor._blurCinnamonData) {
-         actor.set_background_color(actor._blurCinnamonData.original_color);
-         actor.set_style(actor._blurCinnamonData.original_style);
-         actor.set_style_class_name(actor._blurCinnamonData.original_class);
-         actor.set_style_pseudo_class(actor._blurCinnamonData.original_pseudo_class);
-         delete actor._blurCinnamonData;
-      }
+      this._syncActorStyle(actor, false);
       this._signalManager.disconnectAllSignals();
 
       // background (and viewport, when wrapped - see _createBackgroundAndEffects's useViewport)
@@ -2683,31 +2673,31 @@ class BlurOSD extends BlurBase {
 
       this._currentOsd = null;
       this._currentActor = null;
+      this._currentClipActor = null;
+      this._currentOsdActor = null;
    }
 
    _setClip(actor) {
-      if (!actor || !this._background || !actor.get_stage()) return;
+      if (!actor || !this._background || !actor.get_stage()) return false;
 
       // Use the allocated bounds: width/height may return the preferred
       // size, including theme margins, while a relayout is pending
       const box = Cinnamon.util_get_transformed_allocation(actor);
+      const width = box.x2 - box.x1;
+      const height = box.y2 - box.y1;
+      if (![box.x1, box.y1, width, height].every(Number.isFinite) ||
+          width <= 0 || height <= 0)
+         return false;
+
       this._applyBackgroundClip(
          this._background, this._viewport,
-         box.x1, box.y1,
-         box.x2 - box.x1, box.y2 - box.y1
+         box.x1, box.y1, width, height
       );
+      return true;
    }
 
    destroy() {
-      if (this._idleId) {
-         Mainloop.source_remove(this._idleId);
-         this._idleId = null;
-      }
-
-      if (this._reclipIdleId) {
-         Mainloop.source_remove(this._reclipIdleId);
-         this._reclipIdleId = null;
-      }
+      this._cancelReclip();
 
       if (this._signalManager) this._signalManager.disconnectAllSignals();
 
@@ -2723,9 +2713,6 @@ class BlurOSD extends BlurBase {
       if (usesWorkspaceOsd) {
          if (this.has_own_display) WorkspaceOsd.WorkspaceOsd.prototype.display = this.original_display;
          else delete WorkspaceOsd.WorkspaceOsd.prototype.display;
-
-         if (this.has_own_onTimeout) WorkspaceOsd.WorkspaceOsd.prototype._onTimeout = this.original_onTimeout;
-         else delete WorkspaceOsd.WorkspaceOsd.prototype._onTimeout;
       } else {
          if (this.has_own_info_show) ModalDialog.InfoOSD.prototype.show = this.original_infoOSD_show;
          else delete ModalDialog.InfoOSD.prototype.show;
