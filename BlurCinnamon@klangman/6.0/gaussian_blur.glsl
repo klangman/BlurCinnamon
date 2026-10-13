@@ -47,7 +47,9 @@ void blurcinnamon_main() {
         float coefficient_subtotal = gauss_coefficient.x;
         gauss_coefficient.xy *= gauss_coefficient.yz;
         coefficient_subtotal += gauss_coefficient.x;
-
+        if (coefficient_subtotal <= 0.0)
+            break;
+        
         float gauss_ratio = gauss_coefficient.x / coefficient_subtotal;
 
         float foffset = float(i) + gauss_ratio;

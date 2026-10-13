@@ -947,22 +947,4 @@ const RefractionEffect = new GObject.registerClass({
 
             super.vfunc_paint_target(paint_context);
         }
-
-        vfunc_dispose() {
-            if (this._clip_settle_timeout_id) {
-                GLib.Source.remove(this._clip_settle_timeout_id);
-                this._clip_settle_timeout_id = null;
-            }
-
-            if (this.chained_effect) {
-                this.chained_effect.get_actor()?.remove_effect(this.chained_effect);
-                this.chained_effect = null;
-            }
-
-            this._disconnect_theme_signal();
-            this._theme_context = null;
-
-            if (super.vfunc_dispose)
-                super.vfunc_dispose();
-        }
     });

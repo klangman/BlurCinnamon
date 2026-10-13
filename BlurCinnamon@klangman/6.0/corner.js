@@ -90,7 +90,7 @@ var CornerEffect = (typeof global === 'undefined') ?
             this._clip_width = null;
             this._clip_height = null;
 
-            this._radius = (params.radius) ? params.radius : DEFAULT_PARAMS.radius;
+            this._radius = params.radius ?? DEFAULT_PARAMS.radius;
             this._width = (params.width) ? params.width : DEFAULT_PARAMS.width;
             this._height = (params.height) ? params.height : DEFAULT_PARAMS.height;
             // corners_top/corners_bottom are booleans, so `params.corners_top ? ... : default`

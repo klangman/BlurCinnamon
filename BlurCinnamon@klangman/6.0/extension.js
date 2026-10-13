@@ -133,6 +133,7 @@ var blurWorkspaceOsdThis;
 
 let cloneCount = 0;
 let backgroundCount = 0;
+let windowEnableIdleId = 0;
 
 const BlurType = {
    None: 0,
@@ -196,6 +197,13 @@ function applyLiquidGlassSettings(effect, radius) {
    let params = getLiquidGlassParams(radius);
    for (const name in params)
       effect[name] = params[name];
+}
+
+function cancelWindowEnableIdle() {
+   if (windowEnableIdleId) {
+      Mainloop.source_remove(windowEnableIdleId);
+      windowEnableIdleId = 0;
+   }
 }
 
 const PanelLoc = {
@@ -419,9 +427,8 @@ function rectOverlap(aX, aY, aX2, aY2, bX, bY, bX2, bY2) {
 
 // Is metawindow a above b
 function isAbove(a, b) {
-   if (a===b) return false;
-   let windows = [a,b];
-   global.display.sort_windows_by_stacking(windows);
+   if (a === b) return false;
+   const windows = global.display.sort_windows_by_stacking([a, b]);
    return windows[0] === b;
 }
 
@@ -1344,6 +1351,7 @@ class CloneManager {
          }
          if (metaWindow._blurCinnamonVisibleEventId) {
             metaWindow.get_compositor_private().disconnect(metaWindow._blurCinnamonVisibleEventId);
+            delete metaWindow._blurCinnamonVisibleEventId;
          }
       });
    }
@@ -1681,6 +1689,9 @@ class BlurBase {
       if (BlurBase.monteCarloEffectCache.length > 0) {
          let effect = BlurBase.monteCarloEffectCache.pop();
          effect.radius = radius;
+         effect.iterations = settings.montecarloIterations;
+         effect.use_base_pixel = settings.montecarloUseBasePixel;
+         effect.prefer_closer_pixels = settings.montecarloPerferCloserPixels;
          return(effect);
       } else {
          return(new MonteCarloBlur.MonteCarloBlurEffect( { radius: radius, iterations: settings.montecarloIterations, prefer_closer_pixels: settings.montecarloPerferCloserPixels, use_base_pixel: settings.montecarloUseBasePixel, brightness: 1, width: 0, height: 0 } ));
@@ -2080,6 +2091,7 @@ class BlurBase {
          if (desatEffect) { background.add_effect_with_name( DESAT_EFFECT_NAME, desatEffect ); }
          this.parent.add_actor(background);
       }
+      curEffect = this._getBlurEffect(background);
       // Adjust the blur effects
       if ((curEffect instanceof GaussianBlur.GaussianBlurEffect || curEffect instanceof MonteCarloBlur.MonteCarloBlurEffect || curEffect instanceof DualKawaseBlur.DualFilteringBlurEffect) && curEffect.radius != radius) {
          curEffect.radius = radius;
@@ -2260,6 +2272,12 @@ class BlurBase {
       }
       if (cloneManager)
          cloneManager.backgroundClipChanged(background);
+   }
+
+   _needsBackgroundRebuild(background, blurType, wantsViewport) {
+      const changesBackgroundKind = !Meta.is_wayland_compositor() &&
+         ((background instanceof Meta.X11BackgroundActor) !== (blurType !== BlurType.Transparent));
+      return !!background._blurCinnamonViewport !== wantsViewport || changesBackgroundKind;
    }
 
    // Generic viewport teardown helper for every consumer besides windows (BlurApplications does
@@ -3007,6 +3025,27 @@ class BlurPanels extends BlurBase {
          });
    }
 
+   _queuePanelVisibility(panel, visible, delay) {
+      const data = panel.__blurredPanel;
+      if (!data) return;
+      if (data.visibilityTimeoutId)
+         Mainloop.source_remove(data.visibilityTimeoutId);
+      data.visibilityTimeoutId = Mainloop.timeout_add(delay, () => {
+         data.visibilityTimeoutId = 0;
+         if (panel.__blurredPanel !== data) return false;
+         if (visible && (panel._hidden || global.display.get_monitor_in_fullscreen(panel.monitorIndex)))
+            return false;
+         if (visible) {
+            data.background.show();
+            if (data.viewport) data.viewport.show();
+         } else {
+            data.background.hide();
+            if (data.viewport) data.viewport.hide();
+         }
+         return false;
+      });
+   }
+
    // If a fullscreen window event occurs we need to hide or show the background overlay
    _fullscreen_changed() {
       let panels = Main.getPanels();
@@ -3247,9 +3286,15 @@ class BlurPanels extends BlurBase {
       //blurredPanel.signalManager.connect(actor, 'notify::size', () => {this._setClip(panel);} );
       //blurredPanel.signalManager.connect(actor, 'notify::position', () => {this._setClip(panel);} );
 
-      // When the panel uses a custom size in cinnamon.css we need to wait a bit and check that the size is right.
-      // I hope to find a better solution than this hack one day!
-      Mainloop.timeout_add( 1500, () => this._setClip(panel) );
+      if (blurredPanel.reclipTimeoutId)
+         Mainloop.source_remove(blurredPanel.reclipTimeoutId);
+      
+      blurredPanel.reclipTimeoutId = Mainloop.timeout_add(1500, () => {
+         blurredPanel.reclipTimeoutId = 0;
+         if (panel.__blurredPanel === blurredPanel)
+            this._setClip(panel);
+         return false;
+      });
    }
 
    _onEnterEvent(panel) {
@@ -3327,6 +3372,10 @@ class BlurPanels extends BlurBase {
          let actor = panel.actor;
          let blurredPanel = panel.__blurredPanel
          if (blurredPanel) {
+            for (const name of ['visibilityTimeoutId', 'reclipTimeoutId']) {
+                if (blurredPanel[name]) Mainloop.source_remove(blurredPanel[name]);
+                blurredPanel[name] = 0;
+            }
             this._unwrapPanelSetStyle(panel);
             actor.set_background_color(blurredPanel.original_color);
             // Restore the style most recently set by someone other than us rather than a snapshot from when we blurred
@@ -3473,10 +3522,7 @@ class BlurPanels extends BlurBase {
       try {
          if (this.__blurredPanel && this.__blurredPanel.background && !global.display.get_monitor_in_fullscreen(this.monitorIndex) && !this._hidden) {
             // Only show the blurred background after the panel animation is almost done
-            Mainloop.timeout_add((AUTOHIDE_ANIMATION_TIME * 1000)*.9, () => {
-               this.__blurredPanel.background.show();
-               if (this.__blurredPanel.viewport) this.__blurredPanel.viewport.show();
-            });
+            blurPanelsThis._queuePanelVisibility(this, true, AUTOHIDE_ANIMATION_TIME * 1000 * .9);
          }
       } catch (e) {}
       blurPanelsThis._originalPanelEnable.apply(this, params);
@@ -3486,10 +3532,7 @@ class BlurPanels extends BlurBase {
       try {
          if (this.__blurredPanel && this. __blurredPanel.background && !this._hidden) {
             // Delay 50ms before hiding the blurred background to avoid a sudden unblurring of the panel before other animations even get started
-            Mainloop.timeout_add(50, () => {
-               this.__blurredPanel.background.hide();
-               if (this.__blurredPanel.viewport) this.__blurredPanel.viewport.hide();
-            });
+            blurPanelsThis._queuePanelVisibility(this, false, 50);
          }
       } catch (e) {}
       blurPanelsThis._originalPanelDisable.apply(this, params);
@@ -4123,6 +4166,8 @@ class BlurNotifications extends BlurBase {
    }
 
    updateEffects() {
+      this._cancelShowTimeout()
+      
       let [opacity, blendColor, blurType, radius, saturation] = this._getSettings(settings.notificationOverride);
 
       this._blurType = blurType;
@@ -4146,9 +4191,7 @@ class BlurNotifications extends BlurBase {
       }
 
       if (this._activeNotificationData) {
-         let actor = this._activeNotificationData.actor;
-         let button = actor.get_child();
-         let table = button.get_child();
+        let {actor, button, table} = this._activeNotificationData;
 
          let themeNode = table.get_theme_node();
          if (themeNode) {
@@ -4169,6 +4212,7 @@ class BlurNotifications extends BlurBase {
             table.set_style( this._activeNotificationData.original_table_style );
          }
          this._setClip(actor, this._background, table, this._viewport);
+         this._fullscreen_changed()
          if ((isDynamicBlurType(this._blurType)) && !this._isDynamicEffectActive(this._background)) {
             this._createDynamicEffect(this._background);
          }
@@ -4181,10 +4225,21 @@ class BlurNotifications extends BlurBase {
    _showNotification() {
       // Call the original function then call the function to setup the effect
       blurNotificationsThis.original_showNotification.call(this);
-      blurNotificationsThis._blurNotification.call(blurNotificationsThis, this._notificationBin, this._showFullscreenNotifications);
+      const allowFullscreen = this._showFullscreenNotifications || this._notification?.urgency === MessageTray.Urgency.CRITICAL;
+      blurNotificationsThis._blurNotification.call(blurNotificationsThis, this._notificationBin, allowFullscreen);
+   }
+
+   _restoreNotificationStyle() {
+      const data = this._activeNotificationData;
+      if (!data) return;
+      data.actor.set_style(data.original_actor_style);
+      data.button.set_style(data.original_button_style);
+      data.table.set_style(data.original_table_style);
    }
 
    _blurNotification(actor, showFullscreenNotifications) {
+      this._cancelShowTimeout();
+      this._signalManager.disconnectAllSignals();
       let blendColor = (settings.notificationOverride) ? settings.notificationBlendColor : settings.blendColor;
       let opacity = (settings.notificationOverride) ? settings.notificationOpacity : settings.opacity;
 
@@ -4205,11 +4260,21 @@ class BlurNotifications extends BlurBase {
             let radius = themeNode.get_border_radius(St.Corner.TOPLEFT);
             this._updateViewportCornerRadius(this._background, this._viewport, (radius/*+6*/)/global.ui_scale, true, true);
          }
+         
+         // Save the current settings so we can restore it if need be
+         const data = this._activeNotificationData;
+         if (!data || data.actor !== actor || data.button !== button || data.table !== table) {
+            this._restoreNotificationStyle();
+            this._activeNotificationData = {
+               actor, button, table, showFullscreenNotifications,
+               original_actor_style: actor.get_style(),
+               original_button_style: button.get_style(),
+               original_table_style: table.get_style()
+            };
+         }
+         this._activeNotificationData.showFullscreenNotifications = showFullscreenNotifications;
+        
          if (settings.allowTransparentColorNotifications) {
-            // Save the current settings so we can restore it if need be.
-            this._activeNotificationData = {actor: actor, original_actor_style: actor.get_style(),
-                                            original_button_style: button.get_style(), original_table_style: table.get_style()};
-
             actor.set_style( /*"border-radius: 0px;*/ "background-gradient-direction: vertical; background-gradient-start: transparent; " +
                              "background-gradient-end: transparent; background: transparent;" );
             button.set_style( /*"border-radius: 0px;*/ "background-gradient-direction: vertical; background-gradient-start: transparent; " +
@@ -4232,25 +4297,47 @@ class BlurNotifications extends BlurBase {
       let monitor = Main.layoutManager.findMonitorForActor(this._background);
       let idx = Main.layoutManager.monitors.indexOf(monitor);
       if (showFullscreenNotifications || !global.display.get_monitor_in_fullscreen(idx)) {
-         // Delay showing the blurred background until the notification tween is well underway.
-         Mainloop.timeout_add(this.animation_time * 1000, () => { this._background.show(); if (this._viewport) this._viewport.show(); } );
+         // Delay showing the blurred background until the notification tween is well underway
+         const background = this._background;
+         const activeData = this._activeNotificationData;
+         this._showTimeoutId = Mainloop.timeout_add(this.animation_time * 1000, () => {
+            this._showTimeoutId = 0;
+            if (!activeData || this._activeNotificationData !== activeData ||
+                this._background !== background || !actor.visible)
+               return false;
+            const monitor = Main.layoutManager.findMonitorForActor(background);
+            const idx = Main.layoutManager.monitors.indexOf(monitor);
+            if (showFullscreenNotifications || !global.display.get_monitor_in_fullscreen(idx)) {
+               background.show();
+               if (this._viewport) this._viewport.show();
+            }
+            return false;
+         });
       }
    }
 
    _fullscreen_changed() {
-      let monitor = Main.layoutManager.findMonitorForActor(this._background);
-      let idx = Main.layoutManager.monitors.indexOf(monitor);
-      if (global.display.get_monitor_in_fullscreen(idx)) {
-         this._background.hide()
-         if (this._viewport) this._viewport.hide();
-      } else {
-         this._background.show()
+      const data = this._activeNotificationData;
+      let shouldShow = false;
+      if (data && data.actor.visible) {
+         const monitor = Main.layoutManager.findMonitorForActor(this._background);
+         const idx = Main.layoutManager.monitors.indexOf(monitor);
+         shouldShow = data.showFullscreenNotifications ||
+            !global.display.get_monitor_in_fullscreen(idx);
+      }
+      if (shouldShow) {
+         this._background.show();
          if (this._viewport) this._viewport.show();
+      } else {
+         this._background.hide();
+         if (this._viewport) this._viewport.hide();
       }
    }
 
    _hideNotification() {
       blurNotificationsThis._destroyDynamicEffect(blurNotificationsThis._background);
+      blurNotificationsThis._cancelShowTimeout();
+      blurNotificationsThis._restoreNotificationStyle();
       blurNotificationsThis._activeNotificationData = null;
       blurNotificationsThis._signalManager.disconnectAllSignals();
       blurNotificationsThis._background.hide();
@@ -4258,16 +4345,18 @@ class BlurNotifications extends BlurBase {
       blurNotificationsThis.original_hideNotification.call(this);
    }
 
+   _cancelShowTimeout() {
+      if (this._showTimeoutId) {
+         Mainloop.source_remove(this._showTimeoutId);
+         this._showTimeoutId = 0;
+      }
+   }
+
    destroy() {
       // If there is an active notification, then restore it's original visual settings
-      if (this._activeNotificationData) {
-         let actor = this._activeNotificationData.actor;
-         let button = actor.get_child();
-         let table = button.get_child();
-         actor.set_style( this._activeNotificationData.original_actor_style );
-         button.set_style( this._activeNotificationData.original_button_style );
-         table.set_style( this._activeNotificationData.original_table_style );
-      }
+      this._cancelShowTimeout();
+      this._restoreNotificationStyle();
+      this._activeNotificationData = null;
       this._signalManager.disconnectAllSignals();
       this._background.hide();
       if (this._viewport) this._viewport.hide();
@@ -4276,6 +4365,7 @@ class BlurNotifications extends BlurBase {
       MessageTray.MessageTray.prototype._showNotification = this.original_showNotification;
       MessageTray.MessageTray.prototype._hideNotification = this.original_hideNotification;
       this._destroyBackgroundAndViewport(this._background, global.overlay_group);
+      if (blurNotificationsThis === this) blurNotificationsThis = null;
    }
 }
 
@@ -4308,6 +4398,9 @@ class BlurTooltips extends BlurBase {
    }
 
    _blurTooltip(actor) {
+     if (this._tooltipActor)
+        this._unblurTooltip(this._tooltipActor);
+     
       let [opacity, blendColor, blurType, radius, saturation] = this._getSettings(settings.tooltipsOverride);
       // Settings are re-read fresh on every show (tooltips are ephemeral, unlike the classes with a
       // live updateEffects() dispatcher), so a blur-type change since the last show is handled right
@@ -4356,15 +4449,12 @@ class BlurTooltips extends BlurBase {
       this._signalManager.connect(actor, "notify::allocation", () => this._setClip(actor, this._background, null, this._viewport) );
 
       // When idle, make sure the clip is set right, sometimes it's wrong on the outset
-      Mainloop.idle_add( () => {
-         this._setClip(actor, this._background, null, this._viewport);
-         // Try one more time
-         Mainloop.idle_add( () => {this._setClip(actor, this._background, null, this._viewport);} );
-         });
+      this._queueTooltipReclip(actor)
    }
 
    _unblurTooltip(actor) {
       if (actor === this._tooltipActor) {
+         this._cancelTooltipReclip();
          // In case we are using Dynamic effect, destroy it
          this._destroyDynamicEffect(this._background);
          this._background.hide();
@@ -4387,7 +4477,35 @@ class BlurTooltips extends BlurBase {
       blurTooltipsThis.original_Tooltip_hide.call(this);
    }
 
+   _cancelTooltipReclip() {
+      if (this._reclipIdleId) {
+         Mainloop.source_remove(this._reclipIdleId);
+         this._reclipIdleId = 0;
+      }
+   }
+   
+   _queueTooltipReclip(actor) {
+      this._cancelTooltipReclip();
+      const background = this._background;
+      const viewport = this._viewport;
+      let attempts = 2;
+      const reclip = () => {
+         this._reclipIdleId = 0;
+         if (this._tooltipActor !== actor || this._background !== background || !actor.visible)
+            return false;
+         this._setClip(actor, background, null, viewport);
+         if (--attempts > 0)
+            this._reclipIdleId = Mainloop.idle_add(reclip);
+         return false;
+      };
+      this._reclipIdleId = Mainloop.idle_add(reclip);
+   }
+
    destroy() {
+      this._cancelTooltipReclip();
+      if (this._tooltipActor)
+          this._unblurTooltip(this._tooltipActor);
+      
       // Undo Monkey patching the Tooltip show and hide functions
       Tooltips.PanelItemTooltip.prototype.show = this.original_PanelItemTooltip_show;
       Tooltips.Tooltip.prototype.hide = this.original_Tooltip_hide;
@@ -4396,12 +4514,15 @@ class BlurTooltips extends BlurBase {
       this._background.hide();
       if (this._viewport) this._viewport.hide();
       this._destroyBackgroundAndViewport(this._background, global.overlay_group);
+      if (blurTooltipsThis === this) blurTooltipsThis = null;
    }
 }
 
 class BlurApplications extends BlurBase {
    constructor() {
       super();
+      this._destroyed = false;
+      this._windowRebuildIds = new Map();
       // BlurApplication global listeners
       this._signalManager = new SignalManager.SignalManager(null);
       this._signalManager.connect(global.screen, "window-added", this._windowAdded, this);
@@ -4500,6 +4621,21 @@ class BlurApplications extends BlurBase {
       let idx = this._windowsWaitingForWmClass.indexOf(metaWindow);
       if (idx !== -1)
          this._windowsWaitingForWmClass.splice(idx, 1);
+   }
+
+   _queueWindowRebuild(metaWindow) {
+      if (this._destroyed || this._windowRebuildIds.has(metaWindow)) return;
+      const id = Mainloop.idle_add(() => {
+         this._windowRebuildIds.delete(metaWindow);
+         if (this._destroyed || !global.display.list_windows(0).includes(metaWindow))
+            return false;
+         const compositor = metaWindow.get_compositor_private();
+         if (!compositor) return false;
+         this._unblurWindow(compositor);
+         if (!this._destroyed) this._blurWindow(metaWindow);
+         return false;
+      });
+      this._windowRebuildIds.set(metaWindow, id);
    }
 
    _blurWindow(metaWindow) {
@@ -4765,16 +4901,7 @@ class BlurApplications extends BlurBase {
          let data = compositor._blurCinnamonDataWindow;
          if (data) {
             debugMsg( "Reapplying effects to window" );
-            Mainloop.idle_add( () => {
-               if (global.display.list_windows(0).includes(metaWindow)) {
-                  this._unblurWindow(compositor);
-               }
-            });
-            Mainloop.idle_add( () => {
-               if (global.display.list_windows(0).includes(metaWindow)) {
-                  this._blurWindow(metaWindow);
-               }
-            });
+            this._queueWindowRebuild(metaWindow)
          }
       } else {
          // Go through all windows and remove then reapply effects
@@ -4783,17 +4910,8 @@ class BlurApplications extends BlurBase {
             let compositor = windows[i].get_compositor_private();
             let data = compositor._blurCinnamonDataWindow;
             if (data) {
-               debugMsg( "Reapplying effects to window" );
-               Mainloop.idle_add( () => {
-                  if (global.display.list_windows(0).includes(windows[i])) {
-                     this._unblurWindow(compositor);
-                  }
-               });
-               Mainloop.idle_add( () => {
-                  if (global.display.list_windows(0).includes(windows[i])) {
-                     this._blurWindow(windows[i]);
-                  }
-               });
+              debugMsg( "Reapplying effects to window" );
+              this._queueWindowRebuild(windows[i]);
             }
          }
       }
@@ -4811,22 +4929,8 @@ class BlurApplications extends BlurBase {
                this._unblurWindow(compositor);
             } else {
                let wantsViewport = (isDynamicBlurType(blurType)) && windows[i].get_wm_class() !== "Plank";
-               if (!!data.viewport !== wantsViewport) {
-                  // Whether this window's background needs to be wrapped in a viewport (see
-                  // _createBackgroundAndEffects's useViewport) has changed - rebuild rather than
-                  // migrate the actor tree in place, the same way reapplyEffects() rebuilds for
-                  // other transitions.
-                  let metaWindow = windows[i];
-                  Mainloop.idle_add( () => {
-                     if (global.display.list_windows(0).includes(metaWindow)) {
-                        this._unblurWindow(compositor);
-                     }
-                  });
-                  Mainloop.idle_add( () => {
-                     if (global.display.list_windows(0).includes(metaWindow)) {
-                        this._blurWindow(metaWindow);
-                     }
-                  });
+               if (this._needsBackgroundRebuild(data.background, blurType, wantsViewport)) {
+                  this._queueWindowRebuild(windows[i]);
                   continue;
                }
                data.titlebarsOnly = titlebarsOnly;
@@ -5014,6 +5118,11 @@ class BlurApplications extends BlurBase {
    }
 
    destroy() {
+      this._destroyed = true;
+      for (const id of this._windowRebuildIds.values()) {
+          Mainloop.source_remove(id);
+      }
+      this._windowRebuildIds.clear();
       this._signalManager.disconnectAllSignals();
       this._windowsWaitingForWmClass.slice().forEach( (metaWindow) => this._cancelWaitForWmClass(metaWindow) );
       this._windowsWaitingForWmClass = null;
@@ -5145,13 +5254,8 @@ class BlurFocusEffect extends BlurBase {
    }
 
    destroy() {
-      this._background.hide();
+      this._removeEffect();
       this._signalManager.disconnectAllSignals();
-      if (this._focusedCompositor) {
-         this._focusedCompositor.remove_child(this._background);
-      }
-      this._focusedWindow = undefined;
-      this._focusedCompositor = undefined;
       this._background.destroy();
    }
 }
@@ -5161,7 +5265,8 @@ class BlurDesklets extends BlurBase {
       super();
       // global listeners
       //this._signalManager = new SignalManager.SignalManager(null);
-
+      this._destroyed = false;
+      this._deskletIdleIds = new Map();
       blurDeskletsThis = this; // Make "this" available to monkey patched functions
 
       this.original_createDesklets = DeskletManager._createDesklets;
@@ -5251,6 +5356,7 @@ class BlurDesklets extends BlurBase {
    }
 
    _blurDesklet(desklet) {
+      if (this._destroyed || desklet._blurCinnamonBackground) return;
       let content = desklet.content;
       let child = content.get_first_child();
       let themeNode;
@@ -5294,9 +5400,10 @@ class BlurDesklets extends BlurBase {
    // This is a monkey patched version of DeskletManager._createDesklets()
    // This is done so we know when new Desklets are added.
    _createDesklets(extension, deskletDefinition) {
-      let desklet = blurDeskletsThis.original_createDesklets(extension, deskletDefinition);
-      blurDeskletsThis._addDeskletToList(desklet);
-      Mainloop.idle_add( () => { blurDeskletsThis._blurDesklet(desklet) } );
+      const owner = blurDeskletsThis;
+      let desklet = owner.original_createDesklets(extension, deskletDefinition);
+      owner._addDeskletToList(desklet);
+      owner._queueDeskletBlur(desklet);
       return desklet;
    }
 
@@ -5309,6 +5416,26 @@ class BlurDesklets extends BlurBase {
       blurDeskletsThis.original_unloadDesklet(deskletDefinition, deleteConfig);
    }
 
+   _queueDeskletBlur(desklet) {
+      if (this._destroyed || this._deskletIdleIds.has(desklet)) return;
+      const id = Mainloop.idle_add(() => {
+         this._deskletIdleIds.delete(desklet);
+         if (this._destroyed ||
+             DeskletManager.get_object_for_instance(desklet.instance_id) !== desklet ||
+             desklet._blurCinnamonBackground)
+            return false;
+         this._blurDesklet(desklet);
+         return false;
+      });
+      this._deskletIdleIds.set(desklet, id);
+   }
+   
+   _cancelDeskletIdle(desklet) {
+      const id = this._deskletIdleIds.get(desklet);
+      if (id) Mainloop.source_remove(id);
+      this._deskletIdleIds.delete(desklet);
+   }
+  
    _getUniqueSettings() {
       return [settings.deskletsOpacity, settings.deskletsBlendColor, settings.deskletsBlurType, settings.deskletsRadius, settings.deskletsSaturation];
    }
@@ -5369,11 +5496,7 @@ class BlurDesklets extends BlurBase {
                   if (enabled) {
                      let wantsViewport = this._wantsViewport(blurType);
                      let viewport = desklet._blurCinnamonBackground._blurCinnamonViewport;
-                     if (!!viewport !== wantsViewport) {
-                        // Whether this desklet's background needs to be wrapped in a viewport (see
-                        // _createBackgroundAndEffects's useViewport) has changed - rebuild rather
-                        // than migrate the actor tree in place, the same way
-                        // BlurApplications.updateEffects() rebuilds for the equivalent transition.
+                     if (this._needsBackgroundRebuild(desklet._blurCinnamonBackground, blurType, wantsViewport)) {
                         this._deskletDestroy(desklet);
                         this._blurDesklet(desklet);
                      } else if (viewport) {
@@ -5442,11 +5565,18 @@ class BlurDesklets extends BlurBase {
    }
 
    _deskletRemoved(desklet) {
+      this._cancelDeskletIdle(desklet);
       this._deskletDestroy(desklet);
       this._removeDeskletFromList(desklet);
    }
 
    destroy() {
+     this._destroyed = true;
+     for (const id of this._deskletIdleIds.values()) {
+        Mainloop.source_remove(id);
+     }
+     this._deskletIdleIds.clear();
+     
       let desklets = DeskletManager.getDefinitions();
       for (let i=0 ; i<desklets.length ; i++) {
          let {uuid, desklet_id} = desklets[i];
@@ -5460,6 +5590,8 @@ class BlurDesklets extends BlurBase {
 
       DeskletManager.DeskletContainer.prototype.raise = this.origianl_raise;
       DeskletManager.DeskletContainer.prototype.lower = this.origianl_lower;
+     
+      if (blurDeskletsThis === this) blurDeskletsThis = null;
    }
 }
 
@@ -5831,6 +5963,7 @@ function enableTooltipsChanged() {
 }
 
 function enableWindowChanged() {
+  cancelWindowEnableIdle();
    if (blurApplications && !settings.enableWindowEffects) {
       blurApplications.destroy();
       blurApplications = null;
@@ -5925,8 +6058,14 @@ function enable() {
    }
    // Create a Application (Window) Effects class instance, the constructor will set everything up.
    if (settings.enableWindowEffects) {
-      // Enable on idle, to avoid a bug where windows freeze for some reason on a Cinnamon restarts
-      Mainloop.idle_add( () => { blurApplications = new BlurApplications(); } );
+      cancelWindowEnableIdle();
+      const currentSettings = settings;
+      windowEnableIdleId = Mainloop.idle_add(() => {
+         windowEnableIdleId = 0;
+         if (settings === currentSettings && settings.enableWindowEffects && !blurApplications)
+            blurApplications = new BlurApplications();
+         return false;
+      });
    }
    // Create a Focused Window Effect class instance, the constructor will set everything up.
    if (settings.focusedWindowEffect > 0) {
@@ -5954,6 +6093,8 @@ function enable() {
 }
 
 function disable() {
+  cancelWindowEnableIdle();
+
    if (Overview.Overview.prototype._oldAnimateVisible) {
       delete Overview.Overview.prototype._oldAnimateVisible;
       Overview.Overview.prototype._animateVisible = originalAnimateOverview;

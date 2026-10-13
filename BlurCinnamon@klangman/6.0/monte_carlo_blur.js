@@ -260,5 +260,10 @@ const MonteCarloBlurEffect =
             }
 
             super.vfunc_set_actor(actor);
+
+            if (actor) {
+               const scale_factor = St.ThemeContext.get_for_stage(global.stage).scale_factor;
+               this.set_uniform_value('radius', parseFloat(this._radius * scale_factor - 1e-6));
+            }
         }
     });

@@ -262,7 +262,12 @@ const GaussianBlurEffect =
             }
 
             super.vfunc_set_actor(actor);
-
+            
+            if (actor) {
+               const scale_factor = St.ThemeContext.get_for_stage(global.stage).scale_factor;
+               this.set_uniform_value('sigma', parseFloat(this._radius * scale_factor / 2 - 1e-6));
+            }
+          
             if (this.direction == 0) {
                 if (this.chained_effect) {
                     // Detach the existing chained_effect from its old actor first.
