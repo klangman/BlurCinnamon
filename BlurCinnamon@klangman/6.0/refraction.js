@@ -7,6 +7,7 @@ const St = imports.gi.St;
 const Clutter = imports.gi.Clutter;
 
 const Utils = require('./utils.js');
+const DualKawaseBlur = require('./dual_kawase_blur');
 
 const SHADER_FILENAME = 'refraction.glsl';
 
@@ -325,13 +326,18 @@ const RefractionEffect = new GObject.registerClass({
 
             Utils.setup_params(this, params);
 
+            // Keep the public 0..48 blur-radius API used by extension.js, but
+            // let Dual Kawase consume the original 0..100 intensity.
+            if (this.private_pass === 0)
+                this._ensure_blur_effect();
+
             // set shader source
             this._source = Utils.get_shader_source(SHADER_FILENAME);
             if (this._source)
                 this.set_shader_source(this._source);
 
             this._theme_context = St.ThemeContext.get_for_stage(global.stage);
-            this._theme_context.connect( 'notify::scale-factor', () => this.update_scaled_uniforms() );
+            this._theme_connection_id = null;
         }
 
         static get default_params() {
@@ -346,8 +352,8 @@ const RefractionEffect = new GObject.registerClass({
             if (this._strength !== value) {
                 this._strength = value;
 
-                this.set_uniform_value('strength', parseFloat(this._strength - 1e-6));
-                this.set_enabled(this.strength > 0.);
+                this.set_uniform_value('strength', get_shader_value('strength', this._strength));
+                this.set_enabled(this.private_pass !== 1 || this.blur_radius > 0.01);
             }
         }
 
@@ -360,20 +366,72 @@ const RefractionEffect = new GObject.registerClass({
                 this._edge_size = value;
 
                 this.update_scaled_uniforms();
-
-                if (this.chained_effect)
-                    this.chained_effect.edge_size = value;
             }
         }
 
-        // Conservative estimate of the furthest distance (in pixels) from a pixel that the shader samples: the
-        // blur pass's ~3 sigma (as in gaussian_blur.js, sigma = blur_radius / 2) plus the lens displacement,
-        // which is assumed to be no more than edge_size. (Not verified against refraction.glsl's displacement math.)
         get sample_reach() {
             const scale_factor = St.ThemeContext.get_for_stage(global.stage).scale_factor;
-            const blur_radius = Math.min(this._blur_radius, MAX_BLUR_RADIUS) * scale_factor;
-            const blur_reach = (blur_radius > 0.01) ? 2 * Math.ceil(1.5 * Math.max(0.1, blur_radius * 0.5)) : 0;
-            return blur_reach + this.edge_size * scale_factor;
+        
+            const blur_reach = this.chained_effect?.sample_reach ?? 0;
+            const bezel = Math.max(1, this.edge_size * scale_factor);
+            const band = Math.max(1, bezel * 0.35 * Math.max(1, this.rim_width));
+        
+            const strength = Math.max(0, Math.min(1, this.strength));
+            const dispersion = Math.max(0, Math.min(20, this.rgb_fringing * 20));
+        
+            const channel_scale = 1 + 0.02 * dispersion;
+            const lens_reach = band * strength * channel_scale;
+            const zoom = Math.max(0.01, this.backdrop_zoom - 1e-6);
+        
+            const actor = this.get_actor();
+            const visible = actor?._blurCinnamonSamplingRect ?? actor?._blurCinnamonVisibleRect;
+        
+            const shape_span = Math.max(
+                0,
+                visible?.[2] ?? 0,
+                visible?.[3] ?? 0,
+                this._clip_width ?? 0,
+                this._clip_height ?? 0,
+                this._stable_clip_width ?? 0,
+                this._stable_clip_height ?? 0
+            );
+        
+            const inverse_zoom_delta = 1 / zoom - 1;
+            const has_clip = this._clip_width >= 0 && this._clip_height >= 0;
+            const has_visible_rect = visible && visible[2] > 0 && visible[3] > 0;
+            // The viewport asks for its margin before updating glass_rect. Detect a
+            // pending resize as well as a clip that is already being stabilized
+            const resize_pending = has_clip && has_visible_rect && (
+                Math.abs(visible[2] - this._clip_width) > CLIP_STABILIZE_EPSILON ||
+                Math.abs(visible[3] - this._clip_height) > CLIP_STABILIZE_EPSILON
+            );
+            const needs_conservative_reach = this._stabilize_clip_x || this._stabilize_clip_y || resize_pending || (!has_clip && !has_visible_rect);
+            // A stabilized clip can have its centre outside the current visible
+            // rect. Preserve the existing bound until that resize settles
+            const zoom_reach = needs_conservative_reach
+                ? (Math.max(global.stage.width, global.stage.height) + shape_span + 3) *
+                    Math.abs(inverse_zoom_delta)
+                : (shape_span / 2) * Math.max(0, inverse_zoom_delta) +
+                    1.5 * Math.abs(inverse_zoom_delta);
+
+            return blur_reach + lens_reach / zoom + zoom_reach;
+        }
+
+        get dual_kawase_radius() {
+            return Math.max(0, Math.min(100, this.blur_radius * 100 / MAX_BLUR_RADIUS));
+        }
+
+        _ensure_blur_effect() {
+            if (!this.chained_effect) {
+                this.chained_effect = new DualKawaseBlur.DualFilteringBlurEffect({
+                    radius: this.dual_kawase_radius,
+                    brightness: 1,
+                    width: this.width,
+                    height: this.height
+                });
+            } else {
+                this.chained_effect.radius = this.dual_kawase_radius;
+            }
         }
 
         get blur_radius() {
@@ -382,12 +440,12 @@ const RefractionEffect = new GObject.registerClass({
 
         set blur_radius(value) {
             if (this._blur_radius !== value) {
-                this._blur_radius = Math.min(value, MAX_BLUR_RADIUS);
+                this._blur_radius = Math.max(0, Math.min(value, MAX_BLUR_RADIUS));
 
                 this.update_scaled_uniforms();
 
                 if (this.chained_effect)
-                    this.chained_effect.blur_radius = this._blur_radius;
+                    this.chained_effect.radius = this.dual_kawase_radius;
             }
         }
 
@@ -400,9 +458,6 @@ const RefractionEffect = new GObject.registerClass({
                 this._falloff = value;
 
                 this.set_uniform_value('falloff', parseFloat(this._falloff - 1e-6));
-
-                if (this.chained_effect)
-                    this.chained_effect.falloff = value;
             }
         }
 
@@ -415,9 +470,6 @@ const RefractionEffect = new GObject.registerClass({
                 this._corner_radius = value;
 
                 this.update_scaled_uniforms();
-
-                if (this.chained_effect)
-                    this.chained_effect.corner_radius = value;
             }
         }
 
@@ -431,9 +483,6 @@ const RefractionEffect = new GObject.registerClass({
                 this._rim_width = rim_width;
 
                 this.set_uniform_value('rim_width', parseFloat(this._rim_width - 1e-6));
-
-                if (this.chained_effect)
-                    this.chained_effect.rim_width = rim_width;
             }
         }
 
@@ -583,9 +632,6 @@ const RefractionEffect = new GObject.registerClass({
                 this._texture_repeat = value;
 
                 this.set_uniform_value('texture_repeat', this._texture_repeat);
-
-                if (this.chained_effect)
-                    this.chained_effect.texture_repeat = value;
             }
         }
 
@@ -624,7 +670,11 @@ const RefractionEffect = new GObject.registerClass({
         }
 
         set(params) {
-            utils.setup_params(this, params);
+            // Update supplied values without resetting the owned blur or actor geometry
+            for (const name in this.constructor.default_params) {
+                if (Object.prototype.hasOwnProperty.call(params, name))
+                    this[name] = params[name];
+            }
         }
 
         get width() {
@@ -695,9 +745,6 @@ const RefractionEffect = new GObject.registerClass({
             const actor = this.get_actor();
             if (new_rect || actor)
                 this.clip = this._bounds_for_actor(actor);
-
-            if (this.chained_effect)
-                this.chained_effect.glass_rect = new_rect;
         }
 
         _bounds_for_actor(actor) {
@@ -716,9 +763,6 @@ const RefractionEffect = new GObject.registerClass({
 
                 set_uniform(this, 'opacity_factor', parseFloat(this._opacity_factor));
                 this.set_uniform_value('opacity_factor', parseFloat(this._opacity_factor));
-
-                if (this.chained_effect)
-                    this.chained_effect.opacity_factor = value;
             }
         }
 
@@ -839,12 +883,23 @@ const RefractionEffect = new GObject.registerClass({
             this.set_uniform_value('edge_size', parseFloat(edge_size - 1e-6));
             this.set_uniform_value('corner_radius', parseFloat(corner_radius - 1e-6));
             const blur_radius = Math.min(this.blur_radius, MAX_BLUR_RADIUS) * scale_factor;
-            this.set_uniform_value('blur_radius', parseFloat(blur_radius - 1e-6));
+            // The backdrop is already blurred by Dual Kawase, bypass the
+            // Gaussian loop in sampleGlassBackdrop() in refraction.glsl
+            this.set_uniform_value('blur_radius', get_shader_value('blur_radius', 0.0));
             if (this.private_pass === 1)
                 this.set_enabled(blur_radius > 0.01);
         }
 
+        _disconnect_theme_signal() {
+            if (this._theme_connection_id) {
+                this._theme_context.disconnect(this._theme_connection_id);
+                this._theme_connection_id = null;
+            }
+        }
+
         vfunc_set_actor(actor) {
+            this._disconnect_theme_signal();
+            
             if (this.chained_effect)
                 this.chained_effect.get_actor()?.remove_effect(this.chained_effect);
 
@@ -885,35 +940,18 @@ const RefractionEffect = new GObject.registerClass({
             }
 
             super.vfunc_set_actor(actor);
+            
+            if (actor) {
+                this.update_scaled_uniforms();
+                this._theme_context = St.ThemeContext.get_for_stage(global.stage);
+                this._theme_connection_id = this._theme_context.connect('notify::scale-factor', () => this.update_scaled_uniforms());
+            }
 
-            if (this.private_pass === 0) {
-                if (!this.chained_effect) {
-                    const chained_params = {
-                        strength: this.strength,
-                        blur_radius: this.blur_radius,
-                        edge_size: this.edge_size,
-                        falloff: this.falloff,
-                        corner_radius: this.corner_radius,
-                        rim_width: this.rim_width,
-                        rgb_fringing: this.rgb_fringing,
-                        gloss: this.gloss,
-                        tint: this.tint,
-                        shadow: this.shadow,
-                        texture_repeat: this.texture_repeat,
-                        width: this.width,
-                        height: this.height,
-                        clip: this.clip,
-                        blur_direction: 1,
-                        private_pass: 1,
-                        opacity_factor: this._opacity_factor
-                    };
-
-                    this.chained_effect = new RefractionEffect(chained_params);
-                }
-                this.chained_effect.glass_rect = this._glass_rect;
-
-                if (actor !== null)
-                    actor.add_effect(this.chained_effect);
+            if (actor && this.private_pass === 0) {
+                this._ensure_blur_effect();
+                // Offscreen effects wrap subsequent effects: add the blur
+                // after RefractionEffect so glass samples the blurred backdrop.
+                actor.add_effect(this.chained_effect);
             }
         }
 
@@ -923,23 +961,5 @@ const RefractionEffect = new GObject.registerClass({
             this.set_uniform_value('private_pass', this.private_pass);
 
             super.vfunc_paint_target(paint_context);
-        }
-
-        vfunc_dispose() {
-            if (this._clip_settle_timeout_id) {
-                GLib.Source.remove(this._clip_settle_timeout_id);
-                this._clip_settle_timeout_id = null;
-            }
-
-            if (this.chained_effect) {
-                this.chained_effect.get_actor()?.remove_effect(this.chained_effect);
-                this.chained_effect = null;
-            }
-
-            this._theme_context?.disconnectObject(this);
-            this._theme_context = null;
-
-            if (super.vfunc_dispose)
-                super.vfunc_dispose();
         }
     });
