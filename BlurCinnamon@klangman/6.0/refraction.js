@@ -7,6 +7,7 @@ const St = imports.gi.St;
 const Clutter = imports.gi.Clutter;
 
 const Utils = require('./utils.js');
+const EffectBase = require('./effect_base.js');
 
 const SHADER_FILENAME = 'refraction.glsl';
 
@@ -83,7 +84,8 @@ function upload_uniforms(effect) {
 }
 
 function get_shader_value(name, value) {
-    if (typeof value !== 'number')
+    // EffectBase takes plain numbers when built on Cinnamon.GLSLEffect (all uniforms are set as floats)
+    if (typeof value !== 'number' || EffectBase.USE_GLSL_EFFECT)
         return value;
 
     if (INTEGRAL_UNIFORMS.has(name))
@@ -298,7 +300,7 @@ const RefractionEffect = new GObject.registerClass({
                 1.0,
             ),
         }
-    }, class RefractionEffect extends Clutter.ShaderEffect {
+    }, class RefractionEffect extends EffectBase.EffectBase {
 
         constructor(params) {
             const {
@@ -325,13 +327,11 @@ const RefractionEffect = new GObject.registerClass({
 
             Utils.setup_params(this, params);
 
-            // set shader source
-            this._source = Utils.get_shader_source(SHADER_FILENAME);
-            if (this._source)
-                this.set_shader_source(this._source);
-
             this._theme_context = St.ThemeContext.get_for_stage(global.stage);
-            this._theme_context.connect( 'notify::scale-factor', () => this.update_scaled_uniforms() );
+        }
+
+        get_effect_source() {
+            return Utils.get_shader_source(SHADER_FILENAME);
         }
 
         static get default_params() {
@@ -860,7 +860,14 @@ const RefractionEffect = new GObject.registerClass({
                 GLib.Source.remove(this._clip_settle_timeout_id);
                 this._clip_settle_timeout_id = null;
             }
+            // Only listen for scale changes while attached: the theme context lives as long as Cinnamon,
+            // so a handler connected for the effect's whole life would keep it from ever being freed
+            if (this._scale_connection_id) {
+                this._theme_context.disconnect(this._scale_connection_id);
+                this._scale_connection_id = null;
+            }
             if (actor) {
+                this._scale_connection_id = this._theme_context.connect('notify::scale-factor', () => this.update_scaled_uniforms());
                 this.width = actor.width;
                 this.height = actor.height;
                 this._actor_connection_size_id = actor.connect('notify::size', _ => {
@@ -923,23 +930,5 @@ const RefractionEffect = new GObject.registerClass({
             this.set_uniform_value('private_pass', this.private_pass);
 
             super.vfunc_paint_target(paint_context);
-        }
-
-        vfunc_dispose() {
-            if (this._clip_settle_timeout_id) {
-                GLib.Source.remove(this._clip_settle_timeout_id);
-                this._clip_settle_timeout_id = null;
-            }
-
-            if (this.chained_effect) {
-                this.chained_effect.get_actor()?.remove_effect(this.chained_effect);
-                this.chained_effect = null;
-            }
-
-            this._theme_context?.disconnectObject(this);
-            this._theme_context = null;
-
-            if (super.vfunc_dispose)
-                super.vfunc_dispose();
         }
     });

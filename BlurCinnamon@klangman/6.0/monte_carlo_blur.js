@@ -7,6 +7,8 @@ const St = imports.gi.St;
 const Clutter = imports.gi.Clutter;
 const GLib = imports.gi.GLib;
 
+const EffectBase = require("./effect_base").EffectBase;
+
 const UUID = "BlurCinnamon@klangman";
 
 const SHADER_FILENAME = 'monte_carlo_blur.glsl';
@@ -76,7 +78,7 @@ const MonteCarloBlurEffect =
                 true,
             ),
         }
-    }, class MonteCarloBlurEffect extends Clutter.ShaderEffect {
+    }, class MonteCarloBlurEffect extends EffectBase {
         constructor(params) {
             super(params);
 
@@ -115,13 +117,12 @@ const MonteCarloBlurEffect =
             else
                this.prefer_closer_pixels = true;
 
-            // set shader source
-            this._source = this.get_shader_source(SHADER_FILENAME);
-            if (this._source)
-                this.set_shader_source(this._source);
-
             const theme_context = St.ThemeContext.get_for_stage(global.stage);
             this.set_uniform_value('radius', parseFloat(this._radius * theme_context.scale_factor - 1e-6));
+        }
+
+        get_effect_source() {
+            return this.get_shader_source(SHADER_FILENAME);
         }
 
         get_shader_source(shader_filename) {
