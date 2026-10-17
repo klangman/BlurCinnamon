@@ -2649,7 +2649,7 @@ class BlurOSD extends BlurBase {
       this._currentOsdActor = osdActor;
       if (osdActor) {
          this._signalManager.connect(osdActor, "notify::opacity", () => this._syncBackgroundOpacity());
-         this._signalManager.connect(osdActor, "destroy", () => this._hideBackground(osd, actor));
+         this._signalManager.connect(osdActor, "destroy", () => this._hideBackground(osd, actor, false));
       }
       const scheduleReclip = () => this._scheduleReclip(clipActor, true);
       if (osdActor && osdActor !== clipActor) {
@@ -2663,7 +2663,7 @@ class BlurOSD extends BlurBase {
       this._scheduleReclip(clipActor, true);
    }
 
-   _hideBackground(osd, actor) {
+   _hideBackground(osd, actor, restoreStyle = true) {
       if (!this._background) return;
 
       // Ignore a stale hide callback from an OSD that no longer owns
@@ -2677,7 +2677,12 @@ class BlurOSD extends BlurBase {
       if (isDynamicBlurType(this._blurType)) {
          this._destroyDynamicEffect(this._background);
       }
-      this._syncActorStyle(actor, false);
+      // A native destroy needs resource cleanup, but no CSS restoration.
+      if (restoreStyle) {
+          this._syncActorStyle(actor, false);
+      } else if (actor) {
+          delete actor._blurCinnamonData;
+      }
       this._signalManager.disconnectAllSignals();
 
       // background (and viewport, when wrapped - see _createBackgroundAndEffects's useViewport)

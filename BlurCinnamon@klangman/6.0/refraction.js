@@ -396,8 +396,23 @@ const RefractionEffect = new GObject.registerClass({
                 this._stable_clip_height ?? 0
             );
         
-            const span = Math.max(global.stage.width, global.stage.height) + shape_span + 3;
-            const zoom_reach = span * Math.abs(1 / zoom - 1);
+            const inverse_zoom_delta = 1 / zoom - 1;
+            const has_clip = this._clip_width >= 0 && this._clip_height >= 0;
+            const has_visible_rect = visible && visible[2] > 0 && visible[3] > 0;
+            // The viewport asks for its margin before updating glass_rect. Detect a
+            // pending resize as well as a clip that is already being stabilized
+            const resize_pending = has_clip && has_visible_rect && (
+                Math.abs(visible[2] - this._clip_width) > CLIP_STABILIZE_EPSILON ||
+                Math.abs(visible[3] - this._clip_height) > CLIP_STABILIZE_EPSILON
+            );
+            const needs_conservative_reach = this._stabilize_clip_x || this._stabilize_clip_y || resize_pending || (!has_clip && !has_visible_rect);
+            // A stabilized clip can have its centre outside the current visible
+            // rect. Preserve the existing bound until that resize settles
+            const zoom_reach = needs_conservative_reach
+                ? (Math.max(global.stage.width, global.stage.height) + shape_span + 3) *
+                    Math.abs(inverse_zoom_delta)
+                : (shape_span / 2) * Math.max(0, inverse_zoom_delta) +
+                    1.5 * Math.abs(inverse_zoom_delta);
 
             return blur_reach + lens_reach / zoom + zoom_reach;
         }
