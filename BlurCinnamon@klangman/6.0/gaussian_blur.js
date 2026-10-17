@@ -7,6 +7,8 @@ const St = imports.gi.St;
 const Clutter = imports.gi.Clutter;
 const GLib = imports.gi.GLib;
 
+const EffectBase = require("./effect_base").EffectBase;
+
 const UUID = "BlurCinnamon@klangman";
 
 const SHADER_FILENAME = 'gaussian_blur.glsl';
@@ -90,7 +92,7 @@ const GaussianBlurEffect =
                 GObject.Object,
             ),
         }
-    }, class GaussianBlurEffect extends Clutter.ShaderEffect {
+    }, class GaussianBlurEffect extends EffectBase {
         constructor(params) {
             super(params);
 
@@ -124,14 +126,13 @@ const GaussianBlurEffect =
             else
                this.chained_effect = null;
 
-            // set shader source
-            this._source = this.get_shader_source(SHADER_FILENAME);
-            if (this._source)
-                this.set_shader_source(this._source);
-
             const theme_context = St.ThemeContext.get_for_stage(global.stage);
             this.set_uniform_value('sigma', parseFloat(this.radius * theme_context.scale_factor / 2 - 1e-6));
             this.set_enabled(this.radius > 0.);
+        }
+
+        get_effect_source() {
+            return this.get_shader_source(SHADER_FILENAME);
         }
 
         get_shader_source(shader_filename) {

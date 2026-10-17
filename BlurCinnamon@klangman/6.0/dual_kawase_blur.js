@@ -6,6 +6,8 @@ const St       = imports.gi.St;
 const Clutter  = imports.gi.Clutter;
 const GLib     = imports.gi.GLib;
 
+const EffectBase = require("./effect_base").EffectBase;
+
 const UUID = "BlurCinnamon@klangman";
 
 const SHADER_CACHE = {};
@@ -39,8 +41,8 @@ const DEFAULT_PARAMS = {
 };
 
 // Pools of released pyramid sub-effects, kept separate by role (downsample vs. upsample) since
-// each instance's shader is fixed at construction time (chosen once from pass_index/total_passes
-// in the constructor and never reloaded afterward) - a downsample-shader instance can only ever
+// each instance's shader is fixed by its class (DualFilteringBlurEffect or DualFilteringUpEffect,
+// see makeEffectClass below) - a downsample-shader instance can only ever
 // be reused for another downsample-role slot, never for an upsample one, and vice versa. Reusing
 // one avoids the compiled-shader-per-instance cost of constructing a fresh pyramid on every
 // blur/unblur cycle, which is what originally drove the "over 50 separate shaders" warnings.
@@ -69,17 +71,19 @@ function _acquireSubEffect(is_downsample, params) {
         effect.set_enabled(effect.radius > 0.);
         return effect;
     }
-    return new DualFilteringBlurEffect(params);
+    return is_downsample ? new DualFilteringBlurEffect(params) : new DualFilteringUpEffect(params);
 }
 
 function _releaseSubEffect(effect) {
-    let is_downsample = (effect.pass_index <= Math.floor(effect.total_passes / 2));
-    (is_downsample ? DOWNSAMPLE_EFFECT_CACHE : UPSAMPLE_EFFECT_CACHE).push(effect);
+    (effect instanceof DualFilteringUpEffect ? UPSAMPLE_EFFECT_CACHE : DOWNSAMPLE_EFFECT_CACHE).push(effect);
 }
 
-var DualFilteringBlurEffect =
-    new GObject.registerClass({
-        GTypeName: `DualFilteringBlurEffect_${Math.floor(Math.random() * 100000) + 1}`,
+// An effect's shader is set once per class (see effect_base.js), so the downsample and upsample
+// passes are two classes made here. DualFilteringBlurEffect, the downsample class, is also the
+// first pass of every pyramid, which is the effect the rest of the extension creates and checks for.
+function makeEffectClass(kind, shader_file) {
+    return new GObject.registerClass({
+        GTypeName: `DualFilteringBlurEffect${kind}_${Math.floor(Math.random() * 100000) + 1}`,
         Properties: {
             'radius': GObject.ParamSpec.double(
                 `radius`,
@@ -130,21 +134,13 @@ var DualFilteringBlurEffect =
                 1,
             ),
         }
-    }, class DualFilteringBlurEffect extends Clutter.ShaderEffect {
+    }, class DualFilteringBlurEffect extends EffectBase {
         constructor(params) {
             super(params);
 
             this.pass_index = params?.pass_index ?? 0;
             this.total_passes = params?.total_passes ?? 1;
             this._sub_effects = []; 
-
-            // Determines Downsample vs Upsample based on the midpoint of the pyramid
-            let is_downsample = (this.pass_index <= Math.floor(this.total_passes / 2));
-            let shader_file = is_downsample ? 'dual_filtering_down.glsl' : 'dual_filtering_up.glsl';
-
-            this._source = this.get_shader_source(shader_file);
-            if (this._source)
-                this.set_shader_source(this._source);
 
             this.radius = params?.radius ?? 0;
             this.brightness = params?.brightness ?? 1;
@@ -158,6 +154,10 @@ var DualFilteringBlurEffect =
             this.set_uniform_value('brightness', parseFloat(this.brightness - 1e-6));
             this.set_uniform_value('width', parseFloat(this.width + 3.0 - 1e-6));
             this.set_uniform_value('height', parseFloat(this.height + 3.0 - 1e-6));
+        }
+
+        get_effect_source() {
+            return this.get_shader_source(shader_file);
         }
 
         get_shader_source(shader_filename) {
@@ -414,3 +414,7 @@ var DualFilteringBlurEffect =
             super.vfunc_paint_target(...params);
         }
     });
+}
+
+var DualFilteringBlurEffect = makeEffectClass('Down', 'dual_filtering_down.glsl');
+var DualFilteringUpEffect = makeEffectClass('Up', 'dual_filtering_up.glsl');
