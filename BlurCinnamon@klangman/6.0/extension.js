@@ -2566,16 +2566,28 @@ class BlurOSD extends BlurBase {
       const background = this._background;
       const viewport = this._viewport;
 
-      // Run before paint and require a valid allocated rectangle
-      this._reclipLaterId = Meta.later_add(Meta.LaterType.BEFORE_REDRAW, () => {
-         this._reclipLaterId = 0;
-         if (this._currentOsd !== osd || this._currentActor !== panel ||
-             this._currentClipActor !== actor || this._background !== background ||
-             this._viewport !== viewport || !actor.is_mapped())
+      // Keep the callback registered until preparation succeeds 
+      // or its owner hides/destroys it.
+      let laterId = 0;
+      laterId = Meta.later_add(Meta.LaterType.BEFORE_REDRAW, () => {
+         if (this._reclipLaterId !== laterId)
             return false;
 
-         if (!this._setClip(actor))
+         if (this._currentOsd !== osd || this._currentActor !== panel ||
+             this._currentClipActor !== actor || this._background !== background ||
+             this._viewport !== viewport) {
+            this._reclipLaterId = 0;
             return false;
+         }
+
+         if (!actor.is_mapped() || !this._setClip(actor))
+            return true;
+
+         // A forced layout can emit allocation notifications and replace this
+         // callback while _setClip() runs. Do not erase the replacement's ID.
+         if (this._reclipLaterId !== laterId)
+            return false;
+         this._reclipLaterId = 0;
 
          if (showBackground) {
             this._syncBackgroundOpacity();
@@ -2587,6 +2599,7 @@ class BlurOSD extends BlurBase {
          }
          return false;
       });
+      this._reclipLaterId = laterId;
    }
 
    _showBackground(osd, actor, isWorkspaceOsd = false, clipActor = actor) {
