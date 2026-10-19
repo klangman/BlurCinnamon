@@ -8,6 +8,7 @@ const Clutter = imports.gi.Clutter;
 
 const Utils = require('./utils.js');
 const DualKawaseBlur = require('./dual_kawase_blur');
+const EffectBase = require('./effect_base.js');
 
 const SHADER_FILENAME = 'refraction.glsl';
 
@@ -84,7 +85,8 @@ function upload_uniforms(effect) {
 }
 
 function get_shader_value(name, value) {
-    if (typeof value !== 'number')
+    // EffectBase takes plain numbers when built on Cinnamon.GLSLEffect (all uniforms are set as floats)
+    if (typeof value !== 'number' || EffectBase.USE_GLSL_EFFECT)
         return value;
 
     if (INTEGRAL_UNIFORMS.has(name))
@@ -299,7 +301,7 @@ const RefractionEffect = new GObject.registerClass({
                 1.0,
             ),
         }
-    }, class RefractionEffect extends Clutter.ShaderEffect {
+    }, class RefractionEffect extends EffectBase.EffectBase {
 
         constructor(params) {
             const {
@@ -331,13 +333,12 @@ const RefractionEffect = new GObject.registerClass({
             if (this.private_pass === 0)
                 this._ensure_blur_effect();
 
-            // set shader source
-            this._source = Utils.get_shader_source(SHADER_FILENAME);
-            if (this._source)
-                this.set_shader_source(this._source);
-
             this._theme_context = St.ThemeContext.get_for_stage(global.stage);
             this._theme_connection_id = null;
+        }
+
+        get_effect_source() {
+            return Utils.get_shader_source(SHADER_FILENAME);
         }
 
         static get default_params() {
