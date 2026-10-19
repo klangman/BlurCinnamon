@@ -73,7 +73,7 @@ float displacementAtRatio(float bezelRatio, float glassThickness, float bezelWid
         return 0.0;
 
     float raw = rawRefraction(bezelRatio, glassThickness, bezelWidth, eta);
-    float norm = raw / peak;
+    float norm = clamp(raw / peak, -1.0, 1.0);
     float profileFalloff = 1.0 - smoothstep(0.0, 1.0, bezelRatio);
     return norm * profileFalloff;
 }
@@ -248,7 +248,15 @@ vec2 backdropSampleUV(vec2 sampleUV, vec2 displacementPx) {
     vec2 displaced = sampleUV + displacementPx / vec2(width, height);
     float zoom = max(backdrop_zoom, 0.01);
 
-    displaced = vec2(0.5) + (displaced - vec2(0.5)) / zoom;
+    vec2 centre = vec2(0.5);
+    if (clip_width >= 0.0 && clip_height >= 0.0) {
+        centre = (
+            vec2(clip_x0, clip_y0) +
+            0.5 * vec2(clip_width, clip_height)
+        ) / vec2(width, height);
+    }
+    
+    displaced = centre + (displaced - centre) / zoom;
     return displaced;
 }
 
