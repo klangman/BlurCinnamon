@@ -1282,9 +1282,10 @@ class CloneManager {
                   let windowClone = background._blurCinnamonWinClones[idx];
                   if (windowClone._metaWindow === window) {
                      if (background._blurCinnamonMetaWindowOwner) {
-                        // This background is for an application window, the focused window can't be in the background of any other window, so delete this clone
-                        debugMsg( "Removing clone from a window background because the clone's window has the focus now" );
-                        destroyWindowClone(windowClone, background);
+                        // This background is for an application window. The focused window is usually raised above it now,
+                        // but not above a keep-above owner, so recheck the stacking order instead of deleting the clone
+                        debugMsg( "Rechecking window background clones because the clone's window has the focus now" );
+                        cloneWindowsForBackground(background, background._blurCinnamonDesktopOnly);
                      } else {
                         // This background is for a non-window element (i.e panel, notification, tooltip etc), so this clone now needs to be on top of all other clones
                         debugMsg( "Moving clone to top due to focus change" );
