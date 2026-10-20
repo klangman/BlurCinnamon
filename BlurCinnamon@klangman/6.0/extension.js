@@ -4903,9 +4903,10 @@ class BlurApplications extends BlurBase {
       let enabled;
       let wmclass = metaWindow.get_wm_class();
       let winType = metaWindow.get_window_type();
-      // We want to allow blurring for normal window, docks (i.e Plank) and desktop windows (i.e Conky)
+      // We want to allow blurring for normal window, docks and desktop windows (i.e Conky). Not Plank: reading its blur
+      // region with Gdk.property_get() (_getPlankBlurRegion()) segfaults cjs, so Cinnamon would crash on every start.
       if ((winType === Meta.WindowType.NORMAL || (settings.windowsTitlebarBlur && (winType === Meta.WindowType.DIALOG || winType === Meta.WindowType.MODAL_DIALOG)) ||
-           winType === Meta.WindowType.DOCK || winType === Meta.WindowType.DESKTOP) && wmclass !== "Nemo-desktop")
+           winType === Meta.WindowType.DOCK || winType === Meta.WindowType.DESKTOP) && wmclass !== "Nemo-desktop" && wmclass !== "Plank")
       {
          let app = this._getAppForWindow(metaWindow);
          let appId = app ? app.get_id() : null;
