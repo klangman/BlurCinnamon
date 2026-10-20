@@ -46,6 +46,27 @@ const DeskletManager  = imports.ui.deskletManager;
 const OsdWindow       = imports.ui.osdWindow;
 const GLib            = imports.gi.GLib;
 const GObject         = imports.gi.GObject;
+const Gettext         = imports.gettext;
+
+const UUID = "BlurCinnamon@klangman";
+
+// Translation support: look in the extension's own catalog first, then fall back to Cinnamon's
+Gettext.bindtextdomain(UUID, GLib.get_home_dir() + "/.local/share/locale");
+
+function _(text) {
+   let locText = Gettext.dgettext(UUID, text);
+   if (locText === text)
+      locText = window._(text);
+   return locText;
+}
+
+// The special "Default window settings" row in the window list is identified by its name, which is
+// saved in the settings. Match both the English name and the translated one, so a row saved before a
+// translation was installed (or under a different language) is still found.
+const DEFAULT_WINDOW_SETTINGS = "Default window settings";
+function isDefaultWindowSettings(element) {
+   return element.application === DEFAULT_WINDOW_SETTINGS || element.application === _(DEFAULT_WINDOW_SETTINGS);
+}
 
 // For Plank support (reading X11 property)
 imports.gi.versions.Gdk = '3.0';
@@ -4555,10 +4576,10 @@ class BlurApplications extends BlurBase {
       this._connectRoundedCornersNotifier();
 
       // Add a "Default window settings" if one does not exist
-      let element = settings.windowInclusionList.find( (element) => {if (element.application == _("Default window settings")) {return true;}} );
+      let element = settings.windowInclusionList.find(isDefaultWindowSettings);
       if (!element) {
          let windowList = settings.settings.getValue("windows-inclusion-list");
-         windowList.splice( 0, 0, {enabled:false, application:_("Default window settings"), override: false, opacity:0, color:"rgb(0,0,0)", blurtype:BlurType.Gaussian, radius:10, saturation:100, corner_radius: 8, corner_top: true, corner_bottom: false  } );
+         windowList.splice( 0, 0, {enabled:false, application:_(DEFAULT_WINDOW_SETTINGS), override: false, opacity:0, color:"rgb(0,0,0)", blurtype:BlurType.Gaussian, radius:10, saturation:100, corner_radius: 8, corner_top: true, corner_bottom: false  } );
          settings.settings.setValue("windows-inclusion-list", windowList);
       }
 
@@ -4748,7 +4769,7 @@ class BlurApplications extends BlurBase {
          let appId = app ? app.get_id() : null;
          let element = settings.windowInclusionList.find( (element) => {if (element.application == appId || element.application == wmclass) {return true;}} );
          if (!element) {
-            element = settings.windowInclusionList.find( (element) => {if (element.application == _("Default window settings")) {return true;}} );
+            element = settings.windowInclusionList.find(isDefaultWindowSettings);
             if (!element.enabled && settings.windowsTitlebarBlur && this._getTitlebarHeight(metaWindow) > 0) {
                titlebarsOnly = true;
                enabled = true;

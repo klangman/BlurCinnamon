@@ -898,9 +898,16 @@ const RefractionEffect = new GObject.registerClass({
             }
         }
 
+        vfunc_pre_paint(paintContext) {
+            if (!super.vfunc_pre_paint(paintContext))
+                return false;
+            Utils.extendOffscreenViewport(paintContext);
+            return true;
+        }
+
         vfunc_set_actor(actor) {
             this._disconnect_theme_signal();
-            
+
             if (this.chained_effect)
                 this.chained_effect.get_actor()?.remove_effect(this.chained_effect);
 
@@ -941,7 +948,7 @@ const RefractionEffect = new GObject.registerClass({
             }
 
             super.vfunc_set_actor(actor);
-            
+
             if (actor) {
                 this.update_scaled_uniforms();
                 this._theme_context = St.ThemeContext.get_for_stage(global.stage);

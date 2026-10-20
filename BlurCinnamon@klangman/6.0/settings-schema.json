@@ -412,13 +412,13 @@
             {"id": "monitors",  "title": "Monitor",   "type": "integer", "default": 0, "options": { "All" : 100, "1" : 0, "2" : 1, "3" : 2, "4" : 3 } },
             {"id": "override",  "title": "Custom",    "type": "boolean", "default": true},
             {"id": "opacity",   "title": "Tint",       "type": "integer", "default": 40,  "min": 0, "max": 100},
-            {"id": "color",     "title": "Color",     "type": "string",  "default": "rgb(0,0,0)"},
+            {"id": "color",     "title": "Color",     "type": "string",  "default": "rgb(0,0,0)", "color-chooser": "opaque"},
             {"id": "blurtype",  "title": "Background","type": "integer", "default": 8, "options": { "Transparent": 3, "Transparent to wallpaper": 0, "Simple static blur": 1, "Gaussian static blur": 2, "Gaussian dynamic blur": 4, "Monte Carlo static blur": 5, "Monte Carlo dynamic blur": 6, "Dual Kawase static blur": 7, "Dual Kawase dynamic blur": 8, "Liquid Glass static blur": 9, "Liquid Glass dynamic blur": 10 } },
             {"id": "radius",    "title": "Intensity", "type": "integer", "default": 10,  "min": 0, "max": 100},
             {"id": "saturation","title": "Saturation","type": "integer", "default": 100, "min": 0, "max": 100},
             {"id": "customCSS", "title": "Custom CSS","type": "string",  "default": ""}
         ],
-        "tooltip": "Defines the effects applied to different panels. If a panel does not meet the criteria of any enabled entry in this list, it will have no effects applied. The settings of the first entry in this list that can apply to a given panel will take effect. The \"Custom\" check box determines if the generic effect settings are uses or this tables custom settings. The color field is in the rgb(#,#,#) syntax and black will be used when a color is not provided or is in an incorrect syntax",
+        "tooltip": "Defines the effects applied to different panels. If a panel does not meet the criteria of any enabled entry in this list, it will have no effects applied. The settings of the first entry in this list that can apply to a given panel will take effect. The \"Custom\" check box determines if the generic effect settings are uses or this tables custom settings. Click a color in the table to change it",
         "default" : [
             { "enabled": true, "panels": 1, "monitors": 100, "opacity": 40, "color": "rgb(0,0,0)", "blurtype": 2, "radius": 10, "saturation": 100 },
             { "enabled": true, "panels": 2, "monitors": 100, "opacity": 40, "color": "rgb(0,0,0)", "blurtype": 2, "radius": 10, "saturation": 100 },
@@ -1440,7 +1440,7 @@
             {"id": "window_opacity","title": "Opacity",      "type": "integer", "default": 100,  "min": 10, "max": 100},
             {"id": "override",      "title": "Custom",       "type": "boolean", "default": true},
             {"id": "opacity",       "title": "Tint",          "type": "integer", "default": 0,  "min": 0, "max": 100},
-            {"id": "color",         "title": "Color",        "type": "string",  "default": "rgb(0,0,0)"},
+            {"id": "color",         "title": "Color",        "type": "string",  "default": "rgb(0,0,0)", "color-chooser": "opaque"},
             {"id": "blurtype",      "title": "Background",   "type": "integer", "default": 8, "options": {"Transparent to wallpaper": 0, "Simple static blur": 1, "Gaussian static blur": 2, "Gaussian dynamic blur": 4, "Monte Carlo static blur": 5, "Monte Carlo dynamic blur": 6, "Dual Kawase static blur": 7, "Dual Kawase dynamic blur": 8, "Liquid Glass static blur": 9, "Liquid Glass dynamic blur": 10 } },
             {"id": "radius",        "title": "Intensity",    "type": "integer", "default": 10,  "min": 0, "max": 100},
             {"id": "saturation",    "title": "Saturation",   "type": "integer", "default": 100, "min": 0, "max": 100},
@@ -1520,7 +1520,7 @@
             {"id": "instance",   "title": "ID",         "type": "string",  "default": ""},
             {"id": "override",   "title": "Custom",     "type": "boolean", "default": true},
             {"id": "opacity",    "title": "Tint",        "type": "integer", "default": 0,  "min": 0, "max": 100},
-            {"id": "color",      "title": "Color",      "type": "string",  "default": "rgb(0,0,0)"},
+            {"id": "color",      "title": "Color",      "type": "string",  "default": "rgb(0,0,0)", "color-chooser": "opaque"},
             {"id": "blurtype",   "title": "Blur",       "type": "integer", "default": 8, "options": { "None": 0, "Simple static blur": 1, "Gaussian static blur": 2, "Gaussian dynamic blur": 4, "Monte Carlo static blur": 5, "Monte Carlo dynamic blur": 6, "Dual Kawase static blur": 7, "Dual Kawase dynamic blur": 8, "Liquid Glass static blur": 9, "Liquid Glass dynamic blur": 10 } },
             {"id": "radius",     "title": "Intensity",  "type": "integer", "default": 10,  "min": 0, "max": 100},
             {"id": "saturation", "title": "Saturation", "type": "integer", "default": 100, "min": 0, "max": 100}

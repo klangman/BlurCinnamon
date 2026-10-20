@@ -3,6 +3,7 @@
 
 const GObject  = imports.gi.GObject;
 const St       = imports.gi.St;
+const Utils    = require("./utils.js");
 const Clutter  = imports.gi.Clutter;
 const GLib     = imports.gi.GLib;
 
@@ -320,14 +321,21 @@ function makeEffectClass(kind, shader_file) {
 
         _update_chain_uniforms() {
             const scale_factor = St.ThemeContext.get_for_stage(global.stage).scale_factor;
-        
+
             this._update_uniforms(scale_factor);
             this.queue_repaint();
-        
+
             for (const effect of this._sub_effects ?? []) {
                 effect._update_uniforms(scale_factor);
                 effect.queue_repaint();
             }
+        }
+
+        vfunc_pre_paint(paintContext) {
+            if (!super.vfunc_pre_paint(paintContext))
+                return false;
+            Utils.extendOffscreenViewport(paintContext);
+            return true;
         }
 
         vfunc_set_actor(actor) {

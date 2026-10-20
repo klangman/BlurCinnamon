@@ -4,6 +4,7 @@
 const GObject  = imports.gi.GObject;
 const St       = imports.gi.St;
 const Cinnamon = imports.gi.Cinnamon;
+const Utils    = require("./utils.js");
 const Clutter  = imports.gi.Clutter;
 const Gio      = imports.gi.Gio;
 const GLib     = imports.gi.GLib;
@@ -227,6 +228,13 @@ var CornerEffect = (typeof global === 'undefined') ?
             this.set_uniform_value('clip_width', parseFloat(Math.max(1e-6, this._clip_width - 1e-6)));
             this.set_uniform_value('clip_height', parseFloat(Math.max(1e-6, this._clip_height - 1e-6)));
             this.update_radius();
+        }
+
+        vfunc_pre_paint(paintContext) {
+            if (!super.vfunc_pre_paint(paintContext))
+                return false;
+            Utils.extendOffscreenViewport(paintContext);
+            return true;
         }
 
         vfunc_set_actor(actor) {

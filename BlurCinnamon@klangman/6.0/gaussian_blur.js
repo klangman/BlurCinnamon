@@ -4,6 +4,7 @@
 const GObject = imports.gi.GObject;
 
 const St = imports.gi.St;
+const Utils    = require("./utils.js");
 const Clutter = imports.gi.Clutter;
 const GLib = imports.gi.GLib;
 
@@ -233,6 +234,13 @@ const GaussianBlurEffect =
 
         set chained_effect(value) {
             this._chained_effect = value;
+        }
+
+        vfunc_pre_paint(paintContext) {
+            if (!super.vfunc_pre_paint(paintContext))
+                return false;
+            Utils.extendOffscreenViewport(paintContext);
+            return true;
         }
 
         vfunc_set_actor(actor) {

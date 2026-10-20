@@ -4,6 +4,7 @@
 const GObject = imports.gi.GObject;
 
 const St = imports.gi.St;
+const Utils    = require("./utils.js");
 const Clutter = imports.gi.Clutter;
 const GLib = imports.gi.GLib;
 
@@ -231,6 +232,13 @@ const MonteCarloBlurEffect =
 
                 this.set_uniform_value('prefer_closer_pixels', this._prefer_closer_pixels ? 1 : 0);
             }
+        }
+
+        vfunc_pre_paint(paintContext) {
+            if (!super.vfunc_pre_paint(paintContext))
+                return false;
+            Utils.extendOffscreenViewport(paintContext);
+            return true;
         }
 
         vfunc_set_actor(actor) {
