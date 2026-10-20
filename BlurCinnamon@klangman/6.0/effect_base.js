@@ -42,6 +42,23 @@ function toSnippet(source) {
 const SNIPPET_CODE = 'effect_base_main();\n' +
                      'cogl_color_out.rgb /= max(cogl_color_out.a, 0.0001);\n';
 
+// Muffin's ClutterActorMeta forgets its actor when that actor is destroyed, but keeps the id of its
+// "destroy" handler. The next time the effect is attached anywhere it disconnects that id from NULL,
+// logging "invalid (NULL) pointer instance" and "g_signal_handler_disconnect: assertion failed".
+// So note when an effect's actor goes away while it is attached (Clutter then calls set_actor(NULL)
+// with get_actor() already NULL, or the effect is released before that call arrives), and replace
+// such an effect instead of reusing it. Called before chaining up, while get_actor() is the old actor.
+function _noteSetActor(effect, actor) {
+    if (effect._effect_base_attached && effect.get_actor() === null)
+        effect._effect_base_orphaned = true;
+    effect._effect_base_attached = !!actor;
+}
+
+// True if the effect's actor was destroyed while the effect was attached to it
+function isOrphaned(effect) {
+    return !!effect._effect_base_orphaned || (!!effect._effect_base_attached && effect.get_actor() === null);
+}
+
 const GlslEffectBase = USE_GLSL_EFFECT ? GObject.registerClass({
     GTypeName: `BlurCinnamonGlslEffectBase_${Math.floor(Math.random() * 100000) + 1}`,
 }, class GlslEffectBase extends Cinnamon.GLSLEffect {
@@ -66,6 +83,11 @@ const GlslEffectBase = USE_GLSL_EFFECT ? GObject.registerClass({
         this._effect_base_uniforms.set(name, Number(value));
     }
 
+    vfunc_set_actor(actor) {
+        _noteSetActor(this, actor);
+        super.vfunc_set_actor(actor);
+    }
+
     vfunc_paint_target(...params) {
         let renamed = this.constructor._effect_base_renamed;
         if (this._effect_base_uniforms && renamed) {
@@ -87,6 +109,65 @@ const ShaderEffectBase = USE_GLSL_EFFECT ? null : GObject.registerClass({
         if (source)
             this.set_shader_source(source);
     }
+
+    vfunc_set_actor(actor) {
+        _noteSetActor(this, actor);
+        super.vfunc_set_actor(actor);
+    }
 });
 
 var EffectBase = USE_GLSL_EFFECT ? GlslEffectBase : ShaderEffectBase;
+
+// Effect pools
+//
+// Released effects go back into a per-type pool for reuse. On Cinnamon 6.2+ (GLSLEffect) a new
+// effect is cheap and an unreferenced one is finalized, so a pool only needs to cover routine churn
+// (a menu opening and closing, focus moving between windows) and is capped. Pooled effects are not
+// free: ClutterOffscreenEffect only releases its texture in finalize(), so each idle effect holds a
+// texture the size of the last actor it painted. An effect over the cap, or orphaned (see
+// _noteSetActor), is just dropped. run_dispose() is not used: it would not release that texture.
+//
+// On Cinnamon 6.0 an EffectBase (Clutter.ShaderEffect) effect can never be freed, so dropping one
+// would just leak it; those pools stay unbounded and reuse is what limits the total. Orphaned ones
+// are reused there too, accepting the criticals over the leak.
+var MAX_POOLED_EFFECTS = 4;
+
+function _canFree(effect) {
+    return USE_GLSL_EFFECT || !(effect instanceof EffectBase);
+}
+
+// True if the effect should be replaced by a new one rather than reattached
+function shouldDiscard(effect) {
+    return _canFree(effect) && isOrphaned(effect);
+}
+
+function _dropEffect(effect) {
+    try {
+        let actor = effect.get_actor();
+        if (actor)
+            actor.remove_effect(effect);
+    } catch (e) {
+        global.logError(`BlurCinnamon: failed to detach dropped effect: ${e}`);
+    }
+}
+
+// Put a released (already detached) effect back into its pool, or drop it
+function releaseToPool(pool, effect, max = MAX_POOLED_EFFECTS) {
+    if (!_canFree(effect))
+        pool.push(effect);
+    else if (pool.length < max && !isOrphaned(effect))
+        pool.push(effect);
+    else
+        _dropEffect(effect);
+}
+
+// Drop every pooled effect that can be freed (all of them on 6.2+), used when the extension is disabled
+function drainPool(pool) {
+    for (let i = pool.length - 1; i >= 0; i--) {
+        let effect = pool[i];
+        if (_canFree(effect)) {
+            pool.splice(i, 1);
+            _dropEffect(effect);
+        }
+    }
+}

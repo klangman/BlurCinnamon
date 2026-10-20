@@ -8,7 +8,8 @@ const Utils    = require("./utils.js");
 const Clutter = imports.gi.Clutter;
 const GLib = imports.gi.GLib;
 
-const EffectBase = require("./effect_base").EffectBase;
+const EffectBaseModule = require("./effect_base");
+const EffectBase = EffectBaseModule.EffectBase;
 
 const UUID = "BlurCinnamon@klangman";
 
@@ -21,7 +22,8 @@ const DEFAULT_PARAMS = {
 // Pool of released direction=1 "chained" effects, keyed by nothing in particular - any one of
 // them can serve any future top-level (direction=0) instance's chained partner, since they're
 // all identical in shape and just need their radius/brightness/width/height refreshed. Reusing
-// one avoids the compiled-shader-per-instance cost of constructing a fresh GaussianBlurEffect.
+// one avoids constructing a fresh GaussianBlurEffect. Capped like BlurBase's gaussian pool (one
+// chained effect per top-level effect); see effect_base.js.
 const CHAINED_EFFECT_CACHE = [];
 
 function _acquireChainedEffect(params) {
@@ -37,7 +39,12 @@ function _acquireChainedEffect(params) {
 }
 
 function _releaseChainedEffect(effect) {
-    CHAINED_EFFECT_CACHE.push(effect);
+    EffectBaseModule.releaseToPool(CHAINED_EFFECT_CACHE, effect);
+}
+
+// Called from the extension's disable(), after the top-level gaussian pool has been drained
+function drainPools() {
+    EffectBaseModule.drainPool(CHAINED_EFFECT_CACHE);
 }
 
 
@@ -286,6 +293,15 @@ const GaussianBlurEffect =
                     } catch (e) {}
 
                     if (actor !== null && actor !== undefined) {
+                        // If its old actor was destroyed under it, reattaching it would log
+                        // criticals (see effect_base.js), so use a fresh one instead.
+                        if (EffectBaseModule.shouldDiscard(this.chained_effect)) {
+                            _releaseChainedEffect(this.chained_effect);
+                            this.chained_effect = _acquireChainedEffect({
+                                radius: this.radius, brightness: this.brightness,
+                                width: this.width, height: this.height
+                            });
+                        }
                         // Reuse the SAME chained_effect instance rather than destroying it and
                         // constructing a fresh one - refresh its properties (going through the
                         // normal setters keeps its own uniforms in sync) and just move it to the

@@ -91,6 +91,7 @@ const MonteCarloBlur = require("./monte_carlo_blur");
 const DualKawaseBlur = require("./dual_kawase_blur");
 const Refraction = require("./refraction");
 const CornerEffect = require("./corner");
+const EffectPool = require("./effect_base");
 
 const ANIMATION_TIME = 0.25;
 const AUTOHIDE_ANIMATION_TIME = 0.2;  // This is a copy of "Panel.AUTOHIDE_ANIMATION_TIME", we can't legally access it since it's a const and EC6 does not allow it
@@ -1658,14 +1659,22 @@ class ScreenSizeTracker {
 
 class BlurBase {
    static cornerEffectCache     = [];
-   static simpleBlurEffectCache = [];
    static gaussianEffectCache   = [];
    static liquidGlassEffectCache = [];
    static monteCarloEffectCache = [];
    static dualKawaseEffectCache = [];
-   static desaturateEffectCache = [];
 
    constructor() {
+   }
+
+   // Dispose all pooled effects; called once every component has released its effects in disable().
+   // Top-level pools go first: the gaussian and dual kawase effects already handed their chained /
+   // pyramid sub-effects to their own pools when they were detached, so those are drained after.
+   static drainEffectPools() {
+      [ BlurBase.cornerEffectCache, BlurBase.gaussianEffectCache, BlurBase.liquidGlassEffectCache,
+        BlurBase.monteCarloEffectCache, BlurBase.dualKawaseEffectCache ].forEach( (pool) => EffectPool.drainPool(pool) );
+      GaussianBlur.drainPools();
+      DualKawaseBlur.drainPools();
    }
 
    _aquireCornerEffect(radius, top, bottom) {
@@ -1681,20 +1690,16 @@ class BlurBase {
    }
 
    _releaseCornerEffect(effect) {
-      BlurBase.cornerEffectCache.push(effect);
+      EffectPool.releaseToPool(BlurBase.cornerEffectCache, effect);
    }
 
+   // Clutter's own effects are not pooled: they are cheap to create, never leaked, and can't be told
+   // apart once their actor is destroyed under them (see _noteSetActor() in effect_base.js)
    _aquireSimpleBlurEffect() {
-      if (BlurBase.simpleBlurEffectCache.length > 0) {
-         let effect = BlurBase.simpleBlurEffectCache.pop();
-         return(effect);
-      } else {
-         return(new Clutter.BlurEffect());
-      }
+      return(new Clutter.BlurEffect());
    }
 
    _releaseSimpleBlurEffect(effect) {
-      BlurBase.simpleBlurEffectCache.push(effect);
    }
 
 
@@ -1709,7 +1714,7 @@ class BlurBase {
    }
 
    _releaseGaussianEffect(effect) {
-      BlurBase.gaussianEffectCache.push(effect);
+      EffectPool.releaseToPool(BlurBase.gaussianEffectCache, effect);
    }
 
    _aquireLiquidGlassEffect(radius) {
@@ -1725,7 +1730,7 @@ class BlurBase {
    _releaseLiquidGlassEffect(effect) {
       // Don't let a viewport's glass rect follow the effect to its next user
       effect.glass_rect = null;
-      BlurBase.liquidGlassEffectCache.push(effect);
+      EffectPool.releaseToPool(BlurBase.liquidGlassEffectCache, effect);
    }
 
    _aquireMonteCarloEffect(radius) {
@@ -1742,7 +1747,7 @@ class BlurBase {
    }
 
    _releaseMonteCarloEffect(effect) {
-      BlurBase.monteCarloEffectCache.push(effect);
+      EffectPool.releaseToPool(BlurBase.monteCarloEffectCache, effect);
    }
 
    _aquireDualKawaseEffect(radius) {
@@ -1756,21 +1761,14 @@ class BlurBase {
    }
 
    _releaseDualKawaseEffect(effect) {
-      BlurBase.dualKawaseEffectCache.push(effect);
+      EffectPool.releaseToPool(BlurBase.dualKawaseEffectCache, effect);
    }
 
    _aquireDesaturateEffect(factor) {
-      if (BlurBase.desaturateEffectCache.length > 0) {
-         let effect = BlurBase.desaturateEffectCache.pop();
-         effect.set_factor(factor);
-         return(effect);
-      } else {
-         return(new Clutter.DesaturateEffect({factor: factor}));
-      }
+      return(new Clutter.DesaturateEffect({factor: factor}));
    }
 
    _releaseDesaturateEffect(effect) {
-      BlurBase.desaturateEffectCache.push(effect);
    }
 
    _releaseBlurEffect(effect) {
@@ -6454,6 +6452,9 @@ function disable() {
       screenSizeTracker.destroy();
       screenSizeTracker = null;
    }
+
+   // All components have released their effects into the pools by now
+   BlurBase.drainEffectPools();
 
    // If disabled was called to remove the extension entirely rather than a reload
    // we can reset the "new-install" value so that if the user adds the extension

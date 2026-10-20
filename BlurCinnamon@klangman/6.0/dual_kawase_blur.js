@@ -7,7 +7,8 @@ const Utils    = require("./utils.js");
 const Clutter  = imports.gi.Clutter;
 const GLib     = imports.gi.GLib;
 
-const EffectBase = require("./effect_base").EffectBase;
+const EffectBaseModule = require("./effect_base");
+const EffectBase = EffectBaseModule.EffectBase;
 
 const UUID = "BlurCinnamon@klangman";
 
@@ -47,6 +48,8 @@ const DEFAULT_PARAMS = {
 // be reused for another downsample-role slot, never for an upsample one, and vice versa. Reusing
 // one avoids the compiled-shader-per-instance cost of constructing a fresh pyramid on every
 // blur/unblur cycle, which is what originally drove the "over 50 separate shaders" warnings.
+// Each pool is capped at roughly two pyramids' worth of passes (see effect_base.js).
+const MAX_POOLED_SUB_EFFECTS = 8;
 const DOWNSAMPLE_EFFECT_CACHE = [];
 const UPSAMPLE_EFFECT_CACHE = [];
 
@@ -76,7 +79,14 @@ function _acquireSubEffect(is_downsample, params) {
 }
 
 function _releaseSubEffect(effect) {
-    (effect instanceof DualFilteringUpEffect ? UPSAMPLE_EFFECT_CACHE : DOWNSAMPLE_EFFECT_CACHE).push(effect);
+    let cache = (effect instanceof DualFilteringUpEffect) ? UPSAMPLE_EFFECT_CACHE : DOWNSAMPLE_EFFECT_CACHE;
+    EffectBaseModule.releaseToPool(cache, effect, MAX_POOLED_SUB_EFFECTS);
+}
+
+// Called from the extension's disable(), after the top-level dual kawase pool has been drained
+function drainPools() {
+    EffectBaseModule.drainPool(DOWNSAMPLE_EFFECT_CACHE);
+    EffectBaseModule.drainPool(UPSAMPLE_EFFECT_CACHE);
 }
 
 // An effect's shader is set once per class (see effect_base.js), so the downsample and upsample

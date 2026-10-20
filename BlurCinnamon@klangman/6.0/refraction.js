@@ -423,7 +423,9 @@ const RefractionEffect = new GObject.registerClass({
         }
 
         _ensure_blur_effect() {
-            if (!this.chained_effect) {
+            // Replace a blur whose old actor was destroyed under it: reattaching it would log
+            // criticals (see effect_base.js)
+            if (!this.chained_effect || EffectBase.shouldDiscard(this.chained_effect)) {
                 this.chained_effect = new DualKawaseBlur.DualFilteringBlurEffect({
                     radius: this.dual_kawase_radius,
                     brightness: 1,
