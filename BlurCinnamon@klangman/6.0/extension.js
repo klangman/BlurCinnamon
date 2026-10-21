@@ -470,19 +470,28 @@ function getViewportMargin(viewport) {
    return Math.ceil(effect.sample_reach) + VIEWPORT_EDGE_PAD;
 }
 
-// The visible rect grown by margin on every side, as [x, y, width, height]. It is never grown past the
-// stage: there is nothing out there to sample, so the shaders' own edge clamp still applies at a screen
-// edge exactly as it did before, and we don't pay for FBO area that can't contain anything. The result
-// always contains the visible rect, even when the visible rect itself sticks out of the stage.
+// The visible rect grown by margin on every side, then cut to the stage, as [x, y, width, height].
+// Nothing outside the stage is ever cloned, so any part of the viewport out there would be transparent.
+// The blur would then mix that transparency into the pixels near the screen edge, and every inner pass
+// of the effect chain (blur passes, desaturate) stores partial alpha as a*a (see SNIPPET_CODE in
+// effect_base.js), compounding pass after pass. The final pass then lets the unblurred scene behind show
+// through over the blurred colour: a bright, glowing band along the screen edge wherever a window hangs
+// off the screen (worst with Dual Kawase, which has the most passes). Cut to the stage, the FBO holds
+// only real, opaque content and the shaders' own edge clamp applies at the screen edge, as it does for a
+// panel there. The corner effect's clip stays the full visible rect, so off-screen corners stay off screen.
 function getExpandedRect(x, y, width, height, margin) {
    if (![x, y, width, height, margin].every(Number.isFinite) || width <= 0 || height <= 0)
       return [0, 0, 0, 0];
 
    margin = Math.max(0, margin);
-   let x1 = Math.floor(Math.min(x, Math.max(0, x - margin)));
-   let y1 = Math.floor(Math.min(y, Math.max(0, y - margin)));
-   let x2 = Math.ceil(Math.max(x + width, Math.min(global.stage.width, x + width + margin)));
-   let y2 = Math.ceil(Math.max(y + height, Math.min(global.stage.height, y + height + margin)));
+   let x1 = Math.floor(Math.max(0, x - margin));
+   let y1 = Math.floor(Math.max(0, y - margin));
+   let x2 = Math.ceil(Math.min(global.stage.width, x + width + margin));
+   let y2 = Math.ceil(Math.min(global.stage.height, y + height + margin));
+
+   // Entirely off the stage: nothing to show
+   if (x2 <= x1 || y2 <= y1)
+      return [0, 0, 0, 0];
 
    return [x1, y1, x2 - x1, y2 - y1];
 }
