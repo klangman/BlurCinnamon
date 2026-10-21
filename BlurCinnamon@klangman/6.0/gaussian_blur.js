@@ -4,8 +4,12 @@
 const GObject = imports.gi.GObject;
 
 const St = imports.gi.St;
+const Utils    = require("./utils.js");
 const Clutter = imports.gi.Clutter;
 const GLib = imports.gi.GLib;
+
+const EffectBaseModule = require("./effect_base");
+const EffectBase = EffectBaseModule.EffectBase;
 
 const UUID = "BlurCinnamon@klangman";
 
@@ -18,7 +22,8 @@ const DEFAULT_PARAMS = {
 // Pool of released direction=1 "chained" effects, keyed by nothing in particular - any one of
 // them can serve any future top-level (direction=0) instance's chained partner, since they're
 // all identical in shape and just need their radius/brightness/width/height refreshed. Reusing
-// one avoids the compiled-shader-per-instance cost of constructing a fresh GaussianBlurEffect.
+// one avoids constructing a fresh GaussianBlurEffect. Capped like BlurBase's gaussian pool (one
+// chained effect per top-level effect); see effect_base.js.
 const CHAINED_EFFECT_CACHE = [];
 
 function _acquireChainedEffect(params) {
@@ -34,7 +39,12 @@ function _acquireChainedEffect(params) {
 }
 
 function _releaseChainedEffect(effect) {
-    CHAINED_EFFECT_CACHE.push(effect);
+    EffectBaseModule.releaseToPool(CHAINED_EFFECT_CACHE, effect);
+}
+
+// Called from the extension's disable(), after the top-level gaussian pool has been drained
+function drainPools() {
+    EffectBaseModule.drainPool(CHAINED_EFFECT_CACHE);
 }
 
 
@@ -90,7 +100,7 @@ const GaussianBlurEffect =
                 GObject.Object,
             ),
         }
-    }, class GaussianBlurEffect extends Clutter.ShaderEffect {
+    }, class GaussianBlurEffect extends EffectBase {
         constructor(params) {
             super(params);
 
@@ -124,14 +134,13 @@ const GaussianBlurEffect =
             else
                this.chained_effect = null;
 
-            // set shader source
-            this._source = this.get_shader_source(SHADER_FILENAME);
-            if (this._source)
-                this.set_shader_source(this._source);
-
             const theme_context = St.ThemeContext.get_for_stage(global.stage);
             this.set_uniform_value('sigma', parseFloat(this.radius * theme_context.scale_factor / 2 - 1e-6));
             this.set_enabled(this.radius > 0.);
+        }
+
+        get_effect_source() {
+            return this.get_shader_source(SHADER_FILENAME);
         }
 
         get_shader_source(shader_filename) {
@@ -234,6 +243,13 @@ const GaussianBlurEffect =
             this._chained_effect = value;
         }
 
+        vfunc_pre_paint(paintContext) {
+            if (!super.vfunc_pre_paint(paintContext))
+                return false;
+            Utils.extendOffscreenViewport(paintContext);
+            return true;
+        }
+
         vfunc_set_actor(actor) {
             if (this._actor_connection_size_id) {
                 let old_actor = this.get_actor();
@@ -277,6 +293,15 @@ const GaussianBlurEffect =
                     } catch (e) {}
 
                     if (actor !== null && actor !== undefined) {
+                        // If its old actor was destroyed under it, reattaching it would log
+                        // criticals (see effect_base.js), so use a fresh one instead.
+                        if (EffectBaseModule.shouldDiscard(this.chained_effect)) {
+                            _releaseChainedEffect(this.chained_effect);
+                            this.chained_effect = _acquireChainedEffect({
+                                radius: this.radius, brightness: this.brightness,
+                                width: this.width, height: this.height
+                            });
+                        }
                         // Reuse the SAME chained_effect instance rather than destroying it and
                         // constructing a fresh one - refresh its properties (going through the
                         // normal setters keeps its own uniforms in sync) and just move it to the

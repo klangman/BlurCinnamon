@@ -3,8 +3,12 @@
 
 const GObject  = imports.gi.GObject;
 const St       = imports.gi.St;
+const Utils    = require("./utils.js");
 const Clutter  = imports.gi.Clutter;
 const GLib     = imports.gi.GLib;
+
+const EffectBaseModule = require("./effect_base");
+const EffectBase = EffectBaseModule.EffectBase;
 
 const UUID = "BlurCinnamon@klangman";
 
@@ -39,11 +43,13 @@ const DEFAULT_PARAMS = {
 };
 
 // Pools of released pyramid sub-effects, kept separate by role (downsample vs. upsample) since
-// each instance's shader is fixed at construction time (chosen once from pass_index/total_passes
-// in the constructor and never reloaded afterward) - a downsample-shader instance can only ever
+// each instance's shader is fixed by its class (DualFilteringBlurEffect or DualFilteringUpEffect,
+// see makeEffectClass below) - a downsample-shader instance can only ever
 // be reused for another downsample-role slot, never for an upsample one, and vice versa. Reusing
 // one avoids the compiled-shader-per-instance cost of constructing a fresh pyramid on every
 // blur/unblur cycle, which is what originally drove the "over 50 separate shaders" warnings.
+// Each pool is capped at roughly two pyramids' worth of passes (see effect_base.js).
+const MAX_POOLED_SUB_EFFECTS = 8;
 const DOWNSAMPLE_EFFECT_CACHE = [];
 const UPSAMPLE_EFFECT_CACHE = [];
 
@@ -69,17 +75,26 @@ function _acquireSubEffect(is_downsample, params) {
         effect.set_enabled(effect.radius > 0.);
         return effect;
     }
-    return new DualFilteringBlurEffect(params);
+    return is_downsample ? new DualFilteringBlurEffect(params) : new DualFilteringUpEffect(params);
 }
 
 function _releaseSubEffect(effect) {
-    let is_downsample = (effect.pass_index <= Math.floor(effect.total_passes / 2));
-    (is_downsample ? DOWNSAMPLE_EFFECT_CACHE : UPSAMPLE_EFFECT_CACHE).push(effect);
+    let cache = (effect instanceof DualFilteringUpEffect) ? UPSAMPLE_EFFECT_CACHE : DOWNSAMPLE_EFFECT_CACHE;
+    EffectBaseModule.releaseToPool(cache, effect, MAX_POOLED_SUB_EFFECTS);
 }
 
-var DualFilteringBlurEffect =
-    new GObject.registerClass({
-        GTypeName: `DualFilteringBlurEffect_${Math.floor(Math.random() * 100000) + 1}`,
+// Called from the extension's disable(), after the top-level dual kawase pool has been drained
+function drainPools() {
+    EffectBaseModule.drainPool(DOWNSAMPLE_EFFECT_CACHE);
+    EffectBaseModule.drainPool(UPSAMPLE_EFFECT_CACHE);
+}
+
+// An effect's shader is set once per class (see effect_base.js), so the downsample and upsample
+// passes are two classes made here. DualFilteringBlurEffect, the downsample class, is also the
+// first pass of every pyramid, which is the effect the rest of the extension creates and checks for.
+function makeEffectClass(kind, shader_file) {
+    return new GObject.registerClass({
+        GTypeName: `DualFilteringBlurEffect${kind}_${Math.floor(Math.random() * 100000) + 1}`,
         Properties: {
             'radius': GObject.ParamSpec.double(
                 `radius`,
@@ -130,21 +145,13 @@ var DualFilteringBlurEffect =
                 1,
             ),
         }
-    }, class DualFilteringBlurEffect extends Clutter.ShaderEffect {
+    }, class DualFilteringBlurEffect extends EffectBase {
         constructor(params) {
             super(params);
 
             this.pass_index = params?.pass_index ?? 0;
             this.total_passes = params?.total_passes ?? 1;
             this._sub_effects = []; 
-
-            // Determines Downsample vs Upsample based on the midpoint of the pyramid
-            let is_downsample = (this.pass_index <= Math.floor(this.total_passes / 2));
-            let shader_file = is_downsample ? 'dual_filtering_down.glsl' : 'dual_filtering_up.glsl';
-
-            this._source = this.get_shader_source(shader_file);
-            if (this._source)
-                this.set_shader_source(this._source);
 
             this.radius = params?.radius ?? 0;
             this.brightness = params?.brightness ?? 1;
@@ -158,6 +165,10 @@ var DualFilteringBlurEffect =
             this.set_uniform_value('brightness', parseFloat(this.brightness - 1e-6));
             this.set_uniform_value('width', parseFloat(this.width + 3.0 - 1e-6));
             this.set_uniform_value('height', parseFloat(this.height + 3.0 - 1e-6));
+        }
+
+        get_effect_source() {
+            return this.get_shader_source(shader_file);
         }
 
         get_shader_source(shader_filename) {
@@ -320,14 +331,21 @@ var DualFilteringBlurEffect =
 
         _update_chain_uniforms() {
             const scale_factor = St.ThemeContext.get_for_stage(global.stage).scale_factor;
-        
+
             this._update_uniforms(scale_factor);
             this.queue_repaint();
-        
+
             for (const effect of this._sub_effects ?? []) {
                 effect._update_uniforms(scale_factor);
                 effect.queue_repaint();
             }
+        }
+
+        vfunc_pre_paint(paintContext) {
+            if (!super.vfunc_pre_paint(paintContext))
+                return false;
+            Utils.extendOffscreenViewport(paintContext);
+            return true;
         }
 
         vfunc_set_actor(actor) {
@@ -414,3 +432,7 @@ var DualFilteringBlurEffect =
             super.vfunc_paint_target(...params);
         }
     });
+}
+
+var DualFilteringBlurEffect = makeEffectClass('Down', 'dual_filtering_down.glsl');
+var DualFilteringUpEffect = makeEffectClass('Up', 'dual_filtering_up.glsl');

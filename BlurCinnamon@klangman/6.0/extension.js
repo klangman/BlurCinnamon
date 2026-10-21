@@ -46,6 +46,27 @@ const DeskletManager  = imports.ui.deskletManager;
 const OsdWindow       = imports.ui.osdWindow;
 const GLib            = imports.gi.GLib;
 const GObject         = imports.gi.GObject;
+const Gettext         = imports.gettext;
+
+const UUID = "BlurCinnamon@klangman";
+
+// Translation support: look in the extension's own catalog first, then fall back to Cinnamon's
+Gettext.bindtextdomain(UUID, GLib.get_home_dir() + "/.local/share/locale");
+
+function _(text) {
+   let locText = Gettext.dgettext(UUID, text);
+   if (locText === text)
+      locText = window._(text);
+   return locText;
+}
+
+// The special "Default window settings" row in the window list is identified by its name, which is
+// saved in the settings. Match both the English name and the translated one, so a row saved before a
+// translation was installed (or under a different language) is still found.
+const DEFAULT_WINDOW_SETTINGS = "Default window settings";
+function isDefaultWindowSettings(element) {
+   return element.application === DEFAULT_WINDOW_SETTINGS || element.application === _(DEFAULT_WINDOW_SETTINGS);
+}
 
 // For Plank support (reading X11 property)
 imports.gi.versions.Gdk = '3.0';
@@ -70,6 +91,7 @@ const MonteCarloBlur = require("./monte_carlo_blur");
 const DualKawaseBlur = require("./dual_kawase_blur");
 const Refraction = require("./refraction");
 const CornerEffect = require("./corner");
+const EffectPool = require("./effect_base");
 
 const ANIMATION_TIME = 0.25;
 const AUTOHIDE_ANIMATION_TIME = 0.2;  // This is a copy of "Panel.AUTOHIDE_ANIMATION_TIME", we can't legally access it since it's a const and EC6 does not allow it
@@ -448,19 +470,28 @@ function getViewportMargin(viewport) {
    return Math.ceil(effect.sample_reach) + VIEWPORT_EDGE_PAD;
 }
 
-// The visible rect grown by margin on every side, as [x, y, width, height]. It is never grown past the
-// stage: there is nothing out there to sample, so the shaders' own edge clamp still applies at a screen
-// edge exactly as it did before, and we don't pay for FBO area that can't contain anything. The result
-// always contains the visible rect, even when the visible rect itself sticks out of the stage.
+// The visible rect grown by margin on every side, then cut to the stage, as [x, y, width, height].
+// Nothing outside the stage is ever cloned, so any part of the viewport out there would be transparent.
+// The blur would then mix that transparency into the pixels near the screen edge, and every inner pass
+// of the effect chain (blur passes, desaturate) stores partial alpha as a*a (see SNIPPET_CODE in
+// effect_base.js), compounding pass after pass. The final pass then lets the unblurred scene behind show
+// through over the blurred colour: a bright, glowing band along the screen edge wherever a window hangs
+// off the screen (worst with Dual Kawase, which has the most passes). Cut to the stage, the FBO holds
+// only real, opaque content and the shaders' own edge clamp applies at the screen edge, as it does for a
+// panel there. The corner effect's clip stays the full visible rect, so off-screen corners stay off screen.
 function getExpandedRect(x, y, width, height, margin) {
    if (![x, y, width, height, margin].every(Number.isFinite) || width <= 0 || height <= 0)
       return [0, 0, 0, 0];
 
    margin = Math.max(0, margin);
-   let x1 = Math.floor(Math.min(x, Math.max(0, x - margin)));
-   let y1 = Math.floor(Math.min(y, Math.max(0, y - margin)));
-   let x2 = Math.ceil(Math.max(x + width, Math.min(global.stage.width, x + width + margin)));
-   let y2 = Math.ceil(Math.max(y + height, Math.min(global.stage.height, y + height + margin)));
+   let x1 = Math.floor(Math.max(0, x - margin));
+   let y1 = Math.floor(Math.max(0, y - margin));
+   let x2 = Math.ceil(Math.min(global.stage.width, x + width + margin));
+   let y2 = Math.ceil(Math.min(global.stage.height, y + height + margin));
+
+   // Entirely off the stage: nothing to show
+   if (x2 <= x1 || y2 <= y1)
+      return [0, 0, 0, 0];
 
    return [x1, y1, x2 - x1, y2 - y1];
 }
@@ -1282,9 +1313,10 @@ class CloneManager {
                   let windowClone = background._blurCinnamonWinClones[idx];
                   if (windowClone._metaWindow === window) {
                      if (background._blurCinnamonMetaWindowOwner) {
-                        // This background is for an application window, the focused window can't be in the background of any other window, so delete this clone
-                        debugMsg( "Removing clone from a window background because the clone's window has the focus now" );
-                        destroyWindowClone(windowClone, background);
+                        // This background is for an application window. The focused window is usually raised above it now,
+                        // but not above a keep-above owner, so recheck the stacking order instead of deleting the clone
+                        debugMsg( "Rechecking window background clones because the clone's window has the focus now" );
+                        cloneWindowsForBackground(background, background._blurCinnamonDesktopOnly);
                      } else {
                         // This background is for a non-window element (i.e panel, notification, tooltip etc), so this clone now needs to be on top of all other clones
                         debugMsg( "Moving clone to top due to focus change" );
@@ -1636,14 +1668,22 @@ class ScreenSizeTracker {
 
 class BlurBase {
    static cornerEffectCache     = [];
-   static simpleBlurEffectCache = [];
    static gaussianEffectCache   = [];
    static liquidGlassEffectCache = [];
    static monteCarloEffectCache = [];
    static dualKawaseEffectCache = [];
-   static desaturateEffectCache = [];
 
    constructor() {
+   }
+
+   // Dispose all pooled effects; called once every component has released its effects in disable().
+   // Top-level pools go first: the gaussian and dual kawase effects already handed their chained /
+   // pyramid sub-effects to their own pools when they were detached, so those are drained after.
+   static drainEffectPools() {
+      [ BlurBase.cornerEffectCache, BlurBase.gaussianEffectCache, BlurBase.liquidGlassEffectCache,
+        BlurBase.monteCarloEffectCache, BlurBase.dualKawaseEffectCache ].forEach( (pool) => EffectPool.drainPool(pool) );
+      GaussianBlur.drainPools();
+      DualKawaseBlur.drainPools();
    }
 
    _aquireCornerEffect(radius, top, bottom) {
@@ -1659,20 +1699,16 @@ class BlurBase {
    }
 
    _releaseCornerEffect(effect) {
-      BlurBase.cornerEffectCache.push(effect);
+      EffectPool.releaseToPool(BlurBase.cornerEffectCache, effect);
    }
 
+   // Clutter's own effects are not pooled: they are cheap to create, never leaked, and can't be told
+   // apart once their actor is destroyed under them (see _noteSetActor() in effect_base.js)
    _aquireSimpleBlurEffect() {
-      if (BlurBase.simpleBlurEffectCache.length > 0) {
-         let effect = BlurBase.simpleBlurEffectCache.pop();
-         return(effect);
-      } else {
-         return(new Clutter.BlurEffect());
-      }
+      return(new Clutter.BlurEffect());
    }
 
    _releaseSimpleBlurEffect(effect) {
-      BlurBase.simpleBlurEffectCache.push(effect);
    }
 
 
@@ -1687,7 +1723,7 @@ class BlurBase {
    }
 
    _releaseGaussianEffect(effect) {
-      BlurBase.gaussianEffectCache.push(effect);
+      EffectPool.releaseToPool(BlurBase.gaussianEffectCache, effect);
    }
 
    _aquireLiquidGlassEffect(radius) {
@@ -1703,7 +1739,7 @@ class BlurBase {
    _releaseLiquidGlassEffect(effect) {
       // Don't let a viewport's glass rect follow the effect to its next user
       effect.glass_rect = null;
-      BlurBase.liquidGlassEffectCache.push(effect);
+      EffectPool.releaseToPool(BlurBase.liquidGlassEffectCache, effect);
    }
 
    _aquireMonteCarloEffect(radius) {
@@ -1720,7 +1756,7 @@ class BlurBase {
    }
 
    _releaseMonteCarloEffect(effect) {
-      BlurBase.monteCarloEffectCache.push(effect);
+      EffectPool.releaseToPool(BlurBase.monteCarloEffectCache, effect);
    }
 
    _aquireDualKawaseEffect(radius) {
@@ -1734,21 +1770,14 @@ class BlurBase {
    }
 
    _releaseDualKawaseEffect(effect) {
-      BlurBase.dualKawaseEffectCache.push(effect);
+      EffectPool.releaseToPool(BlurBase.dualKawaseEffectCache, effect);
    }
 
    _aquireDesaturateEffect(factor) {
-      if (BlurBase.desaturateEffectCache.length > 0) {
-         let effect = BlurBase.desaturateEffectCache.pop();
-         effect.set_factor(factor);
-         return(effect);
-      } else {
-         return(new Clutter.DesaturateEffect({factor: factor}));
-      }
+      return(new Clutter.DesaturateEffect({factor: factor}));
    }
 
    _releaseDesaturateEffect(effect) {
-      BlurBase.desaturateEffectCache.push(effect);
    }
 
    _releaseBlurEffect(effect) {
@@ -4567,10 +4596,10 @@ class BlurApplications extends BlurBase {
       this._connectRoundedCornersNotifier();
 
       // Add a "Default window settings" if one does not exist
-      let element = settings.windowInclusionList.find( (element) => {if (element.application == _("Default window settings")) {return true;}} );
+      let element = settings.windowInclusionList.find(isDefaultWindowSettings);
       if (!element) {
          let windowList = settings.settings.getValue("windows-inclusion-list");
-         windowList.splice( 0, 0, {enabled:false, application:_("Default window settings"), override: false, opacity:0, color:"rgb(0,0,0)", blurtype:BlurType.Gaussian, radius:10, saturation:100, corner_radius: 8, corner_top: true, corner_bottom: false  } );
+         windowList.splice( 0, 0, {enabled:false, application:_(DEFAULT_WINDOW_SETTINGS), override: false, opacity:0, color:"rgb(0,0,0)", blurtype:BlurType.Gaussian, radius:10, saturation:100, corner_radius: 8, corner_top: true, corner_bottom: false  } );
          settings.settings.setValue("windows-inclusion-list", windowList);
       }
 
@@ -4760,7 +4789,7 @@ class BlurApplications extends BlurBase {
          let appId = app ? app.get_id() : null;
          let element = settings.windowInclusionList.find( (element) => {if (element.application == appId || element.application == wmclass) {return true;}} );
          if (!element) {
-            element = settings.windowInclusionList.find( (element) => {if (element.application == _("Default window settings")) {return true;}} );
+            element = settings.windowInclusionList.find(isDefaultWindowSettings);
             if (!element.enabled && settings.windowsTitlebarBlur && this._getTitlebarHeight(metaWindow) > 0) {
                titlebarsOnly = true;
                enabled = true;
@@ -6445,6 +6474,9 @@ function disable() {
       screenSizeTracker.destroy();
       screenSizeTracker = null;
    }
+
+   // All components have released their effects into the pools by now
+   BlurBase.drainEffectPools();
 
    // If disabled was called to remove the extension entirely rather than a reload
    // we can reset the "new-install" value so that if the user adds the extension

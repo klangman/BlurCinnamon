@@ -4,11 +4,16 @@
 const GObject  = imports.gi.GObject;
 const St       = imports.gi.St;
 const Cinnamon = imports.gi.Cinnamon;
+const Utils    = require("./utils.js");
 const Clutter  = imports.gi.Clutter;
 const Gio      = imports.gi.Gio;
 const GLib     = imports.gi.GLib;
 
+const EffectBase = (typeof global === 'undefined') ? null : require("./effect_base").EffectBase;
+
 const SHADER_FILENAME = 'corner.glsl';
+// The uuid passed to the first CornerEffect, for get_effect_source()
+let shaderUuid = null;
 const DEFAULT_PARAMS = {
     radius: 12, width: 0, height: 0,
     corners_top: true, corners_bottom: true,
@@ -81,8 +86,9 @@ var CornerEffect = (typeof global === 'undefined') ?
                 0.0,
             ),
         }
-    }, class CornerEffect extends Clutter.ShaderEffect {
+    }, class CornerEffect extends EffectBase {
         constructor(uuid, params) {
+            shaderUuid = uuid;
             super(params);
 
             this._clip_x0 = null;
@@ -101,13 +107,12 @@ var CornerEffect = (typeof global === 'undefined') ?
             this._corners_bottom = (params.corners_bottom !== undefined) ? params.corners_bottom : DEFAULT_PARAMS.corners_bottom;
             this._clip = (params.clip) ? params.clip : DEFAULT_PARAMS.clip;
 
-            // set shader source
-            this._source = loadShaderResource(uuid, SHADER_FILENAME);
-            if (this._source)
-                this.set_shader_source(this._source);
-
             // Safe fetch of the current scale factor 
             this.update_radius();
+        }
+
+        get_effect_source() {
+            return loadShaderResource(shaderUuid, SHADER_FILENAME);
         }
 
         static get default_params() {
@@ -223,6 +228,13 @@ var CornerEffect = (typeof global === 'undefined') ?
             this.set_uniform_value('clip_width', parseFloat(Math.max(1e-6, this._clip_width - 1e-6)));
             this.set_uniform_value('clip_height', parseFloat(Math.max(1e-6, this._clip_height - 1e-6)));
             this.update_radius();
+        }
+
+        vfunc_pre_paint(paintContext) {
+            if (!super.vfunc_pre_paint(paintContext))
+                return false;
+            Utils.extendOffscreenViewport(paintContext);
+            return true;
         }
 
         vfunc_set_actor(actor) {
