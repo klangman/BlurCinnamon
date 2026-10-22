@@ -4491,6 +4491,7 @@ class BlurTooltips extends BlurBase {
    constructor() {
       super();
       this._signalManager = new SignalManager.SignalManager(null);
+      this._reclipLaterId = 0;
       blurTooltipsThis = this; // Make "this" available to monkey patched functions
 
       // Monkey patch the Tooltip show and hide functions
@@ -4516,8 +4517,8 @@ class BlurTooltips extends BlurBase {
    }
 
    _blurTooltip(actor) {
-     if (this._tooltipActor)
-        this._unblurTooltip(this._tooltipActor);
+      if (this._tooltipActor)
+         this._unblurTooltip(this._tooltipActor);
 
       let [opacity, blendColor, blurType, radius, saturation] = this._getSettings(settings.tooltipsOverride);
       // Settings are re-read fresh on every show (tooltips are ephemeral, unlike the classes with a
@@ -4540,46 +4541,55 @@ class BlurTooltips extends BlurBase {
       if (this._viewport) this._viewport.hide();
       // Make the tooltip transparent and remove the rounded corners
       this._originalStyle = actor.get_style();
-
-      let themeNode = actor.get_theme_node();
-      if (themeNode) {
-         // We are assuming that all corners have the same radius, hope that is true.
-         let radius = themeNode.get_border_radius(St.Corner.TOPLEFT);
-         this._updateViewportCornerRadius(this._background, this._viewport, (radius/*+6*/)/global.ui_scale, true, true);
-      }
-
-      if (settings.allowTransparentColorTooltips) {
-         actor.set_style(  "background-gradient-direction: vertical; background-gradient-start: transparent; " +
-                           "background-gradient-end: transparent;    background: transparent;"  );
-      }
+      this._originalOpacity = actor.get_opacity();
       // Track the showing tooltip actor so we know which hide call to react to
       this._tooltipActor = actor;
-      // Clip the background subtracting the actors margins since in some cases not doing so makes the background too large
-      this._setClip(actor, this._background, actor, this._viewport);
-      this._background.show();
-      if (this._viewport) this._viewport.show();
-      // If Dynamic Blurring is enabled, create a workspace clone and add the clone to the background
-      if ((isDynamicBlurType(blurType)) && !this._isDynamicEffectActive(this._background)) {
-         this._createDynamicEffect(this._background);
-      }
-      // Adapt to any future tooltip size changes
-      //this._signalManager.connect(actor, 'notify::size', () => {this._setClip(actor);} );
-      this._signalManager.connect(actor, "notify::allocation", () => this._setClip(actor, this._background, null, this._viewport) );
+      this._tooltipBlurType = blurType;
+      this._tooltipReady = false;
+      actor.set_opacity(0);
 
-      // When idle, make sure the clip is set right, sometimes it's wrong on the outset
-      this._queueTooltipReclip(actor)
+      try {
+         if (settings.allowTransparentColorTooltips) {
+            actor.set_style(
+               "background-gradient-direction: vertical; background-gradient-start: transparent; " +
+               "background-gradient-end: transparent;    background: transparent;"
+            );
+         }
+
+         // Adapt to any future tooltip size changes
+         //this._signalManager.connect(actor, 'notify::size', () => {this._setClip(actor);} );
+         const reclip = () => this._queueTooltipReclip(actor);
+         this._signalManager.connect(actor, "notify::allocation", reclip);
+         this._signalManager.connect(actor, "notify::mapped", reclip);
+         this._signalManager.connect(actor, "style-changed", reclip);
+         this._signalManager.connect(actor, "notify::visible", () => {
+            if (!actor.visible) this._unblurTooltip(actor);
+         });
+         this._signalManager.connect(actor, "destroy", () => this._unblurTooltip(actor, false));
+
+         // When idle, make sure the clip is set right, sometimes it's wrong on the outset
+         // Use BEFORE_REDRAW instead of generic idles so preparation precedes painting.
+         this._queueTooltipReclip(actor);
+      } catch (error) {
+         this._unblurTooltip(actor);
+         global.logError(error);
+      }
    }
 
-   _unblurTooltip(actor) {
-      if (actor === this._tooltipActor) {
-         this._cancelTooltipReclip();
-         // In case we are using Dynamic effect, destroy it
-         this._destroyDynamicEffect(this._background);
-         this._background.hide();
-         if (this._viewport) this._viewport.hide();
-         this._signalManager.disconnectAllSignals();
-         this._tooltipActor.set_style( this._originalStyle );
-         this._tooltipActor = null;
+   _unblurTooltip(actor, restoreActor = true) {
+      if (!actor || actor !== this._tooltipActor)
+         return;
+
+      this._cancelTooltipReclip();
+      this._tooltipActor = null;
+      this._signalManager.disconnectAllSignals();
+      // In case we are using Dynamic effect, destroy it
+      this._destroyDynamicEffect(this._background);
+      this._background.hide();
+      if (this._viewport) this._viewport.hide();
+      if (restoreActor) {
+         actor.set_style(this._originalStyle);
+         actor.set_opacity(this._originalOpacity);
       }
    }
 
@@ -4596,33 +4606,82 @@ class BlurTooltips extends BlurBase {
    }
 
    _cancelTooltipReclip() {
-      if (this._reclipIdleId) {
-         Mainloop.source_remove(this._reclipIdleId);
-         this._reclipIdleId = 0;
+      if (this._reclipLaterId) {
+         Meta.later_remove(this._reclipLaterId);
+         this._reclipLaterId = 0;
       }
    }
 
    _queueTooltipReclip(actor) {
-      this._cancelTooltipReclip();
+      if (this._tooltipActor !== actor || this._reclipLaterId)
+         return;
+
       const background = this._background;
       const viewport = this._viewport;
-      let attempts = 2;
-      const reclip = () => {
-         this._reclipIdleId = 0;
-         if (this._tooltipActor !== actor || this._background !== background || !actor.visible)
+      const blurType = this._tooltipBlurType;
+      let laterId = 0;
+      const isCurrent = () => this._tooltipActor === actor &&
+         this._background === background && this._viewport === viewport &&
+         this._reclipLaterId === laterId;
+
+      laterId = Meta.later_add(Meta.LaterType.BEFORE_REDRAW, () => {
+         if (!isCurrent()) return false;
+         try {
+            if (!actor.visible) {
+               this._unblurTooltip(actor);
+               return false;
+            }
+            if (!actor.get_stage() || !actor.is_mapped())
+               return true;
+
+            const box = Cinnamon.util_get_transformed_allocation(actor);
+            if (!isCurrent()) return false;
+            const width = box.x2 - box.x1;
+            const height = box.y2 - box.y1;
+            if (![box.x1, box.y1, width, height].every(Number.isFinite) || width <= 0 || height <= 0)
+               return true;
+
+            const themeNode = actor.get_theme_node();
+            if (themeNode) {
+               // We are assuming that all corners have the same radius, hope that is true.
+               const radius = themeNode.get_border_radius(St.Corner.TOPLEFT);
+               this._updateViewportCornerRadius(background, viewport,
+                  (radius /*+6*/) / global.ui_scale, true, true);
+            }
+            // Clip the background subtracting the actors margins since in some cases not doing so makes the background too large
+            // The allocated box already excludes those margins; do not subtract them again.
+            this._applyBackgroundClip(background, viewport, box.x1, box.y1, width, height);
+            if (!isCurrent()) return false;
+
+            // If Dynamic Blurring is enabled, create a workspace clone and add the clone to the background
+            if (isDynamicBlurType(blurType) && !this._isDynamicEffectActive(background))
+               this._createDynamicEffect(background);
+
+            background.show();
+            if (viewport) viewport.show();
+            if (isDynamicBlurType(blurType))
+               cloneWindowsForBackgroundNow(background, background._blurCinnamonDesktopOnly);
+            if (!isCurrent()) return false;
+
+            if (!this._tooltipReady) {
+               this._tooltipReady = true;
+               actor.set_opacity(this._originalOpacity);
+            }
+            if (isCurrent()) this._reclipLaterId = 0;
             return false;
-         this._setClip(actor, background, null, viewport);
-         if (--attempts > 0)
-            this._reclipIdleId = Mainloop.idle_add(reclip);
-         return false;
-      };
-      this._reclipIdleId = Mainloop.idle_add(reclip);
+         } catch (error) {
+            if (isCurrent()) this._unblurTooltip(actor);
+            global.logError(error);
+            return false;
+         }
+      });
+      this._reclipLaterId = laterId;
    }
 
    destroy() {
       this._cancelTooltipReclip();
       if (this._tooltipActor)
-          this._unblurTooltip(this._tooltipActor);
+         this._unblurTooltip(this._tooltipActor);
 
       // Undo Monkey patching the Tooltip show and hide functions
       Tooltips.PanelItemTooltip.prototype.show = this.original_PanelItemTooltip_show;
