@@ -88,6 +88,9 @@ const GlslEffectBase = USE_GLSL_EFFECT ? GObject.registerClass({
             return;
         this._effect_base_uniforms.set(name, value);
         this._effect_base_changed.set(name, value);
+        // Like ClutterShaderEffect: a new value needs a repaint. Without one, an offscreen effect keeps
+        // showing its cached image until something else redraws the actor.
+        this.queue_repaint();
     }
 
     vfunc_set_actor(actor) {
