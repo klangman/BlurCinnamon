@@ -324,6 +324,7 @@ const RefractionEffect = new GObject.registerClass({
             this._stabilize_clip_x = false;
             this._stabilize_clip_y = false;
             this._clip_settle_timeout_id = null;
+            this._clip_on_screen = false;
             this._glass_rect = null;
 
             Utils.setup_params(this, params);
@@ -718,9 +719,15 @@ const RefractionEffect = new GObject.registerClass({
 
         set clip(value) {
             const previous_clip = this.clip;
+            const previous_on_screen = this._clip_on_screen;
             [this._clip_x0, this._clip_y0, this._clip_width, this._clip_height] = value;
 
-            let shader_clip = this._stabilized_clip(previous_clip);
+            // Only smooth a resize of glass that is on screen. A rect set while the actor is hidden (an
+            // empty one while a menu opens, or a new surface on a reused background) is not a resize of
+            // the rect before it, and stabilizing from it moves the zoom centre and edges once it settles.
+            const actor = this.get_actor();
+            this._clip_on_screen = !!actor && actor.is_mapped() && this._clip_width > 0 && this._clip_height > 0;
+            let shader_clip = this._stabilized_clip(previous_on_screen && this._clip_on_screen ? previous_clip : null);
 
             this.set_uniform_value('clip_x0', parseFloat(shader_clip[0] - 1e-6));
             this.set_uniform_value('clip_y0', parseFloat(shader_clip[1] - 1e-6));
@@ -770,7 +777,7 @@ const RefractionEffect = new GObject.registerClass({
         }
 
         _stabilized_clip(previous_clip) {
-            if (this._clip_width < 0 || this._clip_height < 0) {
+            if (!previous_clip || this._clip_width < 0 || this._clip_height < 0) {
                 this._stable_clip_x0 = null;
                 this._stable_clip_y0 = null;
                 this._stable_clip_width = null;
