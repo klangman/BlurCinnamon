@@ -773,8 +773,13 @@ const RefractionEffect = new GObject.registerClass({
             const new_rect = rect ? [...rect] : null;
             const old_rect = this._glass_rect;
             if (new_rect === old_rect ||
-                (new_rect && old_rect && new_rect.every((v, i) => v === old_rect[i])))
+                (new_rect && old_rect && new_rect.every((v, i) => v === old_rect[i]))) {
+                // Unchanged in the actor's coordinates, but the actor may have moved with its window, and
+                // the glass with it. Keep its origin current, so the next rect is compared from there.
+                const actor = this.get_actor();
+                this._clip_origin = actor ? stage_position(actor) : null;
                 return;
+            }
 
             this._glass_rect = new_rect;
             const actor = this.get_actor();
