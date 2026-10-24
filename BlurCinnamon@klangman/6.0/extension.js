@@ -635,17 +635,30 @@ function disconnectArtifactMitigation(windowClone) {
    }
 }
 
+function getWindowCloneRect(metaWindow, background) {
+   if (background._blurCinnamonName !== "OsdWindow")
+      return metaWindow.get_buffer_rect();
+
+   const compositor = metaWindow.get_compositor_private();
+   if (!compositor || !compositor.get_stage())
+      return null;
+
+   const box = Cinnamon.util_get_transformed_allocation(compositor);
+   const width = box.x2 - box.x1;
+   const height = box.y2 - box.y1;
+   if (![box.x1, box.y1, width, height].every(Number.isFinite) || width <= 0 || height <= 0)
+      return null;
+
+   return {x: box.x1, y: box.y1, width, height};
+}
+
+function updateWindowCloneGeometry(windowClone, background, rect) {
+   windowClone.set_position(rect.x, rect.y);
+   if (background._blurCinnamonName === "OsdWindow")
+      windowClone.set_size(rect.width, rect.height);
+}
+
 function createWindowClone(metaWindow, background, desktopOnly) {
-   if (background._blurCinnamonName === "OsdWindow") {
-      let activeWorkspace = global.workspace_manager.get_active_workspace();
-      if (!windowIsOnWorkspace(metaWindow, activeWorkspace)) {
-         debugMsg(
-            `Not cloning "${metaWindow.get_title()}" for OSD ` +
-            `because it is not on the active workspace`
-         );
-         return null;
-      }
-   }
    // The wallpaper already comes from the WallpaperTracker clone at the bottom of the group
    if (hasStaticWallpaper(background) && isWallpaperWindow(metaWindow))
       return null;
@@ -657,8 +670,10 @@ function createWindowClone(metaWindow, background, desktopOnly) {
          log( `Warning! Tried to add a window clone to a background that already has a clone for that window.` );
          return;
       }
-      let rect = metaWindow.get_buffer_rect();
+      let rect = getWindowCloneRect(metaWindow, background);
       let compositor = metaWindow.get_compositor_private();
+      if (!rect || !compositor)
+         return null;
       // Remove any clones of the backgrounds window in metaWindow's clones. Required to avoid a recurrsion during painting.
       if (owner && compositor) {
          let blurData = compositor._blurCinnamonDataWindow;
@@ -667,6 +682,7 @@ function createWindowClone(metaWindow, background, desktopOnly) {
          }
       }
       let windowClone = new Clutter.Clone({source: compositor, reactive: false, x: rect.x, y: rect.y });
+      updateWindowCloneGeometry(windowClone, background, rect);
       cloneCount++;
       if (owner) {
          debugMsg( `Created clone ${windowClone} of ${metaWindow.get_title()}/${metaWindow.get_id()} for background ${background._blurCinnamonName} "${owner.get_title()}"/"${owner.get_wm_class()}"` );
@@ -928,11 +944,28 @@ function windowIsOnWorkspace(metaWindow, workspace) {
   return true;
 }
 
+function cancelWindowCloneUpdate(background) {
+    if (background._blurCinnamonCloneUpdateId) {
+        Meta.later_remove(background._blurCinnamonCloneUpdateId);
+        delete background._blurCinnamonCloneUpdateId;
+    }
+}
+
 // This function just schedules an update to the background clones.
 // We don't do this work right away for a number of reasons:
 // 1. There are (what I believe to be) bugs in Clutter that causes hangs and weird behavior if done immediately
 // 2. The sort_windows_by_stacking() API will sort incorrectly when called from within the "notify::focus-window" event handler
 function cloneWindowsForBackground(background, desktopOnly) {
+  if (background._blurCinnamonName === "OsdWindow") {
+      if (!background._blurCinnamonWinClones || background._blurCinnamonCloneUpdateId)
+          return;
+      background._blurCinnamonCloneUpdateId = Meta.later_add(Meta.LaterType.BEFORE_REDRAW, () => {
+        delete background._blurCinnamonCloneUpdateId;
+        cloneWindowsForBackgroundNow(background, desktopOnly);
+        return false;
+      });
+      return;
+  }
    //Promise.resolve().then( () => cloneWindowsForBackgroundNow(background, desktopOnly) );
    Mainloop.idle_add( () => cloneWindowsForBackgroundNow(background, desktopOnly) );
 }
@@ -943,14 +976,14 @@ function cloneWindowsForBackground(background, desktopOnly) {
 // If metaWindowOwner is null, all overlapping windows will be cloned.
 // desktopOnly: bool, true when the background should only show desktop clones
 function cloneWindowsForBackgroundNow(background, desktopOnly) {
+   cancelWindowCloneUpdate(background);
    // addBackground() will create an empty _blurCinnamonWinClones array. If we
    // don't see that array now then the background must have been already deleted
    // so we can safely just abort this call.
    if (!background._blurCinnamonWinClones) {
       return;
    }
-   let activeWorkspace = global.workspace_manager.get_active_workspace();
-   let filterByWorkspace = background._blurCinnamonName === "OsdWindow";
+   let isOsd = background._blurCinnamonName === "OsdWindow";
    let [blurX, blurY, blurWidth, blurHeight] = getBackgroundClip(background);
    if (blurWidth===0 || blurHeight===0 || !background.is_mapped()) {
       debugMsg( `Blurred background is zero size or unmapped: width ${blurWidth}  height ${blurHeight}  mapped ${background.is_mapped()}` );
@@ -967,18 +1000,19 @@ function cloneWindowsForBackgroundNow(background, desktopOnly) {
       let metaWindow = window.get_meta_window();
       if (!metaWindow)
           return;
-      
+
       let compositor = metaWindow.get_compositor_private();
       if (!compositor)
           return;
-     
+
       if (compositor.visible &&
-         (!filterByWorkspace || windowIsOnWorkspace(metaWindow, activeWorkspace)) &&
          (!desktopOnly || metaWindow.get_window_type() === Meta.WindowType.DESKTOP) &&
           metaWindow.get_window_type() !== Meta.WindowType.OVERRIDE_OTHER /*&& metaWindow.get_wm_class() !== "Nemo-desktop"*/ &&
           !(hasStaticWallpaper(background) && isWallpaperWindow(metaWindow))) {
-        
-          let winRect = metaWindow.get_buffer_rect();
+
+          let winRect = getWindowCloneRect(metaWindow, background);
+          if (!winRect)
+             return;
           let winX = winRect.x;
           let winY = winRect.y;
           let winX2 = winRect.x + winRect.width;
@@ -1013,7 +1047,14 @@ function cloneWindowsForBackgroundNow(background, desktopOnly) {
             }
          }
          if (i === clones.length) {
-            // No changes to the set of clones, so do nothing!
+            // No changes to the set of clones, so do nothing.
+            // An OSD clone still needs the current visual position during workspace animation.
+            if (isOsd) {
+               for (const clone of clones) {
+                  const rect = getWindowCloneRect(clone._metaWindow, background);
+                  if (rect) updateWindowCloneGeometry(clone, background, rect);
+               }
+            }
             return;
          }
       }
@@ -1136,6 +1177,7 @@ class CloneManager {
          return;
       }
       this._signalManager.disconnect( "notify::mapped", background );
+      cancelWindowCloneUpdate(background);
       destroyAllWindowsClones(background);
       delete background._blurCinnamonWinClones;
       if (background._blurCinnamonDeskletClone) {
@@ -1256,11 +1298,8 @@ class CloneManager {
 
    _onWindowAppeared(metaWindow) {
       let compositor = metaWindow.get_compositor_private();
-      let winRect = metaWindow.get_buffer_rect();
-      let winX = winRect.x;
-      let winY = winRect.y;
-      let winX2 = winRect.x + winRect.width;
-      let winY2 = winRect.y + winRect.height;
+      if (!compositor)
+         return;
       if (!metaWindow._blurCinnamonAllocEventID)
          metaWindow._blurCinnamonAllocEventID = compositor.connect("notify::allocation", () => this._allocationChanged(metaWindow) );
       if (!metaWindow._blurCinnamonVisibleEventId) {
@@ -1269,11 +1308,16 @@ class CloneManager {
 
       debugMsg( `Checking if clones are needed for appeared window: "${metaWindow.get_title()}"` );
       this._backgrounds.forEach( (background) => {
+         if (background._blurCinnamonName === "OsdWindow") {
+            cloneWindowsForBackground(background, background._blurCinnamonDesktopOnly);
+            return;
+         }
          if (!background._blurCinnamonMetaWindowOwner || metaWindow.get_window_type() === Meta.WindowType.DESKTOP || isAbove(background._blurCinnamonMetaWindowOwner, metaWindow)) {
             let [blurX, blurY, blurWidth, blurHeight] = getBackgroundClip(background);
             let blurX2 = blurX + blurWidth;
             let blurY2 = blurY + blurHeight;
-            if ( rectOverlap(winX, winY, winX2, winY2, blurX, blurY, blurX2, blurY2) )
+            const rect = getWindowCloneRect(metaWindow, background);
+            if (rect && rectOverlap(rect.x, rect.y, rect.x + rect.width, rect.y + rect.height, blurX, blurY, blurX2, blurY2))
             {
                createWindowClone(metaWindow, background, background._blurCinnamonDesktopOnly)
             }
@@ -1289,6 +1333,10 @@ class CloneManager {
       }
       // Remove windowClones for this window from each background
       this._backgrounds.forEach( (background) => {
+         if (background._blurCinnamonName === "OsdWindow") {
+            cloneWindowsForBackground(background, background._blurCinnamonDesktopOnly);
+            return;
+         }
          if (background._blurCinnamonWinClones) {
             destroyClones(background, (clone) => clone._metaWindow === metaWindow);
          }
@@ -1300,6 +1348,10 @@ class CloneManager {
       if (!window || window.get_window_type() === Meta.WindowType.DESKTOP)
          return;
       this._backgrounds.forEach( (background) => {
+         if (background._blurCinnamonName === "OsdWindow") {
+            cloneWindowsForBackground(background, background._blurCinnamonDesktopOnly);
+            return;
+         }
          if (background._blurCinnamonMetaWindowOwner === window) {
             // This background is for the new focused window, we might need to create any number of clones for this background
             debugMsg( "Cloning windows because a blurred window has received the focus" );
@@ -1339,15 +1391,12 @@ class CloneManager {
        let previousWs = this._activeWorkspaceIdx;
        this._activeWorkspaceIdx = currentWs;
        debugMsg(`Workspace changed from ${previousWs} to ${currentWs}`);
-   
-       /*
-        * Remove OSD backgrounds clones synchronously so that there cannot be even one
-        * frame containing the previous workspace, then rebuild them
-        * on idle when Cinnamon has updated the workspace state.
-        */
+
+       // Recompose visible actors before painting, including both sides of
+       // a workspace animation. Logical workspace membership is not visibility.
        this._backgrounds.forEach(background => {
            if (background._blurCinnamonName === "OsdWindow") {
-               this.refreshBackground(background, true);
+               this.refreshBackground(background);
            }
        });
        if (blurApplications) {
@@ -1359,12 +1408,16 @@ class CloneManager {
    // Also we check if we need to add or remove clones based on
    // the window overlap state of the new size/location of a window
    _allocationChanged(metaWindow) {
-      let rect = metaWindow.get_buffer_rect();
       this._backgrounds.forEach( (background) => {
+         if (background._blurCinnamonName === "OsdWindow") {
+            cloneWindowsForBackground(background, background._blurCinnamonDesktopOnly);
+            return;
+         }
+         const rect = getWindowCloneRect(metaWindow, background);
          let [blurX, blurY, blurWidth, blurHeight] = getBackgroundClip(background);
          let blurX2 = blurX + blurWidth;
          let blurY2 = blurY + blurHeight;
-         let overlap = rectOverlap(rect.x, rect.y, rect.x+rect.width, rect.y+rect.height, blurX, blurY, blurX+blurWidth, blurY+blurHeight);
+         let overlap = rect && rectOverlap(rect.x, rect.y, rect.x+rect.width, rect.y+rect.height, blurX, blurY, blurX+blurWidth, blurY+blurHeight);
          let underOwner = (!background._blurCinnamonMetaWindowOwner || metaWindow.get_window_type() === Meta.WindowType.DESKTOP || isAbove(background._blurCinnamonMetaWindowOwner, metaWindow));
          let found = false;
          // We are going backwards through the clones since destroyWindowClone mutates the array
@@ -1377,8 +1430,7 @@ class CloneManager {
                   destroyWindowClone(windowClone, background);
                   break;
                } else {
-                  windowClone.x = rect.x;
-                  windowClone.y = rect.y;
+                  updateWindowCloneGeometry(windowClone, background, rect);
                }
             }
          }
@@ -1392,9 +1444,8 @@ class CloneManager {
    destroy() {
       this._signalManager.disconnectAllSignals();
       stopArtifactMitigationGuard();
-      this._backgrounds.forEach( (background) => {
-         this.removeBackground(background);
-      });
+      for (const background of [...this._backgrounds])
+          this.removeBackground(background);
       let windows = global.get_window_actors();
       windows.forEach( (window) => {
          let metaWindow = window.get_meta_window();
@@ -2294,7 +2345,7 @@ class BlurBase {
    _applyBackgroundClip(background, viewport, x, y, width, height) {
       if (![x, y, width, height].every(Number.isFinite))
         x = y = width = height = 0;
-      
+
       width = Math.max(0, width);
       height = Math.max(0, height);
       if (viewport) {
@@ -2449,8 +2500,8 @@ class BlurBase {
 class BlurOSD extends BlurBase {
    constructor() {
       super();
-      this._signalManager = new SignalManager.SignalManager(null);
-      this._reclipLaterId = 0;
+      this._states = new Map();
+      this._destroyed = false;
       blurOSDThis = this; // Make "this" available to monkey patched functions
 
       this.has_own_show = OsdWindow.OsdWindow.prototype.hasOwnProperty('show');
@@ -2461,12 +2512,12 @@ class BlurOSD extends BlurBase {
       if (typeof OsdWindow.OsdWindow.prototype.hide === 'function') {
          this.has_own_hide = OsdWindow.OsdWindow.prototype.hasOwnProperty('hide');
          this.original_hide = OsdWindow.OsdWindow.prototype.hide;
-         OsdWindow.OsdWindow.prototype.hide = this._hide;
+         OsdWindow.OsdWindow.prototype.hide = this._wrapHide(this.original_hide);
       }
       if (typeof OsdWindow.OsdWindow.prototype._hide === 'function') {
          this.has_own_old_hide = OsdWindow.OsdWindow.prototype.hasOwnProperty('_hide');
          this.original_old_hide = OsdWindow.OsdWindow.prototype._hide;
-         OsdWindow.OsdWindow.prototype._hide = this._old_hide;
+         OsdWindow.OsdWindow.prototype._hide = this._wrapHide(this.original_old_hide);
       }
 
       if (usesWorkspaceOsd) {
@@ -2480,7 +2531,7 @@ class BlurOSD extends BlurBase {
 
          this.has_own_info_hide = ModalDialog.InfoOSD.prototype.hasOwnProperty('hide');
          this.original_infoOSD_hide = ModalDialog.InfoOSD.prototype.hide;
-         ModalDialog.InfoOSD.prototype.hide = this._infoOSD_hide;
+         ModalDialog.InfoOSD.prototype.hide = this._wrapHide(this.original_infoOSD_hide);
       }
    }
 
@@ -2493,63 +2544,80 @@ class BlurOSD extends BlurBase {
    }
 
    _show(...params) {
-      let ret = blurOSDThis.original_show.call(this, ...params);
-      if (settings.osdSliderEffects) {
-         try {
-            let actor = this._hbox || (this.actor ? this.actor.get_first_child() : null);
+      const owner = blurOSDThis;
+      const ret = owner.original_show.call(this, ...params);
+      try {
+         if (settings.osdSliderEffects) {
+            const actor = this._hbox || this.actor;
             // On older Cinnamon versions the content actor may only
             // cover the inner contents of the OSD, while this.actor
             // represents the entire popup
-            let clipActor = (!usesWorkspaceOsd && this.actor) ? this.actor : actor;
-            blurOSDThis._showBackground(this, actor, false, clipActor);
-         } catch (e) {
-            global.logError(e);
+            const clipActor = (!usesWorkspaceOsd && this.actor) ? this.actor : actor;
+            owner._showBackground(this, actor, false, clipActor);
+         } else {
+            owner._hideBackground(this);
          }
+      } catch (e) {
+         global.logError(e);
       }
       return ret;
    }
 
-   _hide(...params) {
-      try { blurOSDThis._hideBackground(this, this._hbox || (this.actor ? this.actor.get_first_child() : null)); } catch (e) { global.logError(e); }
-      return blurOSDThis.original_hide ? blurOSDThis.original_hide.call(this, ...params) : undefined;
-   }
-
-   _old_hide(...params) {
-      try { blurOSDThis._hideBackground(this, this._hbox || (this.actor ? this.actor.get_first_child() : null)); } catch (e) { global.logError(e); }
-      return blurOSDThis.original_old_hide ? blurOSDThis.original_old_hide.call(this, ...params) : undefined;
+   _wrapHide(original) {
+      const owner = this;
+      return function(...params) {
+         const ret = original.call(this, ...params);
+         try {
+            if (!owner._destroyed && !owner._getOsdActor(this)?.visible)
+               owner._hideBackground(this);
+         } catch (e) {
+            global.logError(e);
+         }
+         return ret;
+      };
    }
 
    _display(...params) {
-      let ret = blurOSDThis.original_display.call(this, ...params);
-      if (settings.osdWorkspaceEffects) {
-         try { blurOSDThis._showBackground(this, this._vbox || (this.actor ? this.actor.get_first_child() : null), true); } catch (e) { global.logError(e); }
+      const owner = blurOSDThis;
+      const ret = owner.original_display.call(this, ...params);
+      try {
+         if (settings.osdWorkspaceEffects)
+            owner._showBackground(this, this._vbox || (this.actor ? this.actor.get_first_child() : null), true);
+         else
+            owner._hideBackground(this);
+      } catch (e) {
+         global.logError(e);
       }
       return ret;
    }
 
    _infoOSD_show(...params) {
-      let ret = blurOSDThis.original_infoOSD_show.call(this, ...params);
-      if (settings.osdWorkspaceEffects) {
-         try {
-            let actor = this.actor;
-            let clipActor = actor;
-            blurOSDThis._showBackground(this, actor, true, clipActor);
-         } catch (e) {
-            global.logError(e);
-         }
+      const owner = blurOSDThis;
+      const ret = owner.original_infoOSD_show.call(this, ...params);
+      try {
+         if (settings.osdWorkspaceEffects)
+            owner._showBackground(this, this.actor, true, this.actor);
+         else
+            owner._hideBackground(this);
+      } catch (e) {
+         global.logError(e);
       }
       return ret;
    }
 
-   _infoOSD_hide(...params) {
-      try {blurOSDThis._hideBackground(this, this.actor);} catch (e) {global.logError(e);}
-      return blurOSDThis.original_infoOSD_hide.call(this, ...params);
+   _getOsdActor(osd) {
+      // Legacy OSDs wrap an actor while modern OSDs are actors themselves
+      return osd.actor || (osd instanceof Clutter.Actor ? osd : null);
    }
 
-   _cancelReclip() {
-      if (this._reclipLaterId) {
-         Meta.later_remove(this._reclipLaterId);
-         this._reclipLaterId = 0;
+   _isCurrentState(state) {
+      return !this._destroyed && this._states.get(state.osd) === state;
+   }
+
+   _cancelReclip(state) {
+      if (state.laterId) {
+         Meta.later_remove(state.laterId);
+         state.laterId = 0;
       }
    }
 
@@ -2560,8 +2628,7 @@ class BlurOSD extends BlurBase {
             original_color: actor.get_background_color(),
             original_style: actor.get_style(),
             original_class: actor.get_style_class_name(),
-            original_pseudo_class:
-               actor.get_style_pseudo_class()
+            original_pseudo_class: actor.get_style_pseudo_class()
          };
 
          actor.set_style(
@@ -2579,161 +2646,164 @@ class BlurOSD extends BlurBase {
       }
    }
 
-   _syncBackgroundOpacity() {
-      const target = this._viewport || this._background;
-      if (target && this._currentOsdActor)
-         target.set_opacity(this._currentOsdActor.get_paint_opacity());
+   _syncBackgroundOpacity(state) {
+      const target = state.viewport || state.background;
+      target.set_opacity(state.osdActor.get_paint_opacity());
    }
 
-   _scheduleReclip(actor, showBackground = false) {
-      if (!actor || !this._background)
+   _scheduleReclip(state, showBackground = false) {
+      if (!this._isCurrentState(state))
          return;
+      this._cancelReclip(state);
 
-      this._cancelReclip();
-      const osd = this._currentOsd;
-      const panel = this._currentActor;
-      const background = this._background;
-      const viewport = this._viewport;
-
-      // Run before paint and require a valid allocated rectangle
-      this._reclipLaterId = Meta.later_add(Meta.LaterType.BEFORE_REDRAW, () => {
-         this._reclipLaterId = 0;
-         if (this._currentOsd !== osd || this._currentActor !== panel ||
-             this._currentClipActor !== actor || this._background !== background ||
-             this._viewport !== viewport || !actor.is_mapped())
+      // Keep the callback registered until preparation succeeds
+      // or its owner hides/destroys it.
+      let laterId = 0;
+      laterId = Meta.later_add(Meta.LaterType.BEFORE_REDRAW, () => {
+         if (!this._isCurrentState(state) || state.laterId !== laterId)
             return false;
 
-         if (!this._setClip(actor))
+         if (!state.osdActor.visible) {
+            this._hideBackground(state.osd);
             return false;
+         }
+
+         if (!state.clipActor.is_mapped() || !this._setClip(state))
+            return true;
+
+         // A forced layout can emit allocation notifications and replace this
+         // callback while _setClip() runs. Do not erase the replacement's ID.
+         if (!this._isCurrentState(state) || state.laterId !== laterId)
+            return false;
+         state.laterId = 0;
 
          if (showBackground) {
-            this._syncBackgroundOpacity();
-            background.show();
-            if (viewport) viewport.show();
-            if (isDynamicBlurType(this._blurType))
-               cloneWindowsForBackgroundNow(background, background._blurCinnamonDesktopOnly);
-            this._syncActorStyle(panel, true);
+            this._syncBackgroundOpacity(state);
+            state.background.show();
+            if (state.viewport) state.viewport.show();
+            if (isDynamicBlurType(state.blurType))
+               cloneWindowsForBackgroundNow(state.background, state.background._blurCinnamonDesktopOnly);
+            this._syncActorStyle(state.actor, true);
          }
          return false;
       });
+      state.laterId = laterId;
    }
 
    _showBackground(osd, actor, isWorkspaceOsd = false, clipActor = actor) {
-      if (!actor)
+      const osdActor = this._getOsdActor(osd);
+      if (this._destroyed)
          return;
+      if (!actor || !clipActor || !osdActor?.visible) {
+         this._hideBackground(osd);
+         return;
+      }
 
-      if (osd._blurCinnamonBackground && osd._blurCinnamonBackground === this._background &&
-          this._currentActor === actor && this._currentClipActor === clipActor) {
+      const values = this._getSettings(settings.osdOverride);
+      const [opacity, blendColor, blurType, radius, saturation] = values;
+      const useViewport = this._wantsViewport(blurType);
+      let state = this._states.get(osd);
+      if (state && (state.actor !== actor || state.clipActor !== clipActor || this._needsBackgroundRebuild(state.background, blurType, useViewport))) {
+         this._hideBackground(osd);
+         state = null;
+      }
 
-         this._currentOsd = osd;
-         this._currentActor = actor;
+      if (state) {
+         this.parent = state.background.get_parent() || global.overlay_group;
+         if (state.viewport)
+            this._updateViewportEffects(state.background, state.viewport, ...values);
+         else
+            this._updateEffects(state.background, ...values);
+         state.blurType = blurType;
 
          // Workspace OSD needs an explicit refresh because its visual
          // source changes when switching workspaces
-         this._scheduleReclip(clipActor, true);
-
+         this._scheduleReclip(state, true);
          return;
       }
 
       // Stale marker from a background that has already gone away
-      if (osd._blurCinnamonBackground && osd._blurCinnamonBackground !== this._background) {
+      if (osd._blurCinnamonBackground)
          delete osd._blurCinnamonBackground;
+
+      const background = this._createBackgroundAndEffects(opacity, blendColor, blurType, radius, saturation, global.overlay_group, 10, true, true, useViewport);
+      const viewport = background._blurCinnamonViewport;
+      background._blurCinnamonName = "OsdWindow";
+      if (viewport) viewport._blurCinnamonName = "OsdWindow";
+      state = {
+         osd, actor, clipActor, osdActor, background, viewport, blurType,
+         signalManager: new SignalManager.SignalManager(null), laterId: 0
+      };
+      this._states.set(osd, state);
+      osd._blurCinnamonBackground = background;
+
+      try {
+         if (isDynamicBlurType(blurType))
+            this._createDynamicEffect(background);
+
+         const scheduleReclip = () => this._scheduleReclip(state, true);
+         state.signalManager.connect(osdActor, "notify::opacity", () => {
+            if (this._isCurrentState(state)) this._syncBackgroundOpacity(state);
+         });
+         state.signalManager.connect(osdActor, "notify::visible", () => {
+            if (this._isCurrentState(state) && !osdActor.visible)
+               this._hideBackground(osd);
+         });
+         state.signalManager.connect(osdActor, "destroy", () => {
+            if (this._isCurrentState(state)) this._hideBackground(osd, actor, false);
+         });
+         if (osdActor !== clipActor) {
+            state.signalManager.connect(osdActor, "notify::allocation", scheduleReclip);
+            state.signalManager.connect(osdActor, "notify::mapped", scheduleReclip);
+         }
+         state.signalManager.connect(clipActor, "notify::allocation", scheduleReclip);
+         state.signalManager.connect(clipActor, "notify::mapped", scheduleReclip);
+         state.signalManager.connect(clipActor, "style-changed", scheduleReclip);
+
+         this._scheduleReclip(state, true);
+      } catch (e) {
+         this._hideBackground(osd);
+         throw e;
       }
-
-      if (this._background) {
-         this._hideBackground(this._currentOsd, this._currentActor);
-      }
-
-      this._currentOsd = osd;
-      this._currentActor = actor;
-      this._currentClipActor = clipActor;
-
-      let [opacity, blendColor, blurType, radius, saturation] = this._getSettings(settings.osdOverride);
-      this._blurType = blurType;
-      let useViewport = this._wantsViewport(blurType);
-
-      this._background = this._createBackgroundAndEffects(opacity, blendColor, blurType, radius, saturation, global.overlay_group, 10, true, true, useViewport);
-      this._background._blurCinnamonName = "OsdWindow";
-      this._viewport = this._background._blurCinnamonViewport;
-      if (this._viewport) this._viewport._blurCinnamonName = "OsdWindow";
-      osd._blurCinnamonBackground = this._background;
-
-      if (isDynamicBlurType(blurType)) {
-         this._createDynamicEffect(this._background);
-      }
-
-      // Use the actor that represents the complete popup for
-      // both clipping geometry and corner radius
-      let radiusActor = clipActor || actor;
-      let themeNode = radiusActor.get_theme_node();
-
-      if (themeNode) {
-         let corner_radius = themeNode.get_border_radius(St.Corner.TOPLEFT);
-         if (corner_radius === 9999) { corner_radius = Math.min(radiusActor.width, radiusActor.height) / 2; }
-         this._updateViewportCornerRadius(this._background, this._viewport, (corner_radius)/global.ui_scale, true, true);
-      }
-
-      // Legacy OSDs wrap an actor while modern OSDs are actors themselves
-      let osdActor = osd.actor || (osd instanceof Clutter.Actor ? osd : null);
-      this._currentOsdActor = osdActor;
-      if (osdActor) {
-         this._signalManager.connect(osdActor, "notify::opacity", () => this._syncBackgroundOpacity());
-         this._signalManager.connect(osdActor, "destroy", () => this._hideBackground(osd, actor, false));
-      }
-      const scheduleReclip = () => this._scheduleReclip(clipActor, true);
-      if (osdActor && osdActor !== clipActor) {
-         this._signalManager.connect(osdActor, "notify::allocation", scheduleReclip);
-         this._signalManager.connect(osdActor, "notify::mapped", scheduleReclip);
-      }
-      this._signalManager.connect(clipActor, "notify::allocation", scheduleReclip);
-      this._signalManager.connect(clipActor, "notify::mapped", scheduleReclip);
-
-      this._setClip(clipActor);
-      this._scheduleReclip(clipActor, true);
    }
 
-   _hideBackground(osd, actor, restoreStyle = true) {
-      if (!this._background) return;
+   _hideBackground(osd, actor = null, restoreStyle = true) {
+      const state = this._states.get(osd);
+      if (!state)
+         return;
 
       // Ignore a stale hide callback from an OSD that no longer owns
       // the active BlurOSD background
-      if (osd && this._currentOsd && osd !== this._currentOsd) {
+      if (actor && actor !== state.actor)
          return;
-      }
 
-      this._cancelReclip();
+      this._states.delete(osd);
+      this._cancelReclip(state);
+      state.signalManager.disconnectAllSignals();
+      if (isDynamicBlurType(state.blurType))
+         this._destroyDynamicEffect(state.background);
 
-      if (isDynamicBlurType(this._blurType)) {
-         this._destroyDynamicEffect(this._background);
-      }
       // A native destroy needs resource cleanup, but no CSS restoration.
-      if (restoreStyle) {
-          this._syncActorStyle(actor, false);
-      } else if (actor) {
-          delete actor._blurCinnamonData;
-      }
-      this._signalManager.disconnectAllSignals();
+      if (restoreStyle)
+         this._syncActorStyle(state.actor, false);
+      else
+         delete state.actor._blurCinnamonData;
 
       // background (and viewport, when wrapped - see _createBackgroundAndEffects's useViewport)
       // are always parented into global.overlay_group here (the parent argument passed to
       // _createBackgroundAndEffects above), so _destroyBackgroundAndViewport's parent argument
       // covers the same "usually overlay_group, defensively whatever it actually is" cases the old
       // parent-detection code here handled.
-      let parent = this._background.get_parent() || global.overlay_group;
-      this._destroyBackgroundAndViewport(this._background, parent);
-      this._background = null;
-      this._viewport = null;
-      this.parent = null;
-      if (osd) delete osd._blurCinnamonBackground;
-
-      this._currentOsd = null;
-      this._currentActor = null;
-      this._currentClipActor = null;
-      this._currentOsdActor = null;
+      const parent = state.background.get_parent() || global.overlay_group;
+      this._destroyBackgroundAndViewport(state.background, parent);
+      if (osd._blurCinnamonBackground === state.background)
+         delete osd._blurCinnamonBackground;
    }
 
-   _setClip(actor) {
-      if (!actor || !this._background || !actor.get_stage()) return false;
+   _setClip(state) {
+      const actor = state.clipActor;
+      if (!this._isCurrentState(state) || !actor.get_stage())
+         return false;
 
       // Use the allocated bounds: width/height may return the preferred
       // size, including theme margins, while a relayout is pending
@@ -2744,17 +2814,26 @@ class BlurOSD extends BlurBase {
           width <= 0 || height <= 0)
          return false;
 
-      this._applyBackgroundClip(
-         this._background, this._viewport,
-         box.x1, box.y1, width, height
-      );
+      // Use the actor that represents the complete popup for
+      // both clipping geometry and corner radius
+      const themeNode = actor.get_theme_node();
+      if (themeNode) {
+         let cornerRadius = themeNode.get_border_radius(St.Corner.TOPLEFT);
+         if (cornerRadius === 9999)
+            cornerRadius = Math.min(width, height) / 2;
+         this._updateViewportCornerRadius(state.background, state.viewport, cornerRadius / global.ui_scale, true, true);
+      }
+      if (!this._isCurrentState(state))
+         return false;
+      this._applyBackgroundClip(state.background, state.viewport, box.x1, box.y1, width, height);
       return true;
    }
 
    destroy() {
-      this._cancelReclip();
-
-      if (this._signalManager) this._signalManager.disconnectAllSignals();
+      this._destroyed = true;
+      for (const osd of this._states.keys())
+         this._hideBackground(osd);
+      this.parent = null;
 
       if (this.has_own_show) OsdWindow.OsdWindow.prototype.show = this.original_show;
       else delete OsdWindow.OsdWindow.prototype.show;
@@ -2775,9 +2854,6 @@ class BlurOSD extends BlurBase {
          if (this.has_own_info_hide) ModalDialog.InfoOSD.prototype.hide = this.original_infoOSD_hide;
          else delete ModalDialog.InfoOSD.prototype.hide;
       }
-
-      this._hideBackground(this._currentOsd, this._currentActor);
-
       if (blurOSDThis === this) blurOSDThis = null;
    }
 }
@@ -3330,7 +3406,7 @@ class BlurPanels extends BlurBase {
 
       if (blurredPanel.reclipTimeoutId)
          Mainloop.source_remove(blurredPanel.reclipTimeoutId);
-      
+
       blurredPanel.reclipTimeoutId = Mainloop.timeout_add(1500, () => {
          blurredPanel.reclipTimeoutId = 0;
          if (panel.__blurredPanel === blurredPanel)
@@ -4209,7 +4285,7 @@ class BlurNotifications extends BlurBase {
 
    updateEffects() {
       this._cancelShowTimeout()
-      
+
       let [opacity, blendColor, blurType, radius, saturation] = this._getSettings(settings.notificationOverride);
 
       this._blurType = blurType;
@@ -4302,7 +4378,7 @@ class BlurNotifications extends BlurBase {
             let radius = themeNode.get_border_radius(St.Corner.TOPLEFT);
             this._updateViewportCornerRadius(this._background, this._viewport, (radius/*+6*/)/global.ui_scale, true, true);
          }
-         
+
          // Save the current settings so we can restore it if need be
          const data = this._activeNotificationData;
          if (!data || data.actor !== actor || data.button !== button || data.table !== table) {
@@ -4315,7 +4391,7 @@ class BlurNotifications extends BlurBase {
             };
          }
          this._activeNotificationData.showFullscreenNotifications = showFullscreenNotifications;
-        
+
          if (settings.allowTransparentColorNotifications) {
             actor.set_style( /*"border-radius: 0px;*/ "background-gradient-direction: vertical; background-gradient-start: transparent; " +
                              "background-gradient-end: transparent; background: transparent;" );
@@ -4415,6 +4491,7 @@ class BlurTooltips extends BlurBase {
    constructor() {
       super();
       this._signalManager = new SignalManager.SignalManager(null);
+      this._reclipLaterId = 0;
       blurTooltipsThis = this; // Make "this" available to monkey patched functions
 
       // Monkey patch the Tooltip show and hide functions
@@ -4440,9 +4517,9 @@ class BlurTooltips extends BlurBase {
    }
 
    _blurTooltip(actor) {
-     if (this._tooltipActor)
-        this._unblurTooltip(this._tooltipActor);
-     
+      if (this._tooltipActor)
+         this._unblurTooltip(this._tooltipActor);
+
       let [opacity, blendColor, blurType, radius, saturation] = this._getSettings(settings.tooltipsOverride);
       // Settings are re-read fresh on every show (tooltips are ephemeral, unlike the classes with a
       // live updateEffects() dispatcher), so a blur-type change since the last show is handled right
@@ -4464,46 +4541,55 @@ class BlurTooltips extends BlurBase {
       if (this._viewport) this._viewport.hide();
       // Make the tooltip transparent and remove the rounded corners
       this._originalStyle = actor.get_style();
-
-      let themeNode = actor.get_theme_node();
-      if (themeNode) {
-         // We are assuming that all corners have the same radius, hope that is true.
-         let radius = themeNode.get_border_radius(St.Corner.TOPLEFT);
-         this._updateViewportCornerRadius(this._background, this._viewport, (radius/*+6*/)/global.ui_scale, true, true);
-      }
-
-      if (settings.allowTransparentColorTooltips) {
-         actor.set_style(  "background-gradient-direction: vertical; background-gradient-start: transparent; " +
-                           "background-gradient-end: transparent;    background: transparent;"  );
-      }
+      this._originalOpacity = actor.get_opacity();
       // Track the showing tooltip actor so we know which hide call to react to
       this._tooltipActor = actor;
-      // Clip the background subtracting the actors margins since in some cases not doing so makes the background too large
-      this._setClip(actor, this._background, actor, this._viewport);
-      this._background.show();
-      if (this._viewport) this._viewport.show();
-      // If Dynamic Blurring is enabled, create a workspace clone and add the clone to the background
-      if ((isDynamicBlurType(blurType)) && !this._isDynamicEffectActive(this._background)) {
-         this._createDynamicEffect(this._background);
-      }
-      // Adapt to any future tooltip size changes
-      //this._signalManager.connect(actor, 'notify::size', () => {this._setClip(actor);} );
-      this._signalManager.connect(actor, "notify::allocation", () => this._setClip(actor, this._background, null, this._viewport) );
+      this._tooltipBlurType = blurType;
+      this._tooltipReady = false;
+      actor.set_opacity(0);
 
-      // When idle, make sure the clip is set right, sometimes it's wrong on the outset
-      this._queueTooltipReclip(actor)
+      try {
+         if (settings.allowTransparentColorTooltips) {
+            actor.set_style(
+               "background-gradient-direction: vertical; background-gradient-start: transparent; " +
+               "background-gradient-end: transparent;    background: transparent;"
+            );
+         }
+
+         // Adapt to any future tooltip size changes
+         //this._signalManager.connect(actor, 'notify::size', () => {this._setClip(actor);} );
+         const reclip = () => this._queueTooltipReclip(actor);
+         this._signalManager.connect(actor, "notify::allocation", reclip);
+         this._signalManager.connect(actor, "notify::mapped", reclip);
+         this._signalManager.connect(actor, "style-changed", reclip);
+         this._signalManager.connect(actor, "notify::visible", () => {
+            if (!actor.visible) this._unblurTooltip(actor);
+         });
+         this._signalManager.connect(actor, "destroy", () => this._unblurTooltip(actor, false));
+
+         // When idle, make sure the clip is set right, sometimes it's wrong on the outset
+         // Use BEFORE_REDRAW instead of generic idles so preparation precedes painting.
+         this._queueTooltipReclip(actor);
+      } catch (error) {
+         this._unblurTooltip(actor);
+         global.logError(error);
+      }
    }
 
-   _unblurTooltip(actor) {
-      if (actor === this._tooltipActor) {
-         this._cancelTooltipReclip();
-         // In case we are using Dynamic effect, destroy it
-         this._destroyDynamicEffect(this._background);
-         this._background.hide();
-         if (this._viewport) this._viewport.hide();
-         this._signalManager.disconnectAllSignals();
-         this._tooltipActor.set_style( this._originalStyle );
-         this._tooltipActor = null;
+   _unblurTooltip(actor, restoreActor = true) {
+      if (!actor || actor !== this._tooltipActor)
+         return;
+
+      this._cancelTooltipReclip();
+      this._tooltipActor = null;
+      this._signalManager.disconnectAllSignals();
+      // In case we are using Dynamic effect, destroy it
+      this._destroyDynamicEffect(this._background);
+      this._background.hide();
+      if (this._viewport) this._viewport.hide();
+      if (restoreActor) {
+         actor.set_style(this._originalStyle);
+         actor.set_opacity(this._originalOpacity);
       }
    }
 
@@ -4520,34 +4606,83 @@ class BlurTooltips extends BlurBase {
    }
 
    _cancelTooltipReclip() {
-      if (this._reclipIdleId) {
-         Mainloop.source_remove(this._reclipIdleId);
-         this._reclipIdleId = 0;
+      if (this._reclipLaterId) {
+         Meta.later_remove(this._reclipLaterId);
+         this._reclipLaterId = 0;
       }
    }
-   
+
    _queueTooltipReclip(actor) {
-      this._cancelTooltipReclip();
+      if (this._tooltipActor !== actor || this._reclipLaterId)
+         return;
+
       const background = this._background;
       const viewport = this._viewport;
-      let attempts = 2;
-      const reclip = () => {
-         this._reclipIdleId = 0;
-         if (this._tooltipActor !== actor || this._background !== background || !actor.visible)
+      const blurType = this._tooltipBlurType;
+      let laterId = 0;
+      const isCurrent = () => this._tooltipActor === actor &&
+         this._background === background && this._viewport === viewport &&
+         this._reclipLaterId === laterId;
+
+      laterId = Meta.later_add(Meta.LaterType.BEFORE_REDRAW, () => {
+         if (!isCurrent()) return false;
+         try {
+            if (!actor.visible) {
+               this._unblurTooltip(actor);
+               return false;
+            }
+            if (!actor.get_stage() || !actor.is_mapped())
+               return true;
+
+            const box = Cinnamon.util_get_transformed_allocation(actor);
+            if (!isCurrent()) return false;
+            const width = box.x2 - box.x1;
+            const height = box.y2 - box.y1;
+            if (![box.x1, box.y1, width, height].every(Number.isFinite) || width <= 0 || height <= 0)
+               return true;
+
+            const themeNode = actor.get_theme_node();
+            if (themeNode) {
+               // We are assuming that all corners have the same radius, hope that is true.
+               const radius = themeNode.get_border_radius(St.Corner.TOPLEFT);
+               this._updateViewportCornerRadius(background, viewport,
+                  (radius /*+6*/) / global.ui_scale, true, true);
+            }
+            // Clip the background subtracting the actors margins since in some cases not doing so makes the background too large
+            // The allocated box already excludes those margins; do not subtract them again.
+            this._applyBackgroundClip(background, viewport, box.x1, box.y1, width, height);
+            if (!isCurrent()) return false;
+
+            // If Dynamic Blurring is enabled, create a workspace clone and add the clone to the background
+            if (isDynamicBlurType(blurType) && !this._isDynamicEffectActive(background))
+               this._createDynamicEffect(background);
+
+            background.show();
+            if (viewport) viewport.show();
+            if (isDynamicBlurType(blurType))
+               cloneWindowsForBackgroundNow(background, background._blurCinnamonDesktopOnly);
+            if (!isCurrent()) return false;
+
+            if (!this._tooltipReady) {
+               this._tooltipReady = true;
+               actor.set_opacity(this._originalOpacity);
+            }
+            if (isCurrent()) this._reclipLaterId = 0;
             return false;
-         this._setClip(actor, background, null, viewport);
-         if (--attempts > 0)
-            this._reclipIdleId = Mainloop.idle_add(reclip);
-         return false;
-      };
-      this._reclipIdleId = Mainloop.idle_add(reclip);
+         } catch (error) {
+            if (isCurrent()) this._unblurTooltip(actor);
+            global.logError(error);
+            return false;
+         }
+      });
+      this._reclipLaterId = laterId;
    }
 
    destroy() {
       this._cancelTooltipReclip();
       if (this._tooltipActor)
-          this._unblurTooltip(this._tooltipActor);
-      
+         this._unblurTooltip(this._tooltipActor);
+
       // Undo Monkey patching the Tooltip show and hide functions
       Tooltips.PanelItemTooltip.prototype.show = this.original_PanelItemTooltip_show;
       Tooltips.Tooltip.prototype.hide = this.original_Tooltip_hide;
@@ -4770,7 +4905,7 @@ class BlurApplications extends BlurBase {
       let winType = metaWindow.get_window_type();
       // We want to allow blurring for normal window, docks (i.e Plank) and desktop windows (i.e Conky)
       if ((winType === Meta.WindowType.NORMAL || (settings.windowsTitlebarBlur && (winType === Meta.WindowType.DIALOG || winType === Meta.WindowType.MODAL_DIALOG)) ||
-           winType === Meta.WindowType.DOCK || winType === Meta.WindowType.DESKTOP) && wmclass !== "Nemo-desktop") 
+           winType === Meta.WindowType.DOCK || winType === Meta.WindowType.DESKTOP) && wmclass !== "Nemo-desktop")
       {
          let app = this._getAppForWindow(metaWindow);
          let appId = app ? app.get_id() : null;
@@ -4973,7 +5108,7 @@ class BlurApplications extends BlurBase {
             // correctly cloned content to sample right up to the visible edge. This is also the rect
             // CloneManager uses to decide which windows to clone (see getBackgroundClip()).
             data.viewport._blurCinnamonSamplingRect = [rect.x, rect.y, rect.width, rect.height];
-            
+
             let margin = getViewportMargin(data.viewport);
             let [ex, ey, ew, eh] = getExpandedRect(rect.x, rect.y, rect.width, rect.height, margin);
             data.background.set_clip( ex, ey, ew, eh );
@@ -5718,13 +5853,13 @@ class BlurDesklets extends BlurBase {
       });
       this._deskletIdleIds.set(desklet, id);
    }
-   
+
    _cancelDeskletIdle(desklet) {
       const id = this._deskletIdleIds.get(desklet);
       if (id) Mainloop.source_remove(id);
       this._deskletIdleIds.delete(desklet);
    }
-  
+
    _getUniqueSettings() {
       return [settings.deskletsOpacity, settings.deskletsBlendColor, settings.deskletsBlurType, settings.deskletsRadius, settings.deskletsSaturation];
    }
@@ -5865,7 +6000,7 @@ class BlurDesklets extends BlurBase {
         Mainloop.source_remove(id);
      }
      this._deskletIdleIds.clear();
-     
+
       let desklets = DeskletManager.getDefinitions();
       for (let i=0 ; i<desklets.length ; i++) {
          let {uuid, desklet_id} = desklets[i];
@@ -5879,7 +6014,7 @@ class BlurDesklets extends BlurBase {
 
       DeskletManager.DeskletContainer.prototype.raise = this.origianl_raise;
       DeskletManager.DeskletContainer.prototype.lower = this.origianl_lower;
-     
+
       if (blurDeskletsThis === this) blurDeskletsThis = null;
    }
 }
