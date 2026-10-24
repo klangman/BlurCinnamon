@@ -66,6 +66,17 @@ function set_uniform(effect, name, value) {
     } catch (e) { }
 }
 
+// Position of an actor on the stage from its own and its ancestors' positions. Unlike
+// get_transformed_position(), it is current as soon as a position is set, before the next allocation.
+function stage_position(actor) {
+    let x = 0, y = 0;
+    for (let a = actor; a; a = a.get_parent()) {
+        x += a.x;
+        y += a.y;
+    }
+    return [x, y];
+}
+
 function upload_uniforms(effect) {
     if (!effect._bms_uniforms_dirty || !effect._bms_uniforms || !effect.get_actor?.())
         return;
@@ -324,6 +335,8 @@ const RefractionEffect = new GObject.registerClass({
             this._stabilize_clip_x = false;
             this._stabilize_clip_y = false;
             this._clip_settle_timeout_id = null;
+            this._clip_on_screen = false;
+            this._clip_origin = null;
             this._glass_rect = null;
 
             Utils.setup_params(this, params);
@@ -717,10 +730,29 @@ const RefractionEffect = new GObject.registerClass({
         }
 
         set clip(value) {
-            const previous_clip = this.clip;
+            let previous_clip = this.clip;
+            const previous_on_screen = this._clip_on_screen;
+            const previous_origin = this._clip_origin;
             [this._clip_x0, this._clip_y0, this._clip_width, this._clip_height] = value;
 
-            let shader_clip = this._stabilized_clip(previous_clip);
+            // Only smooth a resize of glass that is on screen. A rect set while the actor is hidden (an
+            // empty one while a menu opens, or a new surface on a reused background) is not a resize of
+            // the rect before it, and stabilizing from it moves the zoom centre and edges once it settles.
+            const actor = this.get_actor();
+            this._clip_on_screen = !!actor && actor.is_mapped() && this._clip_width > 0 && this._clip_height > 0;
+            // The rect is in the actor's own coordinates, and a viewport actor moves when its sampling margin
+            // changes (it grows to the whole stage when a resize starts). Compare in the current coordinates,
+            // using the actor's position on the stage: a window's viewport is a child of the window actor, so
+            // its own x/y also change when only the window moves.
+            this._clip_origin = actor ? stage_position(actor) : null;
+            if (previous_origin && this._clip_origin) {
+                const dx = previous_origin[0] - this._clip_origin[0];
+                const dy = previous_origin[1] - this._clip_origin[1];
+                previous_clip = [previous_clip[0] + dx, previous_clip[1] + dy, previous_clip[2], previous_clip[3]];
+                if (this._stable_clip_x0 !== null) this._stable_clip_x0 += dx;
+                if (this._stable_clip_y0 !== null) this._stable_clip_y0 += dy;
+            }
+            let shader_clip = this._stabilized_clip(previous_on_screen && this._clip_on_screen ? previous_clip : null);
 
             this.set_uniform_value('clip_x0', parseFloat(shader_clip[0] - 1e-6));
             this.set_uniform_value('clip_y0', parseFloat(shader_clip[1] - 1e-6));
@@ -741,8 +773,13 @@ const RefractionEffect = new GObject.registerClass({
             const new_rect = rect ? [...rect] : null;
             const old_rect = this._glass_rect;
             if (new_rect === old_rect ||
-                (new_rect && old_rect && new_rect.every((v, i) => v === old_rect[i])))
+                (new_rect && old_rect && new_rect.every((v, i) => v === old_rect[i]))) {
+                // Unchanged in the actor's coordinates, but the actor may have moved with its window, and
+                // the glass with it. Keep its origin current, so the next rect is compared from there.
+                const actor = this.get_actor();
+                this._clip_origin = actor ? stage_position(actor) : null;
                 return;
+            }
 
             this._glass_rect = new_rect;
             const actor = this.get_actor();
@@ -770,7 +807,7 @@ const RefractionEffect = new GObject.registerClass({
         }
 
         _stabilized_clip(previous_clip) {
-            if (this._clip_width < 0 || this._clip_height < 0) {
+            if (!previous_clip || this._clip_width < 0 || this._clip_height < 0) {
                 this._stable_clip_x0 = null;
                 this._stable_clip_y0 = null;
                 this._stable_clip_width = null;

@@ -955,6 +955,9 @@ function cancelWindowCloneUpdate(background) {
 // We don't do this work right away for a number of reasons:
 // 1. There are (what I believe to be) bugs in Clutter that causes hangs and weird behavior if done immediately
 // 2. The sort_windows_by_stacking() API will sort incorrectly when called from within the "notify::focus-window" event handler
+//
+// Clip updates call this on every frame of a window drag or a panel animation, so keep at most one pending
+// update per background: further calls before it runs only record the latest desktopOnly.
 function cloneWindowsForBackground(background, desktopOnly) {
   if (background._blurCinnamonName === "OsdWindow") {
       if (!background._blurCinnamonWinClones || background._blurCinnamonCloneUpdateId)
@@ -967,7 +970,14 @@ function cloneWindowsForBackground(background, desktopOnly) {
       return;
   }
    //Promise.resolve().then( () => cloneWindowsForBackgroundNow(background, desktopOnly) );
-   Mainloop.idle_add( () => cloneWindowsForBackgroundNow(background, desktopOnly) );
+   background._blurCinnamonRecloneDesktopOnly = desktopOnly;
+   if (background._blurCinnamonRecloneId)
+      return;
+   background._blurCinnamonRecloneId = Mainloop.idle_add( () => {
+      background._blurCinnamonRecloneId = 0;
+      cloneWindowsForBackgroundNow(background, background._blurCinnamonRecloneDesktopOnly);
+      return false;
+   });
 }
 
 // Find windows that need to be cloned for the background passed in.
@@ -1178,6 +1188,10 @@ class CloneManager {
       }
       this._signalManager.disconnect( "notify::mapped", background );
       cancelWindowCloneUpdate(background);
+      if (background._blurCinnamonRecloneId) {
+         Mainloop.source_remove(background._blurCinnamonRecloneId);
+         background._blurCinnamonRecloneId = 0;
+      }
       destroyAllWindowsClones(background);
       delete background._blurCinnamonWinClones;
       if (background._blurCinnamonDeskletClone) {
@@ -1418,6 +1432,9 @@ class CloneManager {
          let blurX2 = blurX + blurWidth;
          let blurY2 = blurY + blurHeight;
          let overlap = rect && rectOverlap(rect.x, rect.y, rect.x+rect.width, rect.y+rect.height, blurX, blurY, blurX+blurWidth, blurY+blurHeight);
+         // Runs on every frame of any window move: skip the stacking check (a native sort) when there's nothing to do
+         if (!overlap && !background._blurCinnamonWinClones.some( (clone) => clone._metaWindow === metaWindow ))
+            return;
          let underOwner = (!background._blurCinnamonMetaWindowOwner || metaWindow.get_window_type() === Meta.WindowType.DESKTOP || isAbove(background._blurCinnamonMetaWindowOwner, metaWindow));
          let found = false;
          // We are going backwards through the clones since destroyWindowClone mutates the array
@@ -4903,9 +4920,10 @@ class BlurApplications extends BlurBase {
       let enabled;
       let wmclass = metaWindow.get_wm_class();
       let winType = metaWindow.get_window_type();
-      // We want to allow blurring for normal window, docks (i.e Plank) and desktop windows (i.e Conky)
+      // We want to allow blurring for normal window, docks and desktop windows (i.e Conky). Not Plank: reading its blur
+      // region with Gdk.property_get() (_getPlankBlurRegion()) segfaults cjs, so Cinnamon would crash on every start.
       if ((winType === Meta.WindowType.NORMAL || (settings.windowsTitlebarBlur && (winType === Meta.WindowType.DIALOG || winType === Meta.WindowType.MODAL_DIALOG)) ||
-           winType === Meta.WindowType.DOCK || winType === Meta.WindowType.DESKTOP) && wmclass !== "Nemo-desktop")
+           winType === Meta.WindowType.DOCK || winType === Meta.WindowType.DESKTOP) && wmclass !== "Nemo-desktop" && wmclass !== "Plank")
       {
          let app = this._getAppForWindow(metaWindow);
          let appId = app ? app.get_id() : null;
