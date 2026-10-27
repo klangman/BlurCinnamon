@@ -681,7 +681,7 @@ function createWindowClone(metaWindow, background, desktopOnly) {
             destroyClones(blurData.background, (clone) => clone._metaWindow === owner );
          }
       }
-      let windowClone = new Clutter.Clone({source: compositor, reactive: false, x: rect.x, y: rect.y });
+      let windowClone = new Clutter.Clone({reactive: false, x: rect.x, y: rect.y });
       updateWindowCloneGeometry(windowClone, background, rect);
       cloneCount++;
       if (owner) {
@@ -694,6 +694,10 @@ function createWindowClone(metaWindow, background, desktopOnly) {
       } else {
          background._blurCinnamonGroup.insert_child_below(windowClone, background._blurCinnamonDimmer);
       }
+      // Set the source only after the clone is in the group. Mapping a clone that has a source reads
+      // its allocation, and from inside a window's allocation that runs a nested stage relayout that
+      // drops the window group's pending relayout. With no source yet, mapping doesn't read it.
+      windowClone.set_source(compositor);
       background._blurCinnamonWinClones.push(windowClone);
       windowClone._metaWindow = metaWindow;
       if (settings.windowArtifactMitigation && owner) {
@@ -803,8 +807,10 @@ function syncWindowCloneWithSource(background, windowClone) {
    if (!parent) {
       return;
    }
-   let fx = new Clutter.Clone({source: container, reactive: false});
+   let fx = new Clutter.Clone({reactive: false});
    parent.insert_child_above(fx, windowClone);
+   // Source set after inserting, for the same reason as in createWindowClone()
+   fx.set_source(container);
    windowClone._blurCinnamonEffectClone = fx;
    windowClone._blurCinnamonEffectSource = container;
    // BMW moves the canvas (unscaled-canvas effects) or the layer group holding the container
