@@ -1488,7 +1488,7 @@
         "type": "switch",
         "default": false,
         "description": "Blur window title bars (please read tooltip)",
-        "dependency" : "enable-window-effects & component-selector=9",
+        "dependency" : "enable-window-effects & component-selector=9 & !is-wayland",
         "tooltip": "When enabled, the title bar area under most windows will be blurred excluding GTK4 windows and windows with custom title bars. This behaves like \"Default window settings\" entry above and even uses its settings, but with this option only title bar areas are blurred rather than the entire window. Note: The title bar blurring will only be visible when the title bars are configured to be semi-transparent which MUST be done using CSS. See the Blur Cinnamon website for instructions."
     },
 
@@ -1537,6 +1537,11 @@
     "new-install": {
        "type": "generic",
        "default": 1
+    },
+
+    "is-wayland": {
+       "type": "generic",
+       "default": false
     }
 
 }

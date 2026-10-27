@@ -1459,7 +1459,7 @@ class CloneManager {
          }
          if (!found && overlap && underOwner) {
             debugMsg( `Adding clone on allocation event` );
-            createWindowClone(metaWindow, background, background._blurCinnamonDesktopOnly)
+            createWindowClone(metaWindow, background, background._blurCinnamonDesktopOnly);
          }
       });
    }
@@ -5067,10 +5067,16 @@ class BlurApplications extends BlurBase {
       this._setClip(compositor);
    }
 
+   // Height of the Muffin-drawn titlebar, or 0 when Muffin draws no frame. Client-side decorated windows
+   // (all native Wayland clients, and CSD/headerbar apps on X11) have decorated == false, and for them
+   // frame_rect_to_client_rect() grows the rect outward by the client's shadow extents, so the raw
+   // difference would be negative.
    _getTitlebarHeight(metaWindow) {
+      if (!metaWindow.decorated)
+         return 0;
       let rect = metaWindow.get_frame_rect();
       let clientRect = metaWindow.frame_rect_to_client_rect(rect);
-      return(clientRect.y - rect.y);
+      return Math.max(0, clientRect.y - rect.y);
    }
 
    _setClip(compositor) {
@@ -6180,7 +6186,7 @@ class BlurSettings {
       this.bind('enable-desklet-effects',       'enableDeskletEffects',  enableDeskletChanged);
       this.bind('enable-osd-effects',           'enableOSDEffects',  enableOSDChanged);
 
-      this.bind('enable-panel-unique-settings', 'enablePanelUniqueSettings');
+      this.bind('enable-panel-unique-settings', 'enablePanelUniqueSettings', panelsSettingsChangled);
       this.bind('panel-unique-settings', 'panelUniqueSettings', panelsSettingsChangled);
       this.bind('allow-transparent-color-panels', 'allowTransparentColorPanels', colorChanged);
 
@@ -6455,6 +6461,9 @@ function enable() {
 
    // Save the version number to the settings so that the About page can read it (is there a better way?)
    settings.settings.setValue("ext-version", metaData.version);
+
+   // Let the settings dialog hide options that don't apply under Wayland (i.e. "windows-titlebar-blur")
+   settings.settings.setValue("is-wayland", Meta.is_wayland_compositor());
 
    // Monkey patch to enable Overview effects
    if (settings.enableOverviewEffects) {
