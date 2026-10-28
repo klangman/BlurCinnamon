@@ -451,13 +451,13 @@ class LabelWithTooltip(SettingsWidget):
    def __init__(self, info, key, settings):
       SettingsWidget.__init__(self)
       self.label = Gtk.Label("", xalign=0.5, justify=Gtk.Justification.CENTER, expand=True)
-      self.label.set_markup(_(info["description"]))
+      self.label.set_markup(info["description"])
 
       self.label.set_alignment(0.0, 0.5)
       self.label.set_line_wrap(True)
       self.pack_start(self.label, True, True, 0)
       if "tooltip" in info:
-         self.label.set_tooltip_markup(_(info["tooltip"]))
+         self.label.set_tooltip_markup(info["tooltip"])
 
 
 # An About page Widget with an image and a centered label that supports markup
@@ -472,7 +472,7 @@ class About(SettingsWidget):
 
       self.box = Gtk.Box(spacing=10,orientation=Gtk.Orientation.VERTICAL,margin_start=20, margin_end=20, margin_top=20, margin_left=20, margin_right=20)
       self.label = Gtk.Label("", xalign=0.5, justify=Gtk.Justification.CENTER, expand=True)
-      self.label.set_markup(_(info["description"]).replace("ext-version", settings.get_value("ext-version")))
+      self.label.set_markup(info["description"].replace("ext-version", settings.get_value("ext-version")))
       pixbuf = GdkPixbuf.Pixbuf.new_from_file_at_scale(extensions_path + UUID + info["icon"], width=192, height=192,  preserve_aspect_ratio=True)
       self.image = Gtk.Image.new_from_pixbuf(pixbuf)
       self.box.add(self.image)
