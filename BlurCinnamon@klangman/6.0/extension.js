@@ -92,6 +92,7 @@ const DualKawaseBlur = require("./dual_kawase_blur");
 const Refraction = require("./refraction");
 const CornerEffect = require("./corner");
 const EffectPool = require("./effect_base");
+const Utils = require("./utils.js");
 
 const ANIMATION_TIME = 0.25;
 const AUTOHIDE_ANIMATION_TIME = 0.2;  // This is a copy of "Panel.AUTOHIDE_ANIMATION_TIME", we can't legally access it since it's a const and EC6 does not allow it
@@ -658,6 +659,46 @@ function updateWindowCloneGeometry(windowClone, background, rect) {
       windowClone.set_size(rect.width, rect.height);
 }
 
+// Painting a window clone paints its source window, including that window's own blurred background
+// and the window clones in it. If following those clones leads back to `background`, adding a clone
+// of `source` to it would make the stage paint loop forever ("too much recursion" in UiActor.vfunc_paint,
+// then a crash). createWindowClone() already removes the direct A <-> B case; this also catches longer
+// loops (A -> B -> C -> A) left behind when only some backgrounds have been rescanned after a stacking
+// change (i.e. restoring a minimized window). Returns the window backgrounds on the way, or null if
+// there is no loop.
+function findCloneLoop(background, source) {
+   let seen = new Set();
+   let visited = [];
+   let stack = [source];
+   let loop = false;
+   while (stack.length) {
+      let actor = stack.pop();
+      if (!actor || seen.has(actor))
+         continue;
+      seen.add(actor);
+      if (actor.contains(background))
+         loop = true;
+      let bg = actor._blurCinnamonDataWindow ? actor._blurCinnamonDataWindow.background : null;
+      if (!bg || !bg._blurCinnamonWinClones)
+         continue;
+      visited.push(bg);
+      for (const clone of bg._blurCinnamonWinClones)
+         stack.push(clone.get_source());
+   }
+   return loop ? visited : null;
+}
+
+// Log a clone loop that was refused and rescan the backgrounds on it, so they rebuild their clones
+// from the current stacking order.
+function refuseCloneLoop(background, metaWindow, loopBackgrounds) {
+   let owner = background._blurCinnamonMetaWindowOwner;
+   let names = loopBackgrounds.map( (bg) => bg._blurCinnamonMetaWindowOwner ? `"${bg._blurCinnamonMetaWindowOwner.get_title()}"` : bg._blurCinnamonName );
+   log( `BlurCinnamon: not cloning "${metaWindow.get_title()}" into the background of ${owner ? `"${owner.get_title()}"` : background._blurCinnamonName}, it would paint itself through ${names.join(" -> ")}` );
+   for (const bg of loopBackgrounds)
+      cloneWindowsForBackground(bg, bg._blurCinnamonDesktopOnly);
+   cloneWindowsForBackground(background, background._blurCinnamonDesktopOnly);
+}
+
 function createWindowClone(metaWindow, background, desktopOnly) {
    // The wallpaper already comes from the WallpaperTracker clone at the bottom of the group
    if (hasStaticWallpaper(background) && isWallpaperWindow(metaWindow))
@@ -680,6 +721,11 @@ function createWindowClone(metaWindow, background, desktopOnly) {
          if (blurData && blurData.background &&  blurData.background._blurCinnamonWinClones) {
             destroyClones(blurData.background, (clone) => clone._metaWindow === owner );
          }
+      }
+      let loopBackgrounds = findCloneLoop(background, compositor);
+      if (loopBackgrounds) {
+         refuseCloneLoop(background, metaWindow, loopBackgrounds);
+         return null;
       }
       let windowClone = new Clutter.Clone({reactive: false, x: rect.x, y: rect.y });
       updateWindowCloneGeometry(windowClone, background, rect);
@@ -1303,9 +1349,6 @@ class CloneManager {
       if (compositor.visible) {
          debugMsg( `Window "${metaWindow.get_title()}" is visible!` );
          this._onWindowAppeared(metaWindow);
-         if (compositor._blurCinnamonDataWindow) {
-            blurApplications.reapplyEffects(metaWindow);
-         }
       }else {
          debugMsg( `Window "${metaWindow.get_title()}" is NOT visible!` );
          this._onWindowDisappeared(metaWindow);
@@ -1419,9 +1462,6 @@ class CloneManager {
                this.refreshBackground(background);
            }
        });
-       if (blurApplications) {
-           blurApplications.reapplyEffects();
-       }
    }
 
    // The metaWindow has moved, so we need to move it's clones.
@@ -1633,6 +1673,11 @@ class WallpaperTracker {
          return;
       // Backgrounds sit at the stage origin, so the window's buffer rect is the clone's position
       // in the group - same convention as createWindowClone().
+      let loopBackgrounds = findCloneLoop(background, compositor);
+      if (loopBackgrounds) {
+         refuseCloneLoop(background, metaWindow, loopBackgrounds);
+         return;
+      }
       let rect = metaWindow.get_buffer_rect();
       let clone = new Clutter.Clone({source: compositor, reactive: false, x: rect.x, y: rect.y});
       clone._metaWindow = metaWindow;
@@ -6552,6 +6597,7 @@ function enable() {
 
 function disable() {
   cancelWindowEnableIdle();
+  Utils.cancelFramebufferGC();
 
    if (Overview.Overview.prototype._oldAnimateVisible) {
       delete Overview.Overview.prototype._oldAnimateVisible;

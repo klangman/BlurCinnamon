@@ -246,7 +246,7 @@ const GaussianBlurEffect =
         vfunc_pre_paint(paintContext) {
             if (!super.vfunc_pre_paint(paintContext))
                 return false;
-            Utils.extendOffscreenViewport(paintContext);
+            Utils.extendOffscreenViewport(paintContext, this.get_actor());
             return true;
         }
 
