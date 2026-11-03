@@ -5124,7 +5124,7 @@ class BlurApplications extends BlurBase {
       return Math.max(0, clientRect.y - rect.y);
    }
 
-   _setClip(compositor) {
+   _setClip(compositor, showNow = false) {
       if (compositor._blurCinnamonDataWindow) {
          let data = compositor._blurCinnamonDataWindow;
          // When wrapped in a viewport (see _createBackgroundAndEffects's useViewport), data.background
@@ -5134,9 +5134,6 @@ class BlurApplications extends BlurBase {
             data.background.hide();
             if (data.viewport) data.viewport.hide();
             return;
-         } else {
-            data.background.show();
-            if (data.viewport) data.viewport.show();
          }
          let rect = data.metaWindow.get_frame_rect();
 
@@ -5150,6 +5147,21 @@ class BlurApplications extends BlurBase {
                data.background.hide();
                if (data.viewport) data.viewport.hide();
                return;
+            }
+         }
+         if (!data.background.visible || (data.viewport && !data.viewport.visible)) {
+            if (showNow) {
+               data.background.show();
+               if (data.viewport) data.viewport.show();
+            } else {
+               // Not show() here: this can run from notify::allocation, inside the stage relayout. Mapping an
+               // actor reads its allocation, which re-enters the relayout and drops the window group's queued
+               // one, so the window being shown stays invisible (i.e. Guake after F12)
+               Meta.later_add(Meta.LaterType.BEFORE_REDRAW, () => {
+                  if (compositor._blurCinnamonDataWindow === data)
+                     this._setClip(compositor, true);
+                  return false;
+               });
             }
          }
          // Set the background position to the displays 0,0 based on the compositor's position and the shadow size
