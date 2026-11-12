@@ -480,15 +480,16 @@ function getViewportMargin(viewport) {
 // off the screen (worst with Dual Kawase, which has the most passes). Cut to the stage, the FBO holds
 // only real, opaque content and the shaders' own edge clamp applies at the screen edge, as it does for a
 // panel there. The corner effect's clip stays the full visible rect, so off-screen corners stay off screen.
-function getExpandedRect(x, y, width, height, margin) {
-   if (![x, y, width, height, margin].every(Number.isFinite) || width <= 0 || height <= 0)
+// stage is the rect to cut to, in the coordinates of x and y: the stage, unless those aren't stage coordinates.
+function getExpandedRect(x, y, width, height, margin, stage = [0, 0, global.stage.width, global.stage.height]) {
+   if (![x, y, width, height, margin, ...stage].every(Number.isFinite) || width <= 0 || height <= 0)
       return [0, 0, 0, 0];
 
    margin = Math.max(0, margin);
-   let x1 = Math.floor(Math.max(0, x - margin));
-   let y1 = Math.floor(Math.max(0, y - margin));
-   let x2 = Math.ceil(Math.min(global.stage.width, x + width + margin));
-   let y2 = Math.ceil(Math.min(global.stage.height, y + height + margin));
+   let x1 = Math.max(Math.ceil(stage[0]), Math.floor(x - margin));
+   let y1 = Math.max(Math.ceil(stage[1]), Math.floor(y - margin));
+   let x2 = Math.min(Math.floor(stage[0] + stage[2]), Math.ceil(x + width + margin));
+   let y2 = Math.min(Math.floor(stage[1] + stage[3]), Math.ceil(y + height + margin));
 
    // Entirely off the stage: nothing to show
    if (x2 <= x1 || y2 <= y1)
@@ -796,7 +797,7 @@ function createWindowClone(metaWindow, background, desktopOnly) {
 // Stage position of an actor, from the x/y properties of it and its ancestors, ignoring any
 // scale/pivot. BMW containers are never scaled or rotated, and x/y (unlike the allocation) are up
 // to date as soon as BMW moves them from its timeline, so the clone never lags a frame behind.
-// Also used to position a window's blur inside its (possibly BMW-scaled) compositor actor.
+// Also used, through _stageTransform(), to position a window's blur inside its compositor actor.
 function _stagePosition(actor) {
    let x = 0, y = 0;
    for (let a = actor ; a && a !== global.stage ; a = a.get_parent()) {
@@ -804,6 +805,73 @@ function _stagePosition(actor) {
       y += a.y;
    }
    return [x, y];
+}
+
+// Where a window actor draws its contents, as [ox, oy, sx, sy]: a point (x, y) in the actor's
+// coordinates lands on the stage at (ox + sx*x, oy + sy*y). On top of _stagePosition() this follows
+// what Cinnamon's window animations change: the actor's scale around its pivot point (open, close,
+// minimize) and its translation (animated size change). Like _stagePosition() it reads properties,
+// which are current as soon as a transition advances, while the allocation only catches up at the
+// next layout. Rotation is not followed.
+//
+// An actor with an opacity of 0 isn't drawn itself. What can still show it is a clone, which draws its
+// source without the source's transform: BMW animates a clone of the window that way, placed at
+// the actor's position, while the actor keeps the scale Cinnamon's own animation started with.
+// So only the position counts then.
+function _stageTransform(actor) {
+   let [ox, oy] = _stagePosition(actor);
+   if (actor.opacity === 0)
+      return [ox, oy, 1, 1];
+   let sx = actor.scale_x, sy = actor.scale_y;
+   let pivot = actor.pivot_point;
+   ox += actor.translation_x + pivot.x * actor.width * (1 - sx);
+   oy += actor.translation_y + pivot.y * actor.height * (1 - sy);
+   return [ox, oy, sx, sy];
+}
+
+// What changes _stageTransform() without changing the actor's allocation. A hidden actor isn't
+// allocated, and one that is moved and hidden before the next layout doesn't notify its new position,
+// hence notify::visible.
+const STAGE_TRANSFORM_SIGNALS = ["notify::position", "notify::scale-x", "notify::scale-y", "notify::translation-x", "notify::translation-y",
+                                 "notify::pivot-point", "notify::opacity", "notify::visible"];
+
+// A window's frame rect in its actor's coordinates. While the actor doesn't draw the window at its
+// current size it draws the frame where it was, so this returns lastRect (what this returned before)
+// then. The actor can be behind: Muffin freezes it until the client has redrawn for a resize. Its own
+// size doesn't always tell: while an open or minimize animation runs Muffin leaves it at the size it
+// had, and only the texture it draws gets the window's new size (and emits "size-changed"). Nor does
+// the texture's size alone, which Muffin divides by the scale of a Wayland buffer. So either one will
+// do. And a closing window is no longer managed: it has lost its decorations, and Muffin has given a
+// maximized one its unmaximized frame rect back, while the actor draws the window as it was until the
+// close animation ends.
+function _frameInActorCoordinates(metaWindow, actor, lastRect) {
+   let frameRect = metaWindow.get_frame_rect();
+   let bufferRect = metaWindow.get_buffer_rect();
+   if (lastRect) {
+      let texture = actor.get_texture();
+      let [hasSize, width, height] = texture ? texture.get_preferred_size() : [false];
+      let drawsCurrentSize = (actor.width === bufferRect.width && actor.height === bufferRect.height) ||
+                             (hasSize && width === bufferRect.width && height === bufferRect.height);
+      if (metaWindow.get_compositor_private() !== actor || !drawsCurrentSize)
+         return lastRect;
+   }
+   return { x: frameRect.x - bufferRect.x, y: frameRect.y - bufferRect.y, width: frameRect.width, height: frameRect.height };
+}
+
+// The stage in a window actor's coordinates (see _stageTransform()), as [x, y, width, height], for
+// getExpandedRect() to cut a viewport inside that actor to. Muffin leaves part of an effect's texture
+// undrawn when the texture is larger than the stage (see Utils.extendOffscreenViewport()), which a
+// viewport inside a scaled-down actor could be. So the rect is never larger than the stage itself: it
+// is then the part of the stage around (centerX, centerY).
+function _stageInActorCoordinates([ox, oy, sx, sy], centerX, centerY) {
+   let limit = (start, size, maxSize, center) => {
+      if (size <= maxSize)
+         return [start, size];
+      return [Math.min(Math.max(center - maxSize / 2, start), start + size - maxSize), maxSize];
+   };
+   let [x, width] = limit(-ox / sx, global.stage.width / sx, global.stage.width, centerX);
+   let [y, height] = limit(-oy / sy, global.stage.height / sy, global.stage.height, centerY);
+   return [x, y, width, height];
 }
 
 function _positionEffectClone(windowClone) {
@@ -1067,6 +1135,10 @@ function cloneWindowsForBackgroundNow(background, desktopOnly) {
    let blurY2 = blurY + blurHeight;
    let windowsToClone = [];
    let metaWindowOwner = background._blurCinnamonMetaWindowOwner;
+   // A closing window's blur stays on until its animation ends. That window is no longer found among
+   // the windows below, so the windows above it would be cloned too. Its clones are left as they are.
+   if (metaWindowOwner && !metaWindowOwner.get_compositor_private())
+      return;
 
    // Find all windows that are visible and overlap with the passed in background
    let windows = global.get_window_actors();
@@ -5035,6 +5107,14 @@ class BlurApplications extends BlurBase {
             // when either the compositor actor or the MetaWindow reports a position update.
             signalManager.connect(compositor, "notify::allocation", () => this._setClip(compositor) );
             signalManager.connect(metaWindow, "position-changed", () => this._setClip(compositor) );
+            // Window animations also change the actor in ways that don't change its allocation
+            for (let signal of STAGE_TRANSFORM_SIGNALS)
+               signalManager.connect(compositor, signal, () => this._setClip(compositor) );
+            // During some of them a resized window gets a texture of its new size, but no new allocation.
+            // Reading the texture's size can emit this too, which then runs _setClip() once from inside itself.
+            let texture = compositor.get_texture();
+            if (texture)
+               signalManager.connect(texture, "size-changed", () => this._setClip(compositor) );
             // Resize / reposition & make visible the blurred actor
             this._setClip(compositor);
          }
@@ -5226,31 +5306,42 @@ class BlurApplications extends BlurBase {
       return Math.max(0, clientRect.y - rect.y);
    }
 
+   // The blur background (and viewport) live inside the window compositor actor, so they are drawn with
+   // the position, scale and translation the actor has right now. Cinnamon's window animations change
+   // those (open, close, minimize, size change, workspace switch) while the frame rect already is where
+   // the window will end up. So this works in the actor's coordinates, where the frame stays put: the
+   // blur then covers the window however the actor draws it. What the blur shows undoes the actor's
+   // transform instead (see _stageTransform()), so that what is behind the window stays put on the
+   // screen while the window animates over it.
    _setClip(compositor, showNow = false) {
       if (compositor._blurCinnamonDataWindow) {
          let data = compositor._blurCinnamonDataWindow;
-         // When wrapped in a viewport (see _createBackgroundAndEffects's useViewport), data.background
-         // stays a genuinely shown/positioned/clipped actor in its own right - not just a clone source - so
-         // it needs to be shown/hidden in lockstep with the viewport that's painted on top of it.
-         if (compositor.get_transition("x") || compositor.get_transition("y") ) {
-            data.background.hide();
-            if (data.viewport) data.viewport.hide();
-            return;
-         }
-         let rect = data.metaWindow.get_frame_rect();
+         let rect = _frameInActorCoordinates(data.metaWindow, compositor, data.rect);
 
          // If the window is shaded or the blur is for the titlebar only, then we only want to blur under the title bar.
-         if (data.metaWindow.is_shaded() || data.titlebarsOnly) {
+         if (rect !== data.rect && (data.metaWindow.is_shaded() || data.titlebarsOnly)) {
             //let clientRect = data.metaWindow.frame_rect_to_client_rect(rect);
             rect.height = this._getTitlebarHeight(data.metaWindow); //clientRect.y - rect.y;
             if (rect.height <= 0) {
                //rect.height = 3;        // Hack, bad things happen if we set the height to 0 or less
                // Hide the background (and viewport) since we can't determine the title bar height
+               data.rect = null;
                data.background.hide();
                if (data.viewport) data.viewport.hide();
                return;
             }
          }
+         data.rect = rect;
+
+         // An animation can start from a scale of 0 (e.g. the "move" map effect). The window, and the blur
+         // inside it, draw nothing then, and that scale can't be undone.
+         let transform = _stageTransform(compositor);
+         let [ox, oy, sx, sy] = transform;
+         if (!(sx > 0 && sy > 0))
+            return;
+         // When wrapped in a viewport (see _createBackgroundAndEffects's useViewport), data.background
+         // stays a genuinely shown/positioned/clipped actor in its own right - not just a clone source - so
+         // it needs to be shown/hidden in lockstep with the viewport that's painted on top of it.
          if (!data.background.visible || (data.viewport && !data.viewport.visible)) {
             if (showNow) {
                data.background.show();
@@ -5275,20 +5366,12 @@ class BlurApplications extends BlurBase {
          //let [rx,ry] = data.background.get_transformed_position();
          //let [x,y] = data.background.get_position();
          //data.background.set_position( x-rx, y-ry );
-         // The blur background lives inside the window compositor actor, so it must be
-         // offset by the compositor's stage position, not by its own previous transformed
-         // position. Otherwise the blur and the real window can drift apart.
-         // Use the compositor's *untransformed* position (see _stagePosition()), not
-         // get_transformed_position(): background is in the compositor's local, pre-scale
-         // coordinates and inherits whatever scale the compositor has. Burn-My-Windows scales the
-         // window actor around its center while it opens/closes, and resets the scale to 1 at the
-         // end without any allocation change, so a scaled transformed position computed here
-         // mid-animation left the blur offset until the window was next moved.
-         let [rx, ry] = _stagePosition(compositor);
-
+         // The blur background lives inside the window compositor actor, so it undoes the compositor's
+         // transform.
          // data.background is repositioned to global (0,0) exactly as it always was, whether or not
          // it's wrapped in a viewport - it stays a real, normally-shown/mapped actor either way.
-         data.background.set_position(-rx, -ry);
+         data.background.set_position(-ox / sx, -oy / sy);
+         data.background.set_scale(1 / sx, 1 / sy);
 
          if (data.viewport) {
             // Wrapped: the corner/blur/desaturate effects live on the viewport now, not on
@@ -5299,8 +5382,9 @@ class BlurApplications extends BlurBase {
             data.viewport._blurCinnamonSamplingRect = [rect.x, rect.y, rect.width, rect.height];
 
             let margin = getViewportMargin(data.viewport);
-            let [ex, ey, ew, eh] = getExpandedRect(rect.x, rect.y, rect.width, rect.height, margin);
-            data.background.set_clip( ex, ey, ew, eh );
+            let stage = _stageInActorCoordinates(transform, rect.x + rect.width / 2, rect.y + rect.height / 2);
+            let [ex, ey, ew, eh] = getExpandedRect(rect.x, rect.y, rect.width, rect.height, margin, stage);
+            data.background.set_clip( ox + sx * ex, oy + sy * ey, sx * ew, sy * eh );
 
             // Title-bar-only blur: the margin below the title bar lies over this window's own opaque body,
             // and Muffin doesn't paint the parts of the windows underneath that it hides - not even through
@@ -5308,14 +5392,15 @@ class BlurApplications extends BlurBase {
             // culling the windows below it (see NoCullEffect) so the margin has real content.
             this._setCullsWindowsBelow(compositor, !data.titlebarsOnly);
 
-            // Size/position the viewport to the expanded rect (converted from global/stage coordinates
-            // to compositor-local, since the viewport is a child of the compositor), and offset its
-            // clone of the background so the matching crop of the background/window-clone composite
-            // lands inside it. Painted directly on top of background (see _blurWindow's z-order);
+            // Size/position the viewport to the expanded rect, and offset its clone of the background
+            // so the matching crop of the background/window-clone composite lands inside it. The
+            // viewport is drawn with the compositor's transform, like the window's own contents, so its
+            // clone of background undoes it too. Painted directly on top of background (see _blurWindow's z-order);
             // background itself is transparent (see _createBackgroundAndEffects) so only viewport shows.
-            data.viewport.set_position(ex - rx, ey - ry);
+            data.viewport.set_position(ex, ey);
             data.viewport.set_size(ew, eh);
-            data.viewport._blurCinnamonSceneClone.set_position(-ex, -ey);
+            data.viewport._blurCinnamonSceneClone.set_position(-ox / sx - ex, -oy / sy - ey);
+            data.viewport._blurCinnamonSceneClone.set_scale(1 / sx, 1 / sy);
 
             let cornerEffect = this._getCornerEffect(data.viewport);
             if (cornerEffect) {
@@ -5326,11 +5411,14 @@ class BlurApplications extends BlurBase {
             }
             this._setLiquidGlassRect(data.viewport, [rect.x - ex, rect.y - ey, rect.width, rect.height]);
          } else {
+            // The effects are on background, whose coordinates are the stage's: clip it to the frame
+            // as the compositor draws it now
+            let [x, y, width, height] = [ox + sx * rect.x, oy + sy * rect.y, sx * rect.width, sy * rect.height];
             let cornerEffect = this._getCornerEffect(data.background);
             if (cornerEffect) {
-               cornerEffect.clip = [rect.x+2, rect.y+2, rect.width-3, rect.height-3];
+               cornerEffect.clip = [x+2, y+2, width-3, height-3];
             } else {
-               data.background.set_clip( rect.x, rect.y, rect.width, rect.height );
+               data.background.set_clip( x, y, width, height );
             }
          }
          if (cloneManager)
