@@ -637,8 +637,20 @@ function disconnectArtifactMitigation(windowClone) {
 }
 
 function getWindowCloneRect(metaWindow, background) {
-   if (background._blurCinnamonName !== "OsdWindow")
-      return metaWindow.get_buffer_rect();
+   if (background._blurCinnamonName !== "OsdWindow") {
+      let rect = metaWindow.get_buffer_rect();
+      // For a window's blur to stay on while a workspace switch slides the windows, the windows in
+      // it have to be where they are drawn now, not where they will end up. Only a window's position
+      // is followed: a clone draws its source without the source's transform, so a window scaled
+      // by its own animation keeps its buffer rect, and a translation isn't followed either.
+      // The other backgrounds (panels, menus, ...) place their clones as they always did.
+      let actor = metaWindow.get_compositor_private();
+      if (background._blurCinnamonMetaWindowOwner && actor && actor.scale_x === 1 && actor.scale_y === 1) {
+         let [x, y] = _stagePosition(actor);
+         return { x: x, y: y, width: rect.width, height: rect.height };
+      }
+      return rect;
+   }
 
    const compositor = metaWindow.get_compositor_private();
    if (!compositor || !compositor.get_stage())
