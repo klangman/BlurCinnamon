@@ -5891,6 +5891,11 @@ class BlurFocusEffect extends BlurBase {
       this._focusedCompositor.insert_child_at_index(this._background, 0);
       this._signalManager.connect(this._focusedCompositor, "notify::allocation", () => this._setClip() );
       this._signalManager.connect(window, "position-changed", () => this._setClip() );
+      for (let signal of STAGE_TRANSFORM_SIGNALS)
+         this._signalManager.connect(this._focusedCompositor, signal, () => this._setClip() );
+      this._focusedTexture = this._focusedCompositor.get_texture();
+      if (this._focusedTexture)
+         this._signalManager.connect(this._focusedTexture, "size-changed", () => this._setClip() );
       this._signalManager.connect(window, "unmanaging", () => this._removeEffect() );
       this._focusedCompositor._blurCinnamonDataFocusEffect = { effectThis: this };
       this._setClip();
@@ -5902,26 +5907,28 @@ class BlurFocusEffect extends BlurBase {
       if (this._focusedCompositor) {
          this._signalManager.disconnect("notify::allocation", this._focusedCompositor );
          this._signalManager.disconnect("position-changed", this._focusedWindow );
+         for (let signal of STAGE_TRANSFORM_SIGNALS)
+            this._signalManager.disconnect(signal, this._focusedCompositor );
+         if (this._focusedTexture)
+            this._signalManager.disconnect("size-changed", this._focusedTexture );
          this._signalManager.disconnect("unmanaging", this._focusedWindow );
          this._focusedCompositor.remove_child(this._background);
          this._focusedCompositor._blurCinnamonDataFocusEffect = undefined;
       }
       this._focusedWindow = undefined;
       this._focusedCompositor = undefined;
+      this._focusedTexture = undefined;
+      this._rect = undefined;
    }
 
    _setClip() {
       if (this._focusedCompositor) {
-         if (/*this._focusedCompositor.__animationInfo ||*/ this._focusedCompositor.get_transition("x") || this._focusedCompositor.get_transition("y") ) {
-            this._background.hide();
-            //if (this._focusedCompositor.__animationInfo)
-            //   Mainloop.idle_add( () => this._setClip() );
+         // Follow the compositor through window animations, see BlurApplications._setClip()
+         let [ox, oy, sx, sy] = _stageTransform(this._focusedCompositor);
+         if (!(sx > 0 && sy > 0))
             return;
-         } else {
-            this._background.show();
-         }
 
-         let rect = this._focusedWindow.get_frame_rect();
+         let rect = this._rect = _frameInActorCoordinates(this._focusedWindow, this._focusedCompositor, this._rect);
          // Set the background position to the displays 0,0 based on the compositor's position and the shadow size
          //let windowShadowSizeX = (compositor.get_width() - rect.width) / 2;
          //let windowShadowSizeY = (compositor.get_height() - rect.height) / 2;
@@ -5931,10 +5938,12 @@ class BlurFocusEffect extends BlurBase {
          //let [rx,ry] = this._background.get_transformed_position();
          //let [x,y] = this._background.get_position();
          //this._background.set_position( x-rx, y-ry );
-         // Keep the focus background aligned with the compositor actor in stage coordinates.
-         // Untransformed position, see BlurApplications._setClip() (window scale animations)
-         let [rx, ry] = _stagePosition(this._focusedCompositor);
-         this._background.set_position(-rx, -ry);
+         // Keep the focus background aligned with the stage, whatever the compositor's transform is
+         this._background.set_position(-ox / sx, -oy / sy);
+         this._background.set_scale(1 / sx, 1 / sy);
+
+         // The frame as the compositor draws it now
+         let [x, y, width, height] = [ox + sx * rect.x, oy + sy * rect.y, sx * rect.width, sy * rect.height];
 
          // Deliberately NOT viewport-wrapped and NOT hard-clipped via background.set_clip() either
          // (see the constructor's comment) - the corner effect's own `clip` uniform is a purely
@@ -5942,9 +5951,9 @@ class BlurFocusEffect extends BlurBase {
          // the blur (running on this genuinely full-screen background) can still sample and spill
          // a few pixels past this rect for the glow effect.
          if (this._cornerEffect)
-            this._cornerEffect.clip = [rect.x+2, rect.y+2, rect.width-3, rect.height-3];
+            this._cornerEffect.clip = [x+2, y+2, width-3, height-3];
          else
-            this._background.set_clip( rect.x, rect.y, rect.width, rect.height );
+            this._background.set_clip( x, y, width, height );
       }
    }
 
