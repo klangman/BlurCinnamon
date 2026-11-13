@@ -449,9 +449,22 @@ function rectOverlap(aX, aY, aX2, aY2, bX, bY, bX2, bY2) {
    return false;
 }
 
+// Is metaWindow minimized with its actor still shown, as it is until the minimize animation ends.
+// Muffin leaves that actor where it was among the window actors until then (see
+// meta_compositor_sync_stack()), while the stacking order can already have the window that got the
+// focus above it. So the window's place among the actors is the one to go by meanwhile.
+function isMinimizing(metaWindow) {
+   let compositor = metaWindow.get_compositor_private();
+   return metaWindow.minimized && !!compositor && compositor.visible;
+}
+
 // Is metawindow a above b
 function isAbove(a, b) {
    if (a === b) return false;
+   if (isMinimizing(a) || isMinimizing(b)) {
+      const actors = global.get_window_actors();
+      return actors.indexOf(a.get_compositor_private()) > actors.indexOf(b.get_compositor_private());
+   }
    const windows = global.display.sort_windows_by_stacking([a, b]);
    return windows[0] === b;
 }
@@ -1163,14 +1176,24 @@ function cloneWindowsForBackgroundNow(background, desktopOnly) {
           let winY = winRect.y;
           let winX2 = winRect.x + winRect.width;
           let winY2 = winRect.y + winRect.height;
-          if (rectOverlap(winX, winY, winX2, winY2, blurX, blurY, blurX2, blurY2)) {
+          // The owner always goes in the list, which is cut at the owner further down: while its
+          // actor is scaled, its own rect needn't overlap the blur
+          if (metaWindow === metaWindowOwner || rectOverlap(winX, winY, winX2, winY2, blurX, blurY, blurX2, blurY2)) {
               windowsToClone.push(metaWindow);
           }
       }
    });
 
-   // Sort the windows bye the stacking order (lowest -> highest z-order)
-   windowsToClone = global.display.sort_windows_by_stacking(windowsToClone);
+   // Sort the windows by the stacking order (lowest -> highest z-order). A minimizing window isn't
+   // drawn where that order has it (see isMinimizing()): it goes below the first window whose actor
+   // is above its own
+   let minimizing = windowsToClone.filter(isMinimizing);
+   windowsToClone = global.display.sort_windows_by_stacking( windowsToClone.filter( (metaWindow) => !minimizing.includes(metaWindow) ) );
+   for (let metaWindow of minimizing) {
+      let actorIdx = windows.indexOf(metaWindow.get_compositor_private());
+      let idx = windowsToClone.findIndex( (element) => windows.indexOf(element.get_compositor_private()) > actorIdx );
+      windowsToClone.splice((idx === -1) ? windowsToClone.length : idx, 0, metaWindow);
+   }
 
    // Remove owner window and all windows above it
    if (metaWindowOwner) {
