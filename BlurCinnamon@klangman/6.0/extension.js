@@ -3881,6 +3881,18 @@ class BlurPopupMenus extends BlurBase {
             const ready = this._setClip(menu);
             if (!isCurrent()) return false;
             if (!ready) return true;
+
+            // The initial clip is empty, so addBackground() cannot populate window clones yet
+            // Populate them before this frame is painted instead of waiting for a idle
+            const background = this._background;
+            if (background._blurCinnamonWinClones) {
+               if (background._blurCinnamonRecloneId) {
+                  Mainloop.source_remove(background._blurCinnamonRecloneId);
+                  background._blurCinnamonRecloneId = 0;
+               }
+               cloneWindowsForBackgroundNow(background, background._blurCinnamonDesktopOnly);
+            }
+            if (!isCurrent()) return false;
             this._reclipLaterId = 0;
             return false;
          } catch (error) {
@@ -3897,6 +3909,7 @@ class BlurPopupMenus extends BlurBase {
 
    // Set the visible section of the background based on the size of the popup menu
    _setClip(menu){
+      const reclipLaterId = this._reclipLaterId;
       if (menu && this._currentMenu && menu === this._currentMenu) {
          let actor = menu.actor;
          if (actor.visible) {
@@ -3908,14 +3921,16 @@ class BlurPopupMenus extends BlurBase {
             let bm = menu.box.get_margin();
             // Read allocated bounds only after layout. The width/height properties
             // may include CSS margins while a relayout is pending.
-            if (!actor.has_allocation())
-               return false;
+            // BEFORE_REDRAW can run before Clutter's normal relayout. This helper completes
+            // pending layout here. Waiting for has_allocation() can stall throughout an animation.
+            // _setClip() runs from the scheduled callback, never directly inside allocation handlers.
             const box = Cinnamon.util_get_transformed_allocation(actor);
             const width = box.x2 - box.x1;
             const height = box.y2 - box.y1;
             if (![box.x1, box.y1, width, height].every(Number.isFinite) || width <= 0 || height <= 0)
                return false;
-            if (menu !== this._currentMenu)
+            // Completing layout can emit signals that close, reopen or replace this menu.
+            if (menu !== this._currentMenu || reclipLaterId !== this._reclipLaterId)
                return false;
             this._applyBackgroundClip(this._background, this._viewport,
                box.x1+bm.left+pLeft, box.y1+bm.top+pTop,
