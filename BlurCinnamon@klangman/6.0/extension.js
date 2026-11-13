@@ -2207,9 +2207,9 @@ class BlurBase {
       return background._blurCinnamonDimmer;
    }
 
+   // Updates a background that has no viewport, which only None and Transparent use (see _wantsViewport()), so
+   // there is no blur effect to update here: the types that blur are updated by _updateViewportEffects().
    _updateEffects(background, opacity, blendColor, blurType, radius, saturation) {
-      // Setup the blur effect properly
-      let curEffect = background.get_effect(BLUR_EFFECT_NAME);
       let cornerEffect = background.get_effect(CORNER_EFFECT_NAME);
       let desatEffect = background.get_effect(DESAT_EFFECT_NAME);
       let dynamicEffectActive = this._isDynamicEffectActive(background);
@@ -2244,52 +2244,7 @@ class BlurBase {
          if (desatEffect) { background.add_effect_with_name( DESAT_EFFECT_NAME, desatEffect ); }
          this.parent.add_child(background);
       }
-      if (blurType === BlurType.None && curEffect) {
-         background.remove_effect(curEffect);
-         this._releaseBlurEffect(curEffect);
-      } else if (blurType === BlurType.Simple && !(curEffect instanceof Clutter.BlurEffect)) {
-         if (curEffect) {
-            background.remove_effect(curEffect);
-            this._releaseBlurEffect(curEffect);
-         }
-         let blurEffect =  this._aquireSimpleBlurEffect();
-         background.add_effect_with_name( BLUR_EFFECT_NAME, blurEffect );
-      } else if ((blurType === BlurType.Gaussian || blurType === BlurType.DynamicBlur) && !(curEffect instanceof GaussianBlur.GaussianBlurEffect)) {
-         if (curEffect) {
-            background.remove_effect(curEffect);
-            this._releaseBlurEffect(curEffect);
-         }
-         let blurEffect = this._aquireGaussianEffect(radius);
-         background.add_effect_with_name( BLUR_EFFECT_NAME, blurEffect );
-      } else if ((blurType === BlurType.MonteCarlo || blurType === BlurType.DynamicMC) && !(curEffect instanceof MonteCarloBlur.MonteCarloBlurEffect)) {
-         if (curEffect) {
-            background.remove_effect(curEffect);
-            this._releaseBlurEffect(curEffect);
-         }
-         let blurEffect = this._aquireMonteCarloEffect(radius);
-         background.add_effect_with_name( BLUR_EFFECT_NAME, blurEffect );
-      } else if ((blurType === BlurType.DualKawase || blurType === BlurType.DynamicDK) && !(curEffect instanceof DualKawaseBlur.DualFilteringBlurEffect)) {
-         if (curEffect) {
-            background.remove_effect(curEffect);
-            this._releaseBlurEffect(curEffect);
-         }
-         let blurEffect = this._aquireDualKawaseEffect(radius);
-         background.add_effect_with_name( BLUR_EFFECT_NAME, blurEffect );
-      } else if (isLiquidGlassBlurType(blurType) && !(curEffect instanceof Refraction.RefractionEffect)) {
-         if (curEffect) {
-            background.remove_effect(curEffect);
-            this._releaseBlurEffect(curEffect);
-         }
-         let blurEffect = this._aquireLiquidGlassEffect(radius);
-         background.add_effect_with_name( BLUR_EFFECT_NAME, blurEffect );
-      } else if (blurType === BlurType.Transparent && Meta.is_wayland_compositor() && curEffect) {
-         // Wayland keeps the same actor when switching to Transparent, so just drop the blur
-         background.remove_effect(curEffect);
-         this._releaseBlurEffect(curEffect);
-      } else if (blurType === BlurType.Transparent && background instanceof Meta.X11BackgroundActor) {
-         if (curEffect) {
-            background.remove_effect(curEffect);
-         }
+      if (blurType === BlurType.Transparent && background instanceof Meta.X11BackgroundActor) {
          let dimmer = background._blurCinnamonDimmer;
          background._blurCinnamonGroup.remove_child(background._blurCinnamonDimmer);
          this.parent.remove_child(background);
@@ -2299,8 +2254,8 @@ class BlurBase {
          let stageWidth = global.stage.width;
          let stageHeight = global.stage.height;
          background = new Clutter.Actor({width: stageWidth, height: stageHeight});
-         // Same group/dimmer layout as _createBackgroundAndEffects, so switching back to a blurred
-         // type (which removes the dimmer from _blurCinnamonGroup) works
+         // Same group/dimmer layout as _createBackgroundAndEffects, so switching back to None
+         // (which removes the dimmer from _blurCinnamonGroup) works
          let group = new St.Group({clip_to_allocation: true});
          group.set_size(stageWidth, stageHeight);
          group.add_child(dimmer);
@@ -2313,24 +2268,8 @@ class BlurBase {
          if (desatEffect) { background.add_effect_with_name( DESAT_EFFECT_NAME, desatEffect ); }
          this.parent.add_actor(background);
       }
-      curEffect = this._getBlurEffect(background);
-      // Adjust the blur effects
-      if ((curEffect instanceof GaussianBlur.GaussianBlurEffect || curEffect instanceof MonteCarloBlur.MonteCarloBlurEffect || curEffect instanceof DualKawaseBlur.DualFilteringBlurEffect) && curEffect.radius != radius) {
-         curEffect.radius = radius;
-      }
-      // If Monte Carlo, update it's settings
-      if (curEffect instanceof MonteCarloBlur.MonteCarloBlurEffect) {
-         curEffect.iterations = settings.montecarloIterations;
-         curEffect.use_base_pixel = settings.montecarloUseBasePixel;
-         curEffect.prefer_closer_pixels = settings.montecarloPerferCloserPixels;
-      }
-      // If Liquid Glass, update it's settings
-      if (curEffect instanceof Refraction.RefractionEffect) {
-         applyLiquidGlassSettings(curEffect, radius);
-      }
-      this._syncLiquidGlassCornerRadius(background);
       // Setup/Adjust the desaturation effect
-      curEffect = background.get_effect(DESAT_EFFECT_NAME);
+      let curEffect = background.get_effect(DESAT_EFFECT_NAME);
       if (curEffect && saturation === 100) {
          background.remove_effect(curEffect);
       } else if (curEffect && curEffect.factor !== (100-saturation)/100) {
@@ -2369,9 +2308,9 @@ class BlurBase {
    // Generic equivalent of BlurBase._updateEffects(), but for a background that's been wrapped in a
    // viewport (see _createBackgroundAndEffects's useViewport): the blur/corner/desaturate effects
    // live on viewport, not background, so _updateEffects() itself must never be called on a wrapped
-   // background directly - it looks up BLUR_EFFECT_NAME etc. on the background actor it's given,
-   // and finding none there (they're all on viewport instead) would make it create a *second*,
-   // duplicate set of effects on background alongside viewport's real ones.
+   // background directly - it looks up DESAT_EFFECT_NAME on the background actor it's given, and
+   // finding none there (it's on viewport instead) would make it add a *second* desaturate effect
+   // on background alongside viewport's real one.
    _updateViewportEffects(background, viewport, opacity, blendColor, blurType, radius, saturation) {
       let curEffect = this._getBlurEffect(viewport);
       let effectType = staticBlurType(blurType);
