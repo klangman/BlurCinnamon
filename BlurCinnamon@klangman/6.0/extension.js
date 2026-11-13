@@ -471,24 +471,47 @@ function getViewportMargin(viewport) {
    return Math.ceil(effect.sample_reach) + VIEWPORT_EDGE_PAD;
 }
 
-// The visible rect grown by margin on every side, then cut to the stage, as [x, y, width, height].
+// The area a blur over the given visible rect may sample, as [x1, y1, x2, y2]: the box around the monitors
+// the rect is on, or the whole stage when it is on none of them. The wallpaper is a single stage-sized image,
+// so a blur that samples past the edge of its monitor picks up the wallpaper of the monitor next to it. For a
+// rect on two monitors that don't line up, the box also takes in some of the stage that neither shows.
+function getSamplingBounds(x, y, width, height) {
+   let x1 = Infinity, y1 = Infinity, x2 = -Infinity, y2 = -Infinity;
+   for (let monitor of Main.layoutManager.monitors) {
+      let monitorX2 = monitor.x + monitor.width;
+      let monitorY2 = monitor.y + monitor.height;
+      if (rectOverlap(x, y, x + width, y + height, monitor.x, monitor.y, monitorX2, monitorY2)) {
+         x1 = Math.min(x1, monitor.x);
+         y1 = Math.min(y1, monitor.y);
+         x2 = Math.max(x2, monitorX2);
+         y2 = Math.max(y2, monitorY2);
+      }
+   }
+   if (x1 === Infinity)
+      return [0, 0, global.stage.width, global.stage.height];
+   return [x1, y1, x2, y2];
+}
+
+// The visible rect grown by margin on every side, then cut to the box around its monitors, as [x, y, w, h].
 // Nothing outside the stage is ever cloned, so any part of the viewport out there would be transparent.
 // The blur would then mix that transparency into the pixels near the screen edge, and every inner pass
 // of the effect chain (blur passes, desaturate) stores partial alpha as a*a (see SNIPPET_CODE in
 // effect_base.js), compounding pass after pass. The final pass then lets the unblurred scene behind show
 // through over the blurred colour: a bright, glowing band along the screen edge wherever a window hangs
-// off the screen (worst with Dual Kawase, which has the most passes). Cut to the stage, the FBO holds
-// only real, opaque content and the shaders' own edge clamp applies at the screen edge, as it does for a
-// panel there. The corner effect's clip stays the full visible rect, so off-screen corners stay off screen.
+// off the screen (worst with Dual Kawase, which has the most passes). Cut to its monitors (see
+// getSamplingBounds()), the FBO holds only real, opaque content, and the shaders' own edge clamp applies at
+// their edges, including an edge shared with another monitor, so the blur doesn't take in that monitor's
+// wallpaper. The corner effect's clip stays the full visible rect, so off-screen corners stay off screen.
 function getExpandedRect(x, y, width, height, margin) {
    if (![x, y, width, height, margin].every(Number.isFinite) || width <= 0 || height <= 0)
       return [0, 0, 0, 0];
 
    margin = Math.max(0, margin);
-   let x1 = Math.floor(Math.max(0, x - margin));
-   let y1 = Math.floor(Math.max(0, y - margin));
-   let x2 = Math.ceil(Math.min(global.stage.width, x + width + margin));
-   let y2 = Math.ceil(Math.min(global.stage.height, y + height + margin));
+   let [boundsX1, boundsY1, boundsX2, boundsY2] = getSamplingBounds(x, y, width, height);
+   let x1 = Math.floor(Math.max(boundsX1, x - margin));
+   let y1 = Math.floor(Math.max(boundsY1, y - margin));
+   let x2 = Math.ceil(Math.min(boundsX2, x + width + margin));
+   let y2 = Math.ceil(Math.min(boundsY2, y + height + margin));
 
    // Entirely off the stage: nothing to show
    if (x2 <= x1 || y2 <= y1)
