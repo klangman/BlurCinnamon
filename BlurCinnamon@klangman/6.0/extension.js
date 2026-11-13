@@ -4056,19 +4056,21 @@ class BlurPopupMenus extends BlurBase {
 
    _applyActorStyle(actor, color) {
       let radius = 0;
-      if (!actor._blurCinnamonData) {
-         actor._blurCinnamonData = {original_entry_color: actor.get_background_color(), original_entry_style: actor.get_style(),
+      let style = actor.get_style();
+      if (!actor._blurCinnamonData || style !== actor._blurCinnamonData.applied_entry_style) {
+         actor._blurCinnamonData = {original_entry_color: actor.get_background_color(), original_entry_style: style,
                                     original_entry_class: actor.get_style_class_name(), original_entry_pseudo_class: actor.get_style_pseudo_class()};
-      } else {
-         let style = actor.get_style();
-         if (style.startsWith(actor._blurCinnamonData.original_entry_style) === false) {
-            actor._blurCinnamonData = {original_entry_color: actor.get_background_color(), original_entry_style: actor.get_style(),
-                                    original_entry_class: actor.get_style_class_name(), original_entry_pseudo_class: actor.get_style_pseudo_class()};
-         }
       }
 
+      // Preserve the original value, including null, for exact restoration.
+      let originalStyle = actor._blurCinnamonData.original_entry_style ?? "";
+      if (originalStyle.length > 0 && !originalStyle.trimEnd().endsWith(";"))
+         originalStyle += ";";
       let rgba = `rgba(${color.red}, ${color.green}, ${color.blue}, ${color.alpha/255.0})`
-      actor.set_style( actor._blurCinnamonData.original_entry_style + `background-gradient-direction: vertical; background-gradient-start: ${rgba}; background-gradient-end: ${rgba};`  );
+      let appliedStyle = originalStyle + (originalStyle.length > 0 ? " " : "") + `background-gradient-direction: vertical; background-gradient-start: ${rgba}; background-gradient-end: ${rgba};`;
+      // Identify CSS exactly so reapplication never rebases it
+      actor._blurCinnamonData.applied_entry_style = appliedStyle;
+      actor.set_style(appliedStyle);
       return;
    }
 
