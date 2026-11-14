@@ -16,7 +16,7 @@ const UUID = "BlurCinnamon@klangman";
 const SHADER_FILENAME = 'gaussian_blur.glsl';
 const DEFAULT_PARAMS = {
     radius: 30, brightness: .6,
-    width: 0, height: 0, direction: 0, chained_effect: null
+    width: 0, height: 0, direction: 0, chained_effect: null, grain: 0
 };
 
 // Pool of released direction=1 "chained" effects, keyed by nothing in particular - any one of
@@ -33,6 +33,7 @@ function _acquireChainedEffect(params) {
         effect.brightness = params.brightness;
         effect.width = params.width;
         effect.height = params.height;
+        effect.grain = params.grain;
         return effect;
     }
     return new GaussianBlurEffect({ ...params, direction: 1 });
@@ -99,6 +100,14 @@ const GaussianBlurEffect =
                 GObject.ParamFlags.READWRITE,
                 GObject.Object,
             ),
+            'grain': GObject.ParamSpec.double(
+                `grain`,
+                `Grain`,
+                `Blur grain`,
+                GObject.ParamFlags.READWRITE,
+                0.0, 100.0,
+                0.0,
+            ),
         }
     }, class GaussianBlurEffect extends EffectBase {
         constructor(params) {
@@ -133,6 +142,11 @@ const GaussianBlurEffect =
                this.chained_effect = params.chained_effect;
             else
                this.chained_effect = null;
+
+            if (params && params.grain !== undefined)
+               this.grain = params.grain;
+            else
+               this.grain = 0;
 
             const theme_context = St.ThemeContext.get_for_stage(global.stage);
             this.set_uniform_value('sigma', parseFloat(this.radius * theme_context.scale_factor / 2 - 1e-6));
@@ -179,6 +193,27 @@ const GaussianBlurEffect =
                 return 0;
             const scale_factor = St.ThemeContext.get_for_stage(global.stage).scale_factor;
             return 2 * Math.ceil(1.5 * (this._radius * scale_factor / 2));
+        }
+
+        // For dithering (see effect_base.js). Clutter applies an actor's effects in reverse order, so the
+        // chained direction 1 pass, added after this one, runs before it.
+        get passes_after() {
+            return (this.direction === 0) ? 0 : 1;
+        }
+
+        get grain() {
+            return this._grain;
+        }
+
+        set grain(value) {
+            if (this._grain !== value) {
+                this._grain = value;
+
+                EffectBaseModule.updateDither(this);
+
+                if (this.chained_effect)
+                    this.chained_effect.grain = value;
+            }
         }
 
         get brightness() {
@@ -299,7 +334,7 @@ const GaussianBlurEffect =
                             _releaseChainedEffect(this.chained_effect);
                             this.chained_effect = _acquireChainedEffect({
                                 radius: this.radius, brightness: this.brightness,
-                                width: this.width, height: this.height
+                                width: this.width, height: this.height, grain: this.grain
                             });
                         }
                         // Reuse the SAME chained_effect instance rather than destroying it and
@@ -313,6 +348,7 @@ const GaussianBlurEffect =
                         this.chained_effect.brightness = this.brightness;
                         this.chained_effect.width = this.width;
                         this.chained_effect.height = this.height;
+                        this.chained_effect.grain = this.grain;
                         actor.add_effect(this.chained_effect);
                     } else {
                         // Real teardown (not just a reattachment) - release the chained_effect
@@ -329,7 +365,8 @@ const GaussianBlurEffect =
                         radius: this.radius,
                         brightness: this.brightness,
                         width: this.width,
-                        height: this.height
+                        height: this.height,
+                        grain: this.grain
                     });
                     actor.add_effect(this.chained_effect);
                 }

@@ -37,7 +37,8 @@ const DEFAULT_PARAMS = {
     width: 0,
     height: 0,
     opacity_factor: 1.0,
-    clip: [0, 0, -1, -1]
+    clip: [0, 0, -1, -1],
+    grain: 0
 };
 
 const INTEGRAL_UNIFORMS = new Set([
@@ -311,6 +312,14 @@ const RefractionEffect = new GObject.registerClass({
                 0.0, 1.0,
                 1.0,
             ),
+            'grain': GObject.ParamSpec.double(
+                `grain`,
+                `Grain`,
+                `Blur grain`,
+                GObject.ParamFlags.READWRITE,
+                0.0, 100.0,
+                0.0,
+            ),
         }
     }, class RefractionEffect extends EffectBase.EffectBase {
 
@@ -356,6 +365,27 @@ const RefractionEffect = new GObject.registerClass({
 
         static get default_params() {
             return DEFAULT_PARAMS;
+        }
+
+        // For dithering: the glass pass runs after its Dual Kawase blur and writes the result (see
+        // effect_base.js). It doesn't average, so about one level of that blur's noise shows through.
+        get passes_after() {
+            return 0;
+        }
+
+        get grain() {
+            return this._grain;
+        }
+
+        set grain(value) {
+            if (this._grain !== value) {
+                this._grain = value;
+
+                EffectBase.updateDither(this);
+
+                if (this.chained_effect)
+                    this.chained_effect.grain = value;
+            }
         }
 
         get strength() {
@@ -443,8 +473,10 @@ const RefractionEffect = new GObject.registerClass({
                     radius: this.dual_kawase_radius,
                     brightness: 1,
                     width: this.width,
-                    height: this.height
+                    height: this.height,
+                    grain: this.grain
                 });
+                this.chained_effect.glass_backdrop = true;
             } else {
                 this.chained_effect.radius = this.dual_kawase_radius;
             }

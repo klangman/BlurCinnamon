@@ -68,6 +68,10 @@ function isDefaultWindowSettings(element) {
    return element.application === DEFAULT_WINDOW_SETTINGS || element.application === _(DEFAULT_WINDOW_SETTINGS);
 }
 
+// Rows of the windows, panels and desklets tables with no grain (saved before the "Grain" column existed, or
+// created without one) use the column's default from settings-schema.json, which the settings dialog shows too.
+const DEFAULT_TABLE_GRAIN = 2;
+
 // For Plank support (reading X11 property)
 imports.gi.versions.Gdk = '3.0';
 imports.gi.versions.GdkX11 = '3.0';
@@ -278,6 +282,7 @@ function _animateVisibleOverview() {
    let blendColor = (settings.overviewOverride) ? settings.overviewBlendColor : settings.blendColor;
    let opacity = (settings.overviewOverride) ? settings.overviewOpacity : settings.opacity;
    let saturation = (settings.overviewOverride) ? settings.overviewSaturation : settings.saturation;
+   let grain = (settings.overviewOverride) ? settings.overviewGrain : settings.grain;
 
    // Get the overview's background image and add the BlurEffect to it if configured to do so
    // The Liquid Glass blur doesn't make any sense for the Overview so we'll default to Gaussian if the generic settings calls for Liquid Glass
@@ -287,11 +292,11 @@ function _animateVisibleOverview() {
       if (blurType === BlurType.Simple) {
          fx = new Clutter.BlurEffect();
       } else if (blurType === BlurType.Gaussian || blurType === BlurType.DynamicBlur || isLiquidGlassBlurType(blurType)) {
-         fx = new GaussianBlur.GaussianBlurEffect( { radius: radius, brightness: 1, width: 0, height: 0 } );
+         fx = new GaussianBlur.GaussianBlurEffect( { radius: radius, brightness: 1, width: 0, height: 0, grain: grain } );
       } else if (blurType === BlurType.MonteCarlo || blurType === BlurType.DynamicMC) {
-         fx = new MonteCarloBlur.MonteCarloBlurEffect( { radius: radius, iterations: settings.montecarloIterations, prefer_closer_pixels: settings.montecarloPerferCloserPixels, use_base_pixel: settings.montecarloUseBasePixel, brightness: 1, width: 0, height: 0 } );
+         fx = new MonteCarloBlur.MonteCarloBlurEffect( { radius: radius, iterations: settings.montecarloIterations, prefer_closer_pixels: settings.montecarloPerferCloserPixels, use_base_pixel: settings.montecarloUseBasePixel, brightness: 1, width: 0, height: 0, grain: grain } );
       } else { // Dual-Kawase
-         fx = new DualKawaseBlur.DualFilteringBlurEffect( { radius: radius, brightness: 1, width: 0, height: 0 } );
+         fx = new DualKawaseBlur.DualFilteringBlurEffect( { radius: radius, brightness: 1, width: 0, height: 0, grain: grain } );
       }
       desktopBackground.add_effect_with_name( BLUR_EFFECT_NAME, fx );
    }
@@ -322,6 +327,7 @@ function _animateVisibleExpo() {
    let blendColor = (settings.expoOverride) ? settings.expoBlendColor : settings.blendColor;
    let opacity = (settings.expoOverride) ? settings.expoOpacity : settings.opacity;
    let saturation = (settings.expoOverride) ? settings.expoSaturation : settings.saturation;
+   let grain = (settings.expoOverride) ? settings.expoGrain : settings.grain;
 
    // The Liquid Glass blur doesn't make any sense for the Expo so we'll default to Gaussian if the generic settings calls for Liquid Glass
    let desktopBackground = this._background
@@ -330,11 +336,11 @@ function _animateVisibleExpo() {
       if (blurType === BlurType.Simple) {
          fx =  new Clutter.BlurEffect();
       } else if (blurType === BlurType.Gaussian || blurType === BlurType.DynamicBlur || isLiquidGlassBlurType(blurType)) {
-         fx = new GaussianBlur.GaussianBlurEffect( {radius: radius, brightness: 1, width: 0, height: 0} );
+         fx = new GaussianBlur.GaussianBlurEffect( {radius: radius, brightness: 1, width: 0, height: 0, grain: grain} );
       } else if (blurType === BlurType.MonteCarlo || blurType === BlurType.DynamicMC) {
-         fx = new MonteCarloBlur.MonteCarloBlurEffect( { radius: radius, iterations: settings.montecarloIterations, prefer_closer_pixels: settings.montecarloPerferCloserPixels, use_base_pixel: settings.montecarloUseBasePixel, brightness: 1, width: 0, height: 0 } );
+         fx = new MonteCarloBlur.MonteCarloBlurEffect( { radius: radius, iterations: settings.montecarloIterations, prefer_closer_pixels: settings.montecarloPerferCloserPixels, use_base_pixel: settings.montecarloUseBasePixel, brightness: 1, width: 0, height: 0, grain: grain } );
       } else { // Dual-Kawase
-         fx = new DualKawaseBlur.DualFilteringBlurEffect( { radius: radius, brightness: 1, width: 0, height: 0 } );
+         fx = new DualKawaseBlur.DualFilteringBlurEffect( { radius: radius, brightness: 1, width: 0, height: 0, grain: grain } );
       }
       desktopBackground.add_effect_with_name( BLUR_EFFECT_NAME, fx );
    }
@@ -364,6 +370,7 @@ function _showAppSwitcher3D(...params) {
       let blendColor = (settings.appswitcherOverride) ? settings.appswitcherBlendColor : settings.blendColor;
       let opacity = (settings.appswitcherOverride) ? settings.appswitcherOpacity : settings.opacity;
       let saturation = (settings.appswitcherOverride) ? settings.appswitcherSaturation : settings.saturation;
+      let grain = (settings.appswitcherOverride) ? settings.appswitcherGrain : settings.grain;
 
       // The Liquid Glass blur doesn't make any sense for the 3dAppSwicher so we'll default to Gaussian of the generic settings calls for Liquid Glass
       let desktopBackground = this._background
@@ -372,11 +379,11 @@ function _showAppSwitcher3D(...params) {
          if (blurType === BlurType.Simple) {
             fx =  new Clutter.BlurEffect();
          } else if (blurType === BlurType.Gaussian || blurType === BlurType.DynamicBlur || isLiquidGlassBlurType(blurType)) {
-            fx = new GaussianBlur.GaussianBlurEffect( {radius: radius, brightness: 1, width: 0, height: 0} );
+            fx = new GaussianBlur.GaussianBlurEffect( {radius: radius, brightness: 1, width: 0, height: 0, grain: grain} );
          } else if (blurType === BlurType.MonteCarlo || blurType === BlurType.DynamicMC) {
-            fx = new MonteCarloBlur.MonteCarloBlurEffect( { radius: radius, iterations: settings.montecarloIterations, prefer_closer_pixels: settings.montecarloPerferCloserPixels, use_base_pixel: settings.montecarloUseBasePixel, brightness: 1, width: 0, height: 0 } );
+            fx = new MonteCarloBlur.MonteCarloBlurEffect( { radius: radius, iterations: settings.montecarloIterations, prefer_closer_pixels: settings.montecarloPerferCloserPixels, use_base_pixel: settings.montecarloUseBasePixel, brightness: 1, width: 0, height: 0, grain: grain } );
          } else { // Dual-Kawase
-            fx = new DualKawaseBlur.DualFilteringBlurEffect( { radius: radius, brightness: 1, width: 0, height: 0 } );
+            fx = new DualKawaseBlur.DualFilteringBlurEffect( { radius: radius, brightness: 1, width: 0, height: 0, grain: grain } );
          }
          desktopBackground.add_effect_with_name( BLUR_EFFECT_NAME, fx );
          this._blurCinnamonBlurEffect = fx;
@@ -1860,13 +1867,14 @@ class BlurBase {
    }
 
 
-   _aquireGaussianEffect(radius) {
+   _aquireGaussianEffect(radius, grain) {
       if (BlurBase.gaussianEffectCache.length > 0) {
          let effect = BlurBase.gaussianEffectCache.pop();
          effect.radius = radius;
+         effect.grain = grain;
          return(effect);
       } else {
-         return(new GaussianBlur.GaussianBlurEffect( {radius: radius, brightness: 1 , width: 0, height: 0} ));
+         return(new GaussianBlur.GaussianBlurEffect( {radius: radius, brightness: 1 , width: 0, height: 0, grain: grain} ));
       }
    }
 
@@ -1874,13 +1882,14 @@ class BlurBase {
       EffectPool.releaseToPool(BlurBase.gaussianEffectCache, effect);
    }
 
-   _aquireLiquidGlassEffect(radius) {
+   _aquireLiquidGlassEffect(radius, grain) {
       if (BlurBase.liquidGlassEffectCache.length > 0) {
          let effect = BlurBase.liquidGlassEffectCache.pop();
          applyLiquidGlassSettings(effect, radius);
+         effect.grain = grain;
          return(effect);
       } else {
-         return(new Refraction.RefractionEffect( getLiquidGlassParams(radius) ));
+         return(new Refraction.RefractionEffect( {...getLiquidGlassParams(radius), grain: grain} ));
       }
    }
 
@@ -1890,16 +1899,17 @@ class BlurBase {
       EffectPool.releaseToPool(BlurBase.liquidGlassEffectCache, effect);
    }
 
-   _aquireMonteCarloEffect(radius) {
+   _aquireMonteCarloEffect(radius, grain) {
       if (BlurBase.monteCarloEffectCache.length > 0) {
          let effect = BlurBase.monteCarloEffectCache.pop();
          effect.radius = radius;
          effect.iterations = settings.montecarloIterations;
          effect.use_base_pixel = settings.montecarloUseBasePixel;
          effect.prefer_closer_pixels = settings.montecarloPerferCloserPixels;
+         effect.grain = grain;
          return(effect);
       } else {
-         return(new MonteCarloBlur.MonteCarloBlurEffect( { radius: radius, iterations: settings.montecarloIterations, prefer_closer_pixels: settings.montecarloPerferCloserPixels, use_base_pixel: settings.montecarloUseBasePixel, brightness: 1, width: 0, height: 0 } ));
+         return(new MonteCarloBlur.MonteCarloBlurEffect( { radius: radius, iterations: settings.montecarloIterations, prefer_closer_pixels: settings.montecarloPerferCloserPixels, use_base_pixel: settings.montecarloUseBasePixel, brightness: 1, width: 0, height: 0, grain: grain } ));
       }
    }
 
@@ -1907,13 +1917,14 @@ class BlurBase {
       EffectPool.releaseToPool(BlurBase.monteCarloEffectCache, effect);
    }
 
-   _aquireDualKawaseEffect(radius) {
+   _aquireDualKawaseEffect(radius, grain) {
       if (BlurBase.dualKawaseEffectCache.length > 0) {
          let effect = BlurBase.dualKawaseEffectCache.pop();
          effect.radius = radius;
+         effect.grain = grain;
          return(effect);
       } else {
-         return(new DualKawaseBlur.DualFilteringBlurEffect( { radius: radius, brightness: 1, width: 0, height: 0 } ));
+         return(new DualKawaseBlur.DualFilteringBlurEffect( { radius: radius, brightness: 1, width: 0, height: 0, grain: grain } ));
       }
    }
 
@@ -1944,8 +1955,8 @@ class BlurBase {
 
    _getGenericSettings() {
       if (!this._supportsDynamicBlur() && (isDynamicBlurType(settings.blurType)))
-         return [settings.opacity, settings.blendColor, staticBlurType(settings.blurType), settings.radius, settings.saturation];
-      return [settings.opacity, settings.blendColor, settings.blurType, settings.radius, settings.saturation];
+         return [settings.opacity, settings.blendColor, staticBlurType(settings.blurType), settings.radius, settings.saturation, settings.grain];
+      return [settings.opacity, settings.blendColor, settings.blurType, settings.radius, settings.saturation, settings.grain];
    }
 
    _supportsDynamicBlur() {
@@ -1963,7 +1974,7 @@ class BlurBase {
       return color;
    }
 
-   // Returns [opacity, blendColor, blurType, radius, saturation]
+   // Returns [opacity, blendColor, blurType, radius, saturation, grain]
    _getSettings(override) {
       if (override) {
          return this._getUniqueSettings();
@@ -2023,7 +2034,7 @@ class BlurBase {
    // St-CRITICAL warning. background itself isn't an St.Widget (Meta.X11BackgroundActor/
    // Clutter.Actor), so its effects were always safe to attach before parenting, and still are here
    // when useViewport is false.
-   _createBackgroundAndEffects(opacity, blendColor, blurType, radius, saturation, parent=global.overlay_group, cornerRadius=0, top=true, bottom=true, useViewport=false, customParent=null) {
+   _createBackgroundAndEffects(opacity, blendColor, blurType, radius, saturation, grain, parent=global.overlay_group, cornerRadius=0, top=true, bottom=true, useViewport=false, customParent=null) {
       let blurEffect;
       let desatEffect;
       let cornerEffect;
@@ -2034,13 +2045,13 @@ class BlurBase {
       if (blurType === BlurType.Simple) {
          blurEffect = this._aquireSimpleBlurEffect();
       } else if (blurType === BlurType.Gaussian || blurType === BlurType.DynamicBlur) {
-         blurEffect = this._aquireGaussianEffect(radius);
+         blurEffect = this._aquireGaussianEffect(radius, grain);
       } else if (blurType === BlurType.MonteCarlo || blurType === BlurType.DynamicMC) {
-         blurEffect = this._aquireMonteCarloEffect(radius);
+         blurEffect = this._aquireMonteCarloEffect(radius, grain);
       } else if (blurType === BlurType.DualKawase || blurType === BlurType.DynamicDK) {
-         blurEffect = this._aquireDualKawaseEffect(radius);
+         blurEffect = this._aquireDualKawaseEffect(radius, grain);
       } else if (isLiquidGlassBlurType(blurType)) {
-         blurEffect = this._aquireLiquidGlassEffect(radius);
+         blurEffect = this._aquireLiquidGlassEffect(radius, grain);
       }
       if (saturation < 100)
          desatEffect = this._aquireDesaturateEffect( (100-saturation)/100 );
@@ -2183,7 +2194,7 @@ class BlurBase {
       return background._blurCinnamonDimmer;
    }
 
-   _updateEffects(background, opacity, blendColor, blurType, radius, saturation) {
+   _updateEffects(background, opacity, blendColor, blurType, radius, saturation, grain) {
       // Setup the blur effect properly
       let curEffect = background.get_effect(BLUR_EFFECT_NAME);
       let cornerEffect = background.get_effect(CORNER_EFFECT_NAME);
@@ -2235,28 +2246,28 @@ class BlurBase {
             background.remove_effect(curEffect);
             this._releaseBlurEffect(curEffect);
          }
-         let blurEffect = this._aquireGaussianEffect(radius);
+         let blurEffect = this._aquireGaussianEffect(radius, grain);
          background.add_effect_with_name( BLUR_EFFECT_NAME, blurEffect );
       } else if ((blurType === BlurType.MonteCarlo || blurType === BlurType.DynamicMC) && !(curEffect instanceof MonteCarloBlur.MonteCarloBlurEffect)) {
          if (curEffect) {
             background.remove_effect(curEffect);
             this._releaseBlurEffect(curEffect);
          }
-         let blurEffect = this._aquireMonteCarloEffect(radius);
+         let blurEffect = this._aquireMonteCarloEffect(radius, grain);
          background.add_effect_with_name( BLUR_EFFECT_NAME, blurEffect );
       } else if ((blurType === BlurType.DualKawase || blurType === BlurType.DynamicDK) && !(curEffect instanceof DualKawaseBlur.DualFilteringBlurEffect)) {
          if (curEffect) {
             background.remove_effect(curEffect);
             this._releaseBlurEffect(curEffect);
          }
-         let blurEffect = this._aquireDualKawaseEffect(radius);
+         let blurEffect = this._aquireDualKawaseEffect(radius, grain);
          background.add_effect_with_name( BLUR_EFFECT_NAME, blurEffect );
       } else if (isLiquidGlassBlurType(blurType) && !(curEffect instanceof Refraction.RefractionEffect)) {
          if (curEffect) {
             background.remove_effect(curEffect);
             this._releaseBlurEffect(curEffect);
          }
-         let blurEffect = this._aquireLiquidGlassEffect(radius);
+         let blurEffect = this._aquireLiquidGlassEffect(radius, grain);
          background.add_effect_with_name( BLUR_EFFECT_NAME, blurEffect );
       } else if (blurType === BlurType.Transparent && Meta.is_wayland_compositor() && curEffect) {
          // Wayland keeps the same actor when switching to Transparent, so just drop the blur
@@ -2304,6 +2315,10 @@ class BlurBase {
       if (curEffect instanceof Refraction.RefractionEffect) {
          applyLiquidGlassSettings(curEffect, radius);
       }
+      // Every blur effect but the Simple one (Clutter.BlurEffect) has a grain
+      if (curEffect instanceof EffectPool.EffectBase) {
+         curEffect.grain = grain;
+      }
       this._syncLiquidGlassCornerRadius(background);
       // Setup/Adjust the desaturation effect
       curEffect = background.get_effect(DESAT_EFFECT_NAME);
@@ -2348,32 +2363,32 @@ class BlurBase {
    // background directly - it looks up BLUR_EFFECT_NAME etc. on the background actor it's given,
    // and finding none there (they're all on viewport instead) would make it create a *second*,
    // duplicate set of effects on background alongside viewport's real ones.
-   _updateViewportEffects(background, viewport, opacity, blendColor, blurType, radius, saturation) {
+   _updateViewportEffects(background, viewport, opacity, blendColor, blurType, radius, saturation, grain) {
       let curEffect = this._getBlurEffect(viewport);
       if (blurType === BlurType.DynamicBlur && !(curEffect instanceof GaussianBlur.GaussianBlurEffect)) {
          if (curEffect) {
             viewport.remove_effect(curEffect);
             this._releaseBlurEffect(curEffect);
          }
-         viewport.add_effect_with_name( BLUR_EFFECT_NAME, this._aquireGaussianEffect(radius) );
+         viewport.add_effect_with_name( BLUR_EFFECT_NAME, this._aquireGaussianEffect(radius, grain) );
       } else if (blurType === BlurType.DynamicMC && !(curEffect instanceof MonteCarloBlur.MonteCarloBlurEffect)) {
          if (curEffect) {
             viewport.remove_effect(curEffect);
             this._releaseBlurEffect(curEffect);
          }
-         viewport.add_effect_with_name( BLUR_EFFECT_NAME, this._aquireMonteCarloEffect(radius) );
+         viewport.add_effect_with_name( BLUR_EFFECT_NAME, this._aquireMonteCarloEffect(radius, grain) );
       } else if (blurType === BlurType.DynamicDK && !(curEffect instanceof DualKawaseBlur.DualFilteringBlurEffect)) {
          if (curEffect) {
             viewport.remove_effect(curEffect);
             this._releaseBlurEffect(curEffect);
          }
-         viewport.add_effect_with_name( BLUR_EFFECT_NAME, this._aquireDualKawaseEffect(radius) );
+         viewport.add_effect_with_name( BLUR_EFFECT_NAME, this._aquireDualKawaseEffect(radius, grain) );
       } else if (blurType === BlurType.DynamicLG && !(curEffect instanceof Refraction.RefractionEffect)) {
          if (curEffect) {
             viewport.remove_effect(curEffect);
             this._releaseBlurEffect(curEffect);
          }
-         viewport.add_effect_with_name( BLUR_EFFECT_NAME, this._aquireLiquidGlassEffect(radius) );
+         viewport.add_effect_with_name( BLUR_EFFECT_NAME, this._aquireLiquidGlassEffect(radius, grain) );
       }
       curEffect = this._getBlurEffect(viewport);
       if ((curEffect instanceof GaussianBlur.GaussianBlurEffect || curEffect instanceof MonteCarloBlur.MonteCarloBlurEffect || curEffect instanceof DualKawaseBlur.DualFilteringBlurEffect) && curEffect.radius != radius) {
@@ -2386,6 +2401,9 @@ class BlurBase {
       }
       if (curEffect instanceof Refraction.RefractionEffect) {
          applyLiquidGlassSettings(curEffect, radius);
+      }
+      if (curEffect instanceof EffectPool.EffectBase) {
+         curEffect.grain = grain;
       }
       this._syncLiquidGlassCornerRadius(viewport);
 
@@ -2637,7 +2655,7 @@ class BlurOSD extends BlurBase {
    }
 
    _getUniqueSettings() {
-      return [settings.osdOpacity, settings.osdBlendColor, settings.osdBlurType, settings.osdRadius, settings.osdSaturation];
+      return [settings.osdOpacity, settings.osdBlendColor, settings.osdBlurType, settings.osdRadius, settings.osdSaturation, settings.osdGrain];
    }
 
    _show(...params) {
@@ -2797,7 +2815,7 @@ class BlurOSD extends BlurBase {
       }
 
       const values = this._getSettings(settings.osdOverride);
-      const [opacity, blendColor, blurType, radius, saturation] = values;
+      const [opacity, blendColor, blurType, radius, saturation, grain] = values;
       const useViewport = this._wantsViewport(blurType);
       let state = this._states.get(osd);
       if (state && (state.actor !== actor || state.clipActor !== clipActor || this._needsBackgroundRebuild(state.background, blurType, useViewport))) {
@@ -2823,7 +2841,7 @@ class BlurOSD extends BlurBase {
       if (osd._blurCinnamonBackground)
          delete osd._blurCinnamonBackground;
 
-      const background = this._createBackgroundAndEffects(opacity, blendColor, blurType, radius, saturation, global.overlay_group, 10, true, true, useViewport);
+      const background = this._createBackgroundAndEffects(opacity, blendColor, blurType, radius, saturation, grain, global.overlay_group, 10, true, true, useViewport);
       const viewport = background._blurCinnamonViewport;
       background._blurCinnamonName = "OsdWindow";
       if (viewport) viewport._blurCinnamonName = "OsdWindow";
@@ -2972,7 +2990,7 @@ class BlurClassicSwitcher extends BlurBase {
    }
 
    _getUniqueSettings() {
-      return [settings.appswitcherOpacity, settings.appswitcherBlendColor, settings.appswitcherBlurType, settings.appswitcherRadius, settings.appswitcherSaturation];
+      return [settings.appswitcherOpacity, settings.appswitcherBlendColor, settings.appswitcherBlurType, settings.appswitcherRadius, settings.appswitcherSaturation, settings.appswitcherGrain];
    }
 
    // Monkey patch function. The 'this' will be for ClassicSwitcher
@@ -2993,10 +3011,10 @@ class BlurClassicSwitcher extends BlurBase {
          }
 
          // Create the effects and the background actor to apply to effects to
-         let [opacity, blendColor, blurType, radius, saturation] = this._getSettings(settings.appswitcherOverride);
+         let [opacity, blendColor, blurType, radius, saturation, grain] = this._getSettings(settings.appswitcherOverride);
          this._blurType = blurType
          let useViewport = this._wantsViewport(blurType);
-         this._background = this._createBackgroundAndEffects(opacity, blendColor, blurType, radius, saturation, global.overlay_group, 10, true, true, useViewport);
+         this._background = this._createBackgroundAndEffects(opacity, blendColor, blurType, radius, saturation, grain, global.overlay_group, 10, true, true, useViewport);
          this._background._blurCinnamonName = "ClassicSwitcher";
          this._viewport = this._background._blurCinnamonViewport;
          if (this._viewport) this._viewport._blurCinnamonName = "ClassicSwitcher";
@@ -3444,7 +3462,7 @@ class BlurPanels extends BlurBase {
       let cornerRadius = 0;
       let panelSettings = this._getPanelSettings(panel);
       if (!panelSettings ) return;
-      let [opacity, blendColor, blurType, radius, saturation, customCSS] = panelSettings;
+      let [opacity, blendColor, blurType, radius, saturation, grain, customCSS] = panelSettings;
 
       let actor = panel.actor;
       let blurredPanel = panel.__blurredPanel;
@@ -3479,7 +3497,7 @@ class BlurPanels extends BlurBase {
       blurredPanel.bottomRadius = bottomRadius;
 
       let useViewport = this._wantsViewport(blurType);
-      let background = this._createBackgroundAndEffects(opacity, blendColor, blurType, radius, saturation, global.overlay_group, cornerRadius, topRadius!==0, bottomRadius!==0, useViewport);
+      let background = this._createBackgroundAndEffects(opacity, blendColor, blurType, radius, saturation, grain, global.overlay_group, cornerRadius, topRadius!==0, bottomRadius!==0, useViewport);
       background._blurCinnamonName = "Panel";
       blurredPanel.background = background;
       blurredPanel.viewport = background._blurCinnamonViewport;
@@ -3523,7 +3541,7 @@ class BlurPanels extends BlurBase {
          if (blurredPanel) {
             let panelSettings = this._getPanelSettings(panel);
             if (!panelSettings) return
-            let [opacity, blendColor, blurType, radius, saturation, customCSS] = panelSettings;
+            let [opacity, blendColor, blurType, radius, saturation, grain, customCSS] = panelSettings;
 
             let dimmerColor = this._getColor( blendColor, 0 );
             blurredPanel.background._blurCinnamonDimmer.set_background_color(dimmerColor);
@@ -3550,7 +3568,7 @@ class BlurPanels extends BlurBase {
          if (blurredPanel) {
             let panelSettings = this._getPanelSettings(panel);
             if (!panelSettings ) return;
-            let [opacity, blendColor, blurType, radius, saturation, customCSS] = panelSettings;
+            let [opacity, blendColor, blurType, radius, saturation, grain, customCSS] = panelSettings;
 
             let dimmerColor = this._getColor( blendColor, opacity );
             blurredPanel.background._blurCinnamonDimmer.set_background_color(dimmerColor);
@@ -3665,7 +3683,7 @@ class BlurPanels extends BlurBase {
       if (transparent) {
          let panelSettings = this._getPanelSettings(panel);
          if (!panelSettings ) return;
-         blurredPanel.customCSS = panelSettings[5];
+         blurredPanel.customCSS = panelSettings[6];
          // Append our transparency CSS to the panel's own style (when allowTransparentColorPanels is enabled)
          this._applyPanelStyle(panel);
          //Mainloop.idle_add( () => { this._setClip(panel) } ); // This call to _setClip causes the blurred background to disappear for some reason.
@@ -3685,7 +3703,7 @@ class BlurPanels extends BlurBase {
          if (panels[i]) {
             let panelSettings = this._getPanelSettings(panels[i]);
             if (panelSettings) {
-               let [opacity, blendColor, blurType, radius, saturation, customCSS] = panelSettings;
+               let [opacity, blendColor, blurType, radius, saturation, grain, customCSS] = panelSettings;
                let blurredPanel = panels[i].__blurredPanel;
                if (blurredPanel) {
                   let wantsViewport = this._wantsViewport(blurType);
@@ -3698,9 +3716,9 @@ class BlurPanels extends BlurBase {
                      this._blurPanel(panels[i]);
                      blurredPanel = panels[i].__blurredPanel;
                   } else if (blurredPanel.viewport) {
-                     this._updateViewportEffects(blurredPanel.background, blurredPanel.viewport, opacity, blendColor, blurType, radius, saturation);
+                     this._updateViewportEffects(blurredPanel.background, blurredPanel.viewport, opacity, blendColor, blurType, radius, saturation, grain);
                   } else {
-                     blurredPanel.background = this._updateEffects(blurredPanel.background, opacity, blendColor, blurType, radius, saturation);
+                     blurredPanel.background = this._updateEffects(blurredPanel.background, opacity, blendColor, blurType, radius, saturation, grain);
                   }
                   if (!settings.noPanelEffectsMaximized) {
                      this._setPanelTransparency(blurredPanel, true);
@@ -3733,7 +3751,7 @@ class BlurPanels extends BlurBase {
    }
 
    _getUniqueSettings() {
-      return [settings.panelsOpacity, settings.panelsBlendColor, settings.panelsBlurType, settings.panelsRadius, settings.panelsSaturation];
+      return [settings.panelsOpacity, settings.panelsBlendColor, settings.panelsBlurType, settings.panelsRadius, settings.panelsSaturation, settings.panelsGrain];
    }
 
    // Determine the settings that should apply for the panel argument panel
@@ -3757,7 +3775,7 @@ class BlurPanels extends BlurBase {
                   }
                }
                if (uniqueSetting.override) {
-                  return [uniqueSetting.opacity, uniqueSetting.color, uniqueSetting.blurtype, uniqueSetting.radius, uniqueSetting.saturation, uniqueSetting.customCSS];
+                  return [uniqueSetting.opacity, uniqueSetting.color, uniqueSetting.blurtype, uniqueSetting.radius, uniqueSetting.saturation, uniqueSetting.grain ?? DEFAULT_TABLE_GRAIN, uniqueSetting.customCSS];
                } else {
                   return [...this._getGenericSettings(), ""]
                }
@@ -3804,13 +3822,13 @@ class BlurPopupMenus extends BlurBase {
       this.original_popupmenu_open = PopupMenu.PopupMenu.prototype.open;
       PopupMenu.PopupMenu.prototype.open = this._popupMenuOpen;
 
-      let [opacity, blendColor, blurType, radius, saturation] = this._getSettings(settings.popupOverride);
+      let [opacity, blendColor, blurType, radius, saturation, grain] = this._getSettings(settings.popupOverride);
 
       // Setup the popup menu box color
       this._boxColor = this._getColor( "rgba(0,0,0,0)", 0/*blendColor, opacity*/ );
 
       let useViewport = this._wantsViewport(blurType);
-      this._background = this._createBackgroundAndEffects(opacity, blendColor, blurType, radius, saturation, global.overlay_group, 10, true, true, useViewport); // Assume a corner radius of 10, it will be fixed if needed
+      this._background = this._createBackgroundAndEffects(opacity, blendColor, blurType, radius, saturation, grain, global.overlay_group, 10, true, true, useViewport); // Assume a corner radius of 10, it will be fixed if needed
       this._background._blurCinnamonName = "Menus";
       this._viewport = this._background._blurCinnamonViewport;
       if (this._viewport) this._viewport._blurCinnamonName = "Menus";
@@ -3828,7 +3846,7 @@ class BlurPopupMenus extends BlurBase {
    }
 
    _getUniqueSettings() {
-      return [settings.popupOpacity, settings.popupBlendColor, settings.popupBlurType, settings.popupRadius, settings.popupSaturation];
+      return [settings.popupOpacity, settings.popupBlendColor, settings.popupBlurType, settings.popupRadius, settings.popupSaturation, settings.popupGrain];
    }
 
    // Monkey patched over PupupMenu.open()
@@ -3875,7 +3893,7 @@ class BlurPopupMenus extends BlurBase {
    _onOpenStateChanged(menu, open) {
       if (open) {
          debugMsg( `Applying setting to new popup menu: ${menu}` );
-         let [opacity, blendColor, blurType, radius, saturation] = this._getSettings(settings.popupOverride);
+         let [opacity, blendColor, blurType, radius, saturation, grain] = this._getSettings(settings.popupOverride);
 
          if (settings.allowTransparentColorPopup) {
             // Has some Blur Cinnamon settings changed since we last opened this menu?
@@ -4110,7 +4128,7 @@ class BlurPopupMenus extends BlurBase {
       debugMsg("updateEffects for popup menus" );
       this._changeCount++;
 
-      let [opacity, blendColor, blurType, radius, saturation] = this._getSettings(settings.popupOverride);
+      let [opacity, blendColor, blurType, radius, saturation, grain] = this._getSettings(settings.popupOverride);
       let accentOpacity = settings.popupAccentOpacity;
 
       let wantsViewport = this._wantsViewport(blurType);
@@ -4122,14 +4140,14 @@ class BlurPopupMenus extends BlurBase {
          // uses - _onOpenStateChanged() re-derives the real radius from the menu's theme node the
          // next time a menu opens, exactly as it already does after construction.
          this._destroyBackgroundAndViewport(this._background, global.overlay_group);
-         this._background = this._createBackgroundAndEffects(opacity, blendColor, blurType, radius, saturation, global.overlay_group, 10, true, true, wantsViewport);
+         this._background = this._createBackgroundAndEffects(opacity, blendColor, blurType, radius, saturation, grain, global.overlay_group, 10, true, true, wantsViewport);
          this._background._blurCinnamonName = "Menus";
          this._viewport = this._background._blurCinnamonViewport;
          if (this._viewport) this._viewport._blurCinnamonName = "Menus";
       } else if (this._viewport) {
-         this._updateViewportEffects(this._background, this._viewport, opacity, blendColor, blurType, radius, saturation);
+         this._updateViewportEffects(this._background, this._viewport, opacity, blendColor, blurType, radius, saturation, grain);
       } else {
-         this._background = this._updateEffects(this._background, opacity, blendColor, blurType, radius, saturation);
+         this._background = this._updateEffects(this._background, opacity, blendColor, blurType, radius, saturation, grain);
       }
       //this._setClip(this._currentMenu);
       this._background.hide();
@@ -4190,16 +4208,16 @@ class BlurDesktop extends BlurBase {
       this._targetDestroyId = 0;
       this._mapId = 0;
 
-      let [opacity, blendColor, blurType, radius, saturation] = this._getSettings(settings.desktopOverride);
+      let [opacity, blendColor, blurType, radius, saturation, grain] = this._getSettings(settings.desktopOverride);
 
       if (blurType === BlurType.Simple)
          this._blurEffect = new Clutter.BlurEffect();
       else if (blurType === BlurType.Gaussian)
-         this._blurEffect = new GaussianBlur.GaussianBlurEffect( {radius: radius, brightness: 1, width: 0, height: 0} );
+         this._blurEffect = new GaussianBlur.GaussianBlurEffect( {radius: radius, brightness: 1, width: 0, height: 0, grain: grain} );
       else if (blurType === BlurType.MonteCarlo)
-         this._blurEffect = new MonteCarloBlur.MonteCarloBlurEffect( { radius: radius, iterations: settings.montecarloIterations, prefer_closer_pixels: settings.montecarloPerferCloserPixels, use_base_pixel: settings.montecarloUseBasePixel, brightness: 1, width: 0, height: 0 } );
+         this._blurEffect = new MonteCarloBlur.MonteCarloBlurEffect( { radius: radius, iterations: settings.montecarloIterations, prefer_closer_pixels: settings.montecarloPerferCloserPixels, use_base_pixel: settings.montecarloUseBasePixel, brightness: 1, width: 0, height: 0, grain: grain } );
       else if (blurType === BlurType.DualKawase)
-         this._blurEffect = new DualKawaseBlur.DualFilteringBlurEffect( { radius: radius, brightness: 1, width: 0, height: 0 } );
+         this._blurEffect = new DualKawaseBlur.DualFilteringBlurEffect( { radius: radius, brightness: 1, width: 0, height: 0, grain: grain } );
       this._blurEnabled = !!this._blurEffect;
       this._desatEffect = new Clutter.DesaturateEffect({ factor: (100 - saturation) / 100 });
       // A dimmer child of the target so we can change the colorization and dimming of the background
@@ -4223,7 +4241,7 @@ class BlurDesktop extends BlurBase {
    }
 
    _getUniqueSettings() {
-      return [settings.desktopOpacity, settings.desktopBlendColor, settings.desktopBlurType, settings.desktopRadius, settings.desktopSaturation];
+      return [settings.desktopOpacity, settings.desktopBlendColor, settings.desktopBlurType, settings.desktopRadius, settings.desktopSaturation, settings.desktopGrain];
    }
 
    _findTarget() {
@@ -4291,13 +4309,13 @@ class BlurDesktop extends BlurBase {
    }
 
    updateEffects() {
-      let [opacity, blendColor, blurType, radius, saturation] = this._getSettings(settings.desktopOverride);
+      let [opacity, blendColor, blurType, radius, saturation, grain] = this._getSettings(settings.desktopOverride);
 
-      this._withoutFocusSettings = {radius: radius, opacity: opacity, blendColor: blendColor, saturation: saturation};
+      this._withoutFocusSettings = {radius: radius, opacity: opacity, blendColor: blendColor, saturation: saturation, grain: grain};
       if (settings.desktopOverride && settings.desktopWithFocus) {
-         this._withFocusSettings = {radius: settings.radius, opacity: settings.opacity, blendColor: settings.blendColor, saturation: settings.saturation};
+         this._withFocusSettings = {radius: settings.radius, opacity: settings.opacity, blendColor: settings.blendColor, saturation: settings.saturation, grain: settings.grain};
       } else {
-         this._withFocusSettings = {radius: 0, opacity: 0, blendColor: "",saturation: 100};
+         this._withFocusSettings = {radius: 0, opacity: 0, blendColor: "",saturation: 100, grain: 0};
       }
       if (this._connected && !settings.desktopWithoutFocus) {
          this._signalManager.disconnectAllSignals();
@@ -4311,11 +4329,11 @@ class BlurDesktop extends BlurBase {
       if (blurType === BlurType.Simple && !(newEffect instanceof Clutter.BlurEffect)) {
          newEffect = new Clutter.BlurEffect();
       } else if (blurType === BlurType.Gaussian && !(newEffect instanceof GaussianBlur.GaussianBlurEffect)) {
-         newEffect = new GaussianBlur.GaussianBlurEffect( {radius: radius, brightness: 1, width: 0, height: 0} );
+         newEffect = new GaussianBlur.GaussianBlurEffect( {radius: radius, brightness: 1, width: 0, height: 0, grain: grain} );
       } else if (blurType === BlurType.MonteCarlo && !(newEffect instanceof MonteCarloBlur.MonteCarloBlurEffect)) {
-         newEffect = new MonteCarloBlur.MonteCarloBlurEffect( { radius: radius, iterations: settings.montecarloIterations, prefer_closer_pixels: settings.montecarloPerferCloserPixels, use_base_pixel: settings.montecarloUseBasePixel, brightness: 1, width: 0, height: 0 } );
+         newEffect = new MonteCarloBlur.MonteCarloBlurEffect( { radius: radius, iterations: settings.montecarloIterations, prefer_closer_pixels: settings.montecarloPerferCloserPixels, use_base_pixel: settings.montecarloUseBasePixel, brightness: 1, width: 0, height: 0, grain: grain } );
       } else if (blurType === BlurType.DualKawase && !(newEffect instanceof DualKawaseBlur.DualFilteringBlurEffect)) {
-         newEffect = new DualKawaseBlur.DualFilteringBlurEffect( { radius: radius, brightness: 1, width: 0, height: 0 } );
+         newEffect = new DualKawaseBlur.DualFilteringBlurEffect( { radius: radius, brightness: 1, width: 0, height: 0, grain: grain } );
       }
       if (newEffect !== this._blurEffect && this._target && this._blurEffect && this._target.get_effect(BLUR_EFFECT_NAME) === this._blurEffect)
          this._target.remove_effect(this._blurEffect);
@@ -4332,6 +4350,9 @@ class BlurDesktop extends BlurBase {
          this._blurEffect.use_base_pixel = settings.montecarloUseBasePixel;
          this._blurEffect.prefer_closer_pixels = settings.montecarloPerferCloserPixels;
       }
+      if (this._blurEffect instanceof EffectPool.EffectBase) {
+         this._blurEffect.grain = grain;
+      }
       if (this._desatEffect.factor !== (100-saturation)/100) {
          this._desatEffect.set_factor((100-saturation)/100);
       }
@@ -4347,6 +4368,8 @@ class BlurDesktop extends BlurBase {
       if (!window || window.get_window_type() === Meta.WindowType.DESKTOP) {
          if ((this._blurEffect instanceof GaussianBlur.GaussianBlurEffect || this._blurEffect instanceof MonteCarloBlur.MonteCarloBlurEffect || this._blurEffect instanceof DualKawaseBlur.DualFilteringBlurEffect) && this._blurEffect.radius != this._withFocusSettings.radius)
             this._blurEffect.radius = this._withFocusSettings.radius;
+         if (this._blurEffect instanceof EffectPool.EffectBase)
+            this._blurEffect.grain = this._withFocusSettings.grain;
          let dimmerColor = this._getColor( this._withFocusSettings.blendColor, this._withFocusSettings.opacity );
          this._dimmer.set_background_color(dimmerColor);
          if (this._desatEffect.factor !== (100-this._withFocusSettings.saturation)/100)
@@ -4357,6 +4380,8 @@ class BlurDesktop extends BlurBase {
       if (this._currentlyWithFocus) {
          if ((this._blurEffect instanceof GaussianBlur.GaussianBlurEffect || this._blurEffect instanceof MonteCarloBlur.MonteCarloBlurEffect || this._blurEffect instanceof DualKawaseBlur.DualFilteringBlurEffect) && this._blurEffect.radius != this._withoutFocusSettings.radius)
             this._blurEffect.radius = this._withoutFocusSettings.radius;
+         if (this._blurEffect instanceof EffectPool.EffectBase)
+            this._blurEffect.grain = this._withoutFocusSettings.grain;
          let dimmerColor = this._getColor( this._withoutFocusSettings.blendColor, this._withoutFocusSettings.opacity );
          this._dimmer.set_background_color(dimmerColor);
          if (this._desatEffect.factor !== (100-this._withoutFocusSettings.saturation)/100)
@@ -4397,10 +4422,10 @@ class BlurNotifications extends BlurBase {
       MessageTray.MessageTray.prototype._hideNotification = this._hideNotification;
 
       // Create the effects and the background actor to apply to effects to
-      let [opacity, blendColor, blurType, radius, saturation] = this._getSettings(settings.notificationOverride);
+      let [opacity, blendColor, blurType, radius, saturation, grain] = this._getSettings(settings.notificationOverride);
       this._blurType = blurType;
       let useViewport = this._wantsViewport(blurType);
-      this._background = this._createBackgroundAndEffects(opacity, blendColor, blurType, radius, saturation, global.overlay_group, 10, true, true, useViewport);
+      this._background = this._createBackgroundAndEffects(opacity, blendColor, blurType, radius, saturation, grain, global.overlay_group, 10, true, true, useViewport);
       this._background._blurCinnamonName = "Notifications";
       this._viewport = this._background._blurCinnamonViewport;
       if (this._viewport) this._viewport._blurCinnamonName = "Notifications";
@@ -4414,13 +4439,13 @@ class BlurNotifications extends BlurBase {
    }
 
    _getUniqueSettings() {
-      return [settings.notificationOpacity, settings.notificationBlendColor, settings.notificationBlurType, settings.notificationRadius, settings.notificationSaturation];
+      return [settings.notificationOpacity, settings.notificationBlendColor, settings.notificationBlurType, settings.notificationRadius, settings.notificationSaturation, settings.notificationGrain];
    }
 
    updateEffects() {
       this._cancelShowTimeout()
 
-      let [opacity, blendColor, blurType, radius, saturation] = this._getSettings(settings.notificationOverride);
+      let [opacity, blendColor, blurType, radius, saturation, grain] = this._getSettings(settings.notificationOverride);
 
       this._blurType = blurType;
       let wantsViewport = this._wantsViewport(blurType);
@@ -4432,14 +4457,14 @@ class BlurNotifications extends BlurBase {
          // uses - the block below re-derives the real radius from the notification's theme node
          // right after, exactly as it already did after construction.
          this._destroyBackgroundAndViewport(this._background, global.overlay_group);
-         this._background = this._createBackgroundAndEffects(opacity, blendColor, blurType, radius, saturation, global.overlay_group, 10, true, true, wantsViewport);
+         this._background = this._createBackgroundAndEffects(opacity, blendColor, blurType, radius, saturation, grain, global.overlay_group, 10, true, true, wantsViewport);
          this._background._blurCinnamonName = "Notifications";
          this._viewport = this._background._blurCinnamonViewport;
          if (this._viewport) this._viewport._blurCinnamonName = "Notifications";
       } else if (this._viewport) {
-         this._updateViewportEffects(this._background, this._viewport, opacity, blendColor, blurType, radius, saturation);
+         this._updateViewportEffects(this._background, this._viewport, opacity, blendColor, blurType, radius, saturation, grain);
       } else {
-         this._background = this._updateEffects(this._background, opacity, blendColor, blurType, radius, saturation);
+         this._background = this._updateEffects(this._background, opacity, blendColor, blurType, radius, saturation, grain);
       }
 
       if (this._activeNotificationData) {
@@ -4634,9 +4659,9 @@ class BlurTooltips extends BlurBase {
       this.original_Tooltip_hide = Tooltips.Tooltip.prototype.hide;
       Tooltips.Tooltip.prototype.hide = this._hide_Tooltip;
 
-      let [opacity, blendColor, blurType, radius, saturation] = this._getSettings(settings.tooltipsOverride);
+      let [opacity, blendColor, blurType, radius, saturation, grain] = this._getSettings(settings.tooltipsOverride);
       let useViewport = this._wantsViewport(blurType);
-      this._background = this._createBackgroundAndEffects(opacity, blendColor, blurType, radius, saturation, global.overlay_group, 10, true, true, useViewport);
+      this._background = this._createBackgroundAndEffects(opacity, blendColor, blurType, radius, saturation, grain, global.overlay_group, 10, true, true, useViewport);
       this._background._blurCinnamonName = "Tooltips";
       this._viewport = this._background._blurCinnamonViewport;
       if (this._viewport) this._viewport._blurCinnamonName = "Tooltips";
@@ -4647,14 +4672,14 @@ class BlurTooltips extends BlurBase {
    }
 
    _getUniqueSettings() {
-      return [settings.tooltipOpacity, settings.tooltipBlendColor, settings.tooltipBlurType, settings.tooltipRadius, settings.tooltipSaturation];
+      return [settings.tooltipOpacity, settings.tooltipBlendColor, settings.tooltipBlurType, settings.tooltipRadius, settings.tooltipSaturation, settings.tooltipGrain];
    }
 
    _blurTooltip(actor) {
       if (this._tooltipActor)
          this._unblurTooltip(this._tooltipActor);
 
-      let [opacity, blendColor, blurType, radius, saturation] = this._getSettings(settings.tooltipsOverride);
+      let [opacity, blendColor, blurType, radius, saturation, grain] = this._getSettings(settings.tooltipsOverride);
       // Settings are re-read fresh on every show (tooltips are ephemeral, unlike the classes with a
       // live updateEffects() dispatcher), so a blur-type change since the last show is handled right
       // here: rebuild rather than migrate the actor tree in place whenever whether this background
@@ -4662,14 +4687,14 @@ class BlurTooltips extends BlurBase {
       let wantsViewport = this._wantsViewport(blurType);
       if (!!this._viewport !== wantsViewport) {
          this._destroyBackgroundAndViewport(this._background, global.overlay_group);
-         this._background = this._createBackgroundAndEffects(opacity, blendColor, blurType, radius, saturation, global.overlay_group, 10, true, true, wantsViewport);
+         this._background = this._createBackgroundAndEffects(opacity, blendColor, blurType, radius, saturation, grain, global.overlay_group, 10, true, true, wantsViewport);
          this._background._blurCinnamonName = "Tooltips";
          this._viewport = this._background._blurCinnamonViewport;
          if (this._viewport) this._viewport._blurCinnamonName = "Tooltips";
       } else if (this._viewport) {
-         this._updateViewportEffects(this._background, this._viewport, opacity, blendColor, blurType, radius, saturation);
+         this._updateViewportEffects(this._background, this._viewport, opacity, blendColor, blurType, radius, saturation, grain);
       } else {
-         this._background = this._updateEffects(this._background, opacity, blendColor, blurType, radius, saturation);
+         this._background = this._updateEffects(this._background, opacity, blendColor, blurType, radius, saturation, grain);
       }
       this._background.hide();
       if (this._viewport) this._viewport.hide();
@@ -4962,7 +4987,7 @@ class BlurApplications extends BlurBase {
          return;
 
       // Get the effect setting that should apply to Application windows
-      let [enabled, window_opacity, opacity, blendColor, blurType, radius, saturation, corner_radius, top, bottom, titlebarsOnly] = this._getSettings(metaWindow);
+      let [enabled, window_opacity, opacity, blendColor, blurType, radius, saturation, grain, corner_radius, top, bottom, titlebarsOnly] = this._getSettings(metaWindow);
       if (enabled) {
          // A signal manager for this window
          let signalManager = new SignalManager.SignalManager(null);
@@ -4989,7 +5014,7 @@ class BlurApplications extends BlurBase {
          // viewport (when used) directly above it (index 1, still below that real content) - so
          // parenting is done via customParent rather than _createBackgroundAndEffects's generic
          // `parent` add_child fallback, which doesn't have index control.
-         let background = this._createBackgroundAndEffects(opacity, blendColor, blurType, radius, saturation, null, corner_radius, top, bottom, useViewport,
+         let background = this._createBackgroundAndEffects(opacity, blendColor, blurType, radius, saturation, grain, null, corner_radius, top, bottom, useViewport,
             (bg, vp) => {
                compositor.insert_child_at_index(bg, 0);
                if (vp) compositor.insert_child_at_index(vp, 1);
@@ -5082,12 +5107,12 @@ class BlurApplications extends BlurBase {
          }
          if (element) {
             if (element.override) {
-               return this._applyRoundedCornersRadius(metaWindow, [enabled, element.window_opacity, element.opacity, element.color, element.blurtype, element.radius, element.saturation, element.corner_radius, element.corner_top, element.corner_bottom, titlebarsOnly]);
+               return this._applyRoundedCornersRadius(metaWindow, [enabled, element.window_opacity, element.opacity, element.color, element.blurtype, element.radius, element.saturation, element.grain ?? DEFAULT_TABLE_GRAIN, element.corner_radius, element.corner_top, element.corner_bottom, titlebarsOnly]);
             }
             return this._applyRoundedCornersRadius(metaWindow, [enabled, element.window_opacity, ...super._getSettings(false), element.corner_radius, element.corner_top, element.corner_bottom, titlebarsOnly ]);
          }
       }
-      return [false, 100, 0, undefined, BlurType.None, 0, 100, 0, false, false, false]
+      return [false, 100, 0, undefined, BlurType.None, 0, 100, 0, 0, false, false, false]
    }
 
    // When the "Rounded Corners" extension is rounding metaWindow, use its corner radius in place of the
@@ -5096,7 +5121,7 @@ class BlurApplications extends BlurBase {
    // then the inclusion list's values are used for that pair (they describe the app's own, e.g. client
    // side decoration, corners). Windows it isn't rounding at all (excluded, maximized, fullscreen...)
    // have no _roundedCornersRadius, or [null, null], and keep the inclusion list's values entirely.
-   // settingsArray is the _getSettings() result: [..., corner_radius(7), top(8), bottom(9), titlebarsOnly(10)]
+   // settingsArray is the _getSettings() result: [..., corner_radius(8), top(9), bottom(10), titlebarsOnly(11)]
    _applyRoundedCornersRadius(metaWindow, settingsArray) {
       if (!settings.windowsRoundedCornersSync || !this._roundedCornersNotifier || !this._roundedCornersNotifier.enabled)
          return settingsArray;
@@ -5114,17 +5139,17 @@ class BlurApplications extends BlurBase {
       if (rcTop === null && rcBottom === null)
          return settingsArray;
       // Fall back to Blur Cinnamon's own settings for any corners Rounded Corners isn't rounding
-      let ownRadius = Math.max(0, Number(settingsArray[7]) || 0);
-      let topRadius    = (rcTop    !== null) ? rcTop    : (settingsArray[8] ? ownRadius : 0);
-      let bottomRadius = (rcBottom !== null) ? rcBottom : (settingsArray[9] ? ownRadius : 0);
+      let ownRadius = Math.max(0, Number(settingsArray[8]) || 0);
+      let topRadius    = (rcTop    !== null) ? rcTop    : (settingsArray[9] ? ownRadius : 0);
+      let bottomRadius = (rcBottom !== null) ? rcBottom : (settingsArray[10] ? ownRadius : 0);
       // A title-bar-only blur ends where the window body starts, the window's bottom corners aren't part of it
-      if (settingsArray[10])
+      if (settingsArray[11])
          bottomRadius = 0;
       // The corner effect has a single radius for the corners it rounds, so if the top and bottom
       // radii differ (one from Rounded Corners, one from our settings) the larger one is used for both.
-      settingsArray[7] = Math.max(topRadius, bottomRadius);
-      settingsArray[8] = topRadius > 0;
-      settingsArray[9] = bottomRadius > 0;
+      settingsArray[8] = Math.max(topRadius, bottomRadius);
+      settingsArray[9] = topRadius > 0;
+      settingsArray[10] = bottomRadius > 0;
       return settingsArray;
    }
 
@@ -5180,7 +5205,7 @@ class BlurApplications extends BlurBase {
          let compositor = metaWindow.get_compositor_private();
          if (!compositor || !compositor._blurCinnamonDataWindow)
             continue;
-         let [enabled, , , , , , , corner_radius, top, bottom] = this._getSettings(metaWindow);
+         let [enabled, , , , , , , , corner_radius, top, bottom] = this._getSettings(metaWindow);
          if (enabled)
             this._updateWindowCorners(compositor, corner_radius, top, bottom);
       }
@@ -5394,7 +5419,7 @@ class BlurApplications extends BlurBase {
       for (let i = 0; i < windows.length; i++) {
          let compositor = windows[i].get_compositor_private();
          let data = compositor._blurCinnamonDataWindow;
-         let [enabled, window_opacity, opacity, blendColor, blurType, radius, saturation, corner_radius, top, bottom, titlebarsOnly] = this._getSettings(windows[i]);
+         let [enabled, window_opacity, opacity, blendColor, blurType, radius, saturation, grain, corner_radius, top, bottom, titlebarsOnly] = this._getSettings(windows[i]);
          if (compositor._blurCinnamonDataWindow) {
             if (!enabled) {
                this._unblurWindow(compositor);
@@ -5407,9 +5432,9 @@ class BlurApplications extends BlurBase {
                data.titlebarsOnly = titlebarsOnly;
                let effectsActor = data.viewport || data.background;
                if (data.viewport) {
-                  this._updateViewportEffects(data.background, data.viewport, opacity, blendColor, blurType, radius, saturation);
+                  this._updateViewportEffects(data.background, data.viewport, opacity, blendColor, blurType, radius, saturation, grain);
                } else {
-                  this._updateEffects(data.background, opacity, blendColor, blurType, radius, saturation);
+                  this._updateEffects(data.background, opacity, blendColor, blurType, radius, saturation, grain);
                }
                // Also re-syncs the clip: the blur's sampling reach - and so the viewport's margin -
                // may have changed along with the blur type or radius.
@@ -5754,7 +5779,7 @@ class BlurFocusEffect extends BlurBase {
 
       // BlurFocusEffect deliberately does NOT use viewport-wrapping as it would prevent the blur
       // effect from bleeding over the windows borders which is how this "glow" effect is acheived.
-      this._blurEffect = new GaussianBlur.GaussianBlurEffect( {radius: settings.focusedWindowEffect, brightness: 1 , width: 0, height: 0} );
+      this._blurEffect = new GaussianBlur.GaussianBlurEffect( {radius: settings.focusedWindowEffect, brightness: 1 , width: 0, height: 0, grain: settings.grain} );
       this._cornerEffect = new CornerEffect.CornerEffect( metaData.uuid, {radius: 10, corners_top: true, corners_bottom: true} );
 
       // By adding the corner effect after the blur effect, the blur effect will spill over the clip border slightly (based on the blur radius).
@@ -5850,6 +5875,7 @@ class BlurFocusEffect extends BlurBase {
 
    updateEffect(radius) {
       this._blurEffect.radius = radius;
+      this._blurEffect.grain = settings.grain;
    }
 
    destroy() {
@@ -6007,10 +6033,10 @@ class BlurDesklets extends BlurBase {
          cornerRadius = Math.max(topRadius, bottomRadius);
       }
       let deskletSettings = this._getDeskletSettings(desklet);
-      let [enabled, opacity, blendColor, blurType, radius, saturation] = deskletSettings;
+      let [enabled, opacity, blendColor, blurType, radius, saturation, grain] = deskletSettings;
       if (enabled) {
          let useViewport = this._wantsViewport(blurType);
-         let background = this._createBackgroundAndEffects(opacity, blendColor, blurType, radius, saturation, null, cornerRadius, topRadius!==0, bottomRadius!==0, useViewport,
+         let background = this._createBackgroundAndEffects(opacity, blendColor, blurType, radius, saturation, grain, null, cornerRadius, topRadius!==0, bottomRadius!==0, useViewport,
             (bg, vp) => {
                global.desklet_container.insert_child_at_index(bg, 0);
                if (vp) global.desklet_container.insert_child_at_index(vp, 1);
@@ -6072,7 +6098,7 @@ class BlurDesklets extends BlurBase {
    }
 
    _getUniqueSettings() {
-      return [settings.deskletsOpacity, settings.deskletsBlendColor, settings.deskletsBlurType, settings.deskletsRadius, settings.deskletsSaturation];
+      return [settings.deskletsOpacity, settings.deskletsBlendColor, settings.deskletsBlurType, settings.deskletsRadius, settings.deskletsSaturation, settings.deskletsGrain];
    }
 
    // A string that changes whenever a global, blur type specific setting used by the given blur type changes
@@ -6095,7 +6121,7 @@ class BlurDesklets extends BlurBase {
       // It should always be found!! We add entries for new Desklet elsewhere
       if (found) {
          if (found.override) {
-            return [found.enabled, found.opacity, found.color, found.blurtype, found.radius, found.saturation];
+            return [found.enabled, found.opacity, found.color, found.blurtype, found.radius, found.saturation, found.grain ?? DEFAULT_TABLE_GRAIN];
          } else {
             return [found.enabled, ...this._getGenericSettings()];
          }
@@ -6126,7 +6152,7 @@ class BlurDesklets extends BlurBase {
             let extraSig = this._getExtraEffectSignature(deskletSettings[3], deskletSettings[4]);
             if (!desklet._blurCinnamonBackground || extraSig !== desklet._blurCinnamonBackground._blurCinnamonExtraSig ||
                 !deskletSettings.every( (e, i) => e == desklet._blurCinnamonBackground._blurCinnamonSettings[i] )) {
-               let [enabled, opacity, blendColor, blurType, radius, saturation] = deskletSettings;
+               let [enabled, opacity, blendColor, blurType, radius, saturation, grain] = deskletSettings;
                if (desklet._blurCinnamonBackground) {
                   if (enabled) {
                      let wantsViewport = this._wantsViewport(blurType);
@@ -6135,9 +6161,9 @@ class BlurDesklets extends BlurBase {
                         this._deskletDestroy(desklet);
                         this._blurDesklet(desklet);
                      } else if (viewport) {
-                        this._updateViewportEffects(desklet._blurCinnamonBackground, viewport, opacity, blendColor, blurType, radius, saturation);
+                        this._updateViewportEffects(desklet._blurCinnamonBackground, viewport, opacity, blendColor, blurType, radius, saturation, grain);
                      } else {
-                        this._updateEffects( desklet._blurCinnamonBackground, opacity, blendColor, blurType, radius, saturation );
+                        this._updateEffects( desklet._blurCinnamonBackground, opacity, blendColor, blurType, radius, saturation, grain );
                      }
                      desklet._blurCinnamonBackground._blurCinnamonSettings = deskletSettings;
                      desklet._blurCinnamonBackground._blurCinnamonExtraSig = extraSig;
@@ -6243,6 +6269,7 @@ class BlurSettings {
       this.bind('radius',     'radius',     blurChanged);
       this.bind('blendColor', 'blendColor', colorChanged);
       this.bind('saturation', 'saturation', saturationChanged);
+      this.bind('grain',      'grain',      grainChanged);
 
       this.bind('monte-carlo-iterations', 'montecarloIterations', blurChanged);
       this.bind('monte-carlo-use-base-pixel', 'montecarloUseBasePixel', blurChanged);
@@ -6263,18 +6290,21 @@ class BlurSettings {
       this.bind('overview-radius',     'overviewRadius');
       this.bind('overview-blendColor', 'overviewBlendColor');
       this.bind('overview-saturation', 'overviewSaturation');
+      this.bind('overview-grain',      'overviewGrain');
 
       this.bind('expo-opacity',    'expoOpacity');
       this.bind('expo-blurType',   'expoBlurType');
       this.bind('expo-radius',     'expoRadius');
       this.bind('expo-blendColor', 'expoBlendColor');
       this.bind('expo-saturation', 'expoSaturation');
+      this.bind('expo-grain',      'expoGrain');
 
       this.bind('panels-opacity',    'panelsOpacity',    colorChanged);
       this.bind('panels-blurType',   'panelsBlurType',   blurChanged);
       this.bind('panels-radius',     'panelsRadius',     blurChanged);
       this.bind('panels-blendColor', 'panelsBlendColor', colorChanged);
       this.bind('panels-saturation', 'panelsSaturation', saturationChanged);
+      this.bind('panels-grain',      'panelsGrain',      blurChanged);
       this.bind('no-panel-effects-maximized', 'noPanelEffectsMaximized', maximizedOptionChanged );
       this.bind('hover-brighten-panels', 'hoverBrightenPanels' );
 
@@ -6284,6 +6314,7 @@ class BlurSettings {
       this.bind('popup-radius',         'popupRadius',        updatePopupEffects);
       this.bind('popup-blendColor',     'popupBlendColor',    updatePopupEffects);
       this.bind('popup-saturation',     'popupSaturation',    updatePopupEffects);
+      this.bind('popup-grain',          'popupGrain',         updatePopupEffects);
       this.bind('allow-transparent-color-popup', 'allowTransparentColorPopup', updatePopupEffects);
       this.bind('popup-applet-menu-effects', 'popupAppletMenuEffects');
       this.bind('popup-panel-menu-effects',  'popupPanelMenuEffects');
@@ -6294,6 +6325,7 @@ class BlurSettings {
       this.bind('desktop-radius',        'desktopRadius',       updateDesktopEffects);
       this.bind('desktop-blendColor',    'desktopBlendColor',   updateDesktopEffects);
       this.bind('desktop-saturation',    'desktopSaturation',   updateDesktopEffects);
+      this.bind('desktop-grain',         'desktopGrain',        updateDesktopEffects);
       this.bind('desktop-with-focus',    'desktopWithFocus',    updateDesktopEffects);
       this.bind('desktop-without-focus', 'desktopWithoutFocus', updateDesktopEffects);
 
@@ -6302,6 +6334,7 @@ class BlurSettings {
       this.bind('notification-radius',     'notificationRadius',     updateNotificationEffects);
       this.bind('notification-blendColor', 'notificationBlendColor', updateNotificationEffects);
       this.bind('notification-saturation', 'notificationSaturation', updateNotificationEffects);
+      this.bind('notification-grain',      'notificationGrain',      updateNotificationEffects);
       this.bind('allow-transparent-color-notifications', 'allowTransparentColorNotifications', updateNotificationEffects);
 
       this.bind('appswitcher-opacity',    'appswitcherOpacity');
@@ -6309,6 +6342,7 @@ class BlurSettings {
       this.bind('appswitcher-radius',     'appswitcherRadius');
       this.bind('appswitcher-blendColor', 'appswitcherBlendColor');
       this.bind('appswitcher-saturation', 'appswitcherSaturation');
+      this.bind('appswitcher-grain',      'appswitcherGrain');
       this.bind('appswitcher-disable-3d-panels', 'appswitcherDisablePanels');
       this.bind('appswitcher-allow-classic',     'appswitcherAllowClassic', enableClassicSwitcherChecked);
       this.bind('appswitcher-allow-3d',          'appswitcherAllow3D');
@@ -6319,6 +6353,7 @@ class BlurSettings {
       this.bind('tooltips-radius',     'tooltipRadius');
       this.bind('tooltips-blendColor', 'tooltipBlendColor');
       this.bind('tooltips-saturation', 'tooltipSaturation');
+      this.bind('tooltips-grain',      'tooltipGrain');
       this.bind('allow-transparent-color-tooltips', 'allowTransparentColorTooltips');
 
       this.bind('desklets-opacity',    'deskletsOpacity',    updateDeskletEffects);
@@ -6326,12 +6361,14 @@ class BlurSettings {
       this.bind('desklets-radius',     'deskletsRadius',     updateDeskletEffects);
       this.bind('desklets-blendColor', 'deskletsBlendColor', updateDeskletEffects);
       this.bind('desklets-saturation', 'deskletsSaturation', updateDeskletEffects);
+      this.bind('desklets-grain',      'deskletsGrain',      updateDeskletEffects);
 
       this.bind('osd-opacity',        'osdOpacity');
       this.bind('osd-blurType',       'osdBlurType');
       this.bind('osd-radius',         'osdRadius');
       this.bind('osd-blendColor',     'osdBlendColor');
       this.bind('osd-saturation',     'osdSaturation');
+      this.bind('osd-grain',          'osdGrain');
       this.bind(`osd-slider-effects`, `osdSliderEffects`);
       this.bind(`osd-workspace-effects`, `osdWorkspaceEffects`);
       this.bind('allow-transparent-color-osd', 'allowTransparentColorOSD');
@@ -6498,6 +6535,12 @@ function colorChanged() {
    if (blurPopupMenus && settings.enablePopupEffects) {
       blurPopupMenus.updateEffects();
    }
+}
+
+// Like a change to the blur, plus the focused window backlight, which uses the generic grain
+function grainChanged() {
+   blurChanged();
+   updateFocusedWindowEffect();
 }
 
 function blurChanged() {
