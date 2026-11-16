@@ -3,11 +3,20 @@
 
 const GObject  = imports.gi.GObject;
 const St       = imports.gi.St;
-const Utils    = require("./utils.js");
+// Cinnamon 6.8+ deprecates require() in favour of the xlet's own importer (which only exposes
+// top-level var/function names). Older Cinnamon has no getCurrentExtension(), so fall back to
+// require() there - and when loaded outside of Cinnamon (no global), as before.
+const Me = (typeof global !== 'undefined' && imports.ui.extension.getCurrentExtension) ?
+              imports.ui.extension.getCurrentExtension() : null;
+function importLocal(name) {
+   return Me ? Me.imports[name] : require("./" + name);
+}
+
+const Utils    = importLocal("utils");
 const Clutter  = imports.gi.Clutter;
 const GLib     = imports.gi.GLib;
 
-const EffectBaseModule = require("./effect_base");
+const EffectBaseModule = importLocal("effect_base");
 const EffectBase = EffectBaseModule.EffectBase;
 
 const UUID = "BlurCinnamon@klangman";
