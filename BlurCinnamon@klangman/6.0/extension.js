@@ -1277,6 +1277,16 @@ class CloneManager {
       }
    }
 
+   // Like backgroundClipChanged(), but the clones are brought up to date right away rather than on idle.
+   // Only for callers that are outside the stage relayout/paint and outside "notify::focus-window"
+   // (see cloneWindowsForBackground()), i.e. a BEFORE_REDRAW later.
+   backgroundClipChangedNow(background) {
+      let idx = this._backgrounds.indexOf(background);
+      if (idx!==-1) {
+         cloneWindowsForBackgroundNow(background, background._blurCinnamonDesktopOnly);
+      }
+   }
+
    updateArtifactMitigation() {
       debugMsg( "Update Artifact Mitigation" );
       this._backgrounds.forEach( (background) => {
@@ -4218,9 +4228,19 @@ class BlurPopupMenus extends BlurBase {
             let pTop = themeNode.get_padding(St.Side.TOP);
             let pBottom = themeNode.get_padding(St.Side.BOTTOM);
             let bm = menu.box.get_margin();
-            this._applyBackgroundClip(this._background, this._viewport,
-               actor.x+bm.left+pLeft, actor.y+bm.top+pTop,
-               actor.width-(bm.left+bm.right+pLeft+pRight), actor.height-(bm.top+bm.bottom+pTop+pBottom));
+            let width = actor.width-(bm.left+bm.right+pLeft+pRight);
+            let height = actor.height-(bm.top+bm.bottom+pTop+pBottom);
+            this._applyBackgroundClip(this._background, this._viewport, actor.x+bm.left+pLeft, actor.y+bm.top+pTop, width, height);
+            // An animated menu opens with a zero size clip (see _onOpenStateChanged()), so the Dynamic blur
+            // has no window clones yet. _applyBackgroundClip() only updates the clones on idle, which is
+            // after this frame is painted (and idles can be held off for several frames while the open
+            // animation runs), so the menu would show the blurred wallpaper alone until then. Create the
+            // clones for the first real clip right now so they are in the first frame the menu is drawn.
+            if (this._initialClonesPending && width > 0 && height > 0) {
+               this._initialClonesPending = false;
+               if (cloneManager)
+                  cloneManager.backgroundClipChangedNow(this._background);
+            }
          } else {
             this._applyBackgroundClip(this._background, this._viewport, 0, 0, 0, 0);
          }
@@ -4296,6 +4316,8 @@ class BlurPopupMenus extends BlurBase {
          // If Dynamic Blurring is enabled, create window clones and add them to the background
          if (isDynamicBlurType(blurType)) {
             this._createDynamicEffect(this._background);
+            // With a zero size clip no clones were created, _setClip() must create them with the first real clip
+            this._initialClonesPending = menu.animating;
          }
 
          // Now that the menu is open we need to know if new actors are added so we can check for accent elements
@@ -4452,6 +4474,7 @@ class BlurPopupMenus extends BlurBase {
          if (this._viewport) this._viewport.hide();
          debugMsg( "blur actor hidden" );
          this._currentMenu = null;
+         this._initialClonesPending = false;
          // In case we are using Dynamic Blur, destroy it
          this._destroyDynamicEffect(this._background);
       }
