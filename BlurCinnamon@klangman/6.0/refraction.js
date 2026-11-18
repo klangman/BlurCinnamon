@@ -6,14 +6,23 @@ const GLib = imports.gi.GLib;
 const St = imports.gi.St;
 const Clutter = imports.gi.Clutter;
 
-const Utils = require('./utils.js');
-const DualKawaseBlur = require('./dual_kawase_blur');
-const EffectBase = require('./effect_base.js');
+// Cinnamon 6.8+ deprecates require() in favour of the xlet's own importer (which only exposes
+// top-level var/function names). Older Cinnamon has no getCurrentExtension(), so fall back to
+// require() there - and when loaded outside of Cinnamon (no global), as before.
+const Me = (typeof global !== 'undefined' && imports.ui.extension.getCurrentExtension) ?
+              imports.ui.extension.getCurrentExtension() : null;
+function importLocal(name) {
+   return Me ? Me.imports[name] : require("./" + name);
+}
+
+const Utils = importLocal("utils");
+const DualKawaseBlur = importLocal("dual_kawase_blur");
+const EffectBase = importLocal("effect_base");
 
 const SHADER_FILENAME = 'refraction.glsl';
 
 const CLIP_STABILIZE_EPSILON = 1.0;
-const MAX_BLUR_RADIUS = 48.0;
+var MAX_BLUR_RADIUS = 48.0;
 
 const DEFAULT_PARAMS = {
     strength: 0.42,
@@ -109,7 +118,7 @@ function get_shader_value(name, value) {
     return float_value;
 }
 
-const RefractionEffect = new GObject.registerClass({
+var RefractionEffect = new GObject.registerClass({
         GTypeName: `RefractionEffect_${Math.floor(Math.random() * 100000) + 1}`,
         Properties: {
             'strength': GObject.ParamSpec.double(
