@@ -1070,8 +1070,13 @@ function cancelWindowCloneUpdate(background) {
 //
 // Clip updates call this on every frame of a window drag or a panel animation, so keep at most one pending
 // update per background: further calls before it runs only record the latest desktopOnly.
-function cloneWindowsForBackground(background, desktopOnly) {
-  if (background._blurCinnamonName === "OsdWindow") {
+//
+// beforeRedraw: update in a BEFORE_REDRAW later instead of on idle, so the change is in the next frame drawn.
+// A redraw has priority over an idle, so the idle runs after that frame (i.e. a window raised above a
+// blurred one is missing from the blur for a frame). A later is outside "notify::focus-window", and Muffin
+// syncs the stack in an earlier later of the same frame, so sort_windows_by_stacking() is right by then.
+function cloneWindowsForBackground(background, desktopOnly, beforeRedraw = false) {
+  if (background._blurCinnamonName === "OsdWindow" || beforeRedraw) {
       if (!background._blurCinnamonWinClones || background._blurCinnamonCloneUpdateId)
           return;
       background._blurCinnamonCloneUpdateId = Meta.later_add(Meta.LaterType.BEFORE_REDRAW, () => {
@@ -1511,7 +1516,7 @@ class CloneManager {
          if (background._blurCinnamonMetaWindowOwner === window) {
             // This background is for the new focused window, we might need to create any number of clones for this background
             debugMsg( "Cloning windows because a blurred window has received the focus" );
-            cloneWindowsForBackground(background, background._blurCinnamonDesktopOnly);
+            cloneWindowsForBackground(background, background._blurCinnamonDesktopOnly, true);
          } else {
             if (background._blurCinnamonWinClones) {
                let dimmer = background._blurCinnamonDimmer;
@@ -1524,7 +1529,7 @@ class CloneManager {
                         // This background is for an application window. The focused window is usually raised above it now,
                         // but not above a keep-above owner, so recheck the stacking order instead of deleting the clone
                         debugMsg( "Rechecking window background clones because the clone's window has the focus now" );
-                        cloneWindowsForBackground(background, background._blurCinnamonDesktopOnly);
+                        cloneWindowsForBackground(background, background._blurCinnamonDesktopOnly, true);
                      } else {
                         // This background is for a non-window element (i.e panel, notification, tooltip etc), so this clone now needs to be on top of all other clones
                         debugMsg( "Moving clone to top due to focus change" );
