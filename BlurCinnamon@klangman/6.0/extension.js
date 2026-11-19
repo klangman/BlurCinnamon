@@ -5809,7 +5809,7 @@ class BlurApplications extends BlurBase {
       data.setClipLaterId = Meta.later_add(Meta.LaterType.BEFORE_REDRAW, () => {
          data.setClipLaterId = 0;
          if (compositor._blurCinnamonDataWindow === data) {
-            this._setClip(compositor);
+            this._setClip(compositor, false, true);
             if (compositor.get_transition("x") || compositor.get_transition("y"))
                this._queueSetClip(compositor);
          }
@@ -5847,7 +5847,12 @@ class BlurApplications extends BlurBase {
    // blur then covers the window however the actor draws it. What the blur shows undoes the actor's
    // transform instead (see _stageTransform()), so that what is behind the window stays put on the
    // screen while the window animates over it.
-   _setClip(compositor, showNow = false) {
+   //
+   // fromLater: called from a BEFORE_REDRAW later, where the window clones can be brought up to date
+   // right away (see CloneManager.backgroundClipChangedNow()). The idle that backgroundClipChanged()
+   // uses is held off for as long as an animation keeps drawing frames, so a window's blur, which now
+   // stays on while the window animates (i.e. unminimize), would show the bare wallpaper until then.
+   _setClip(compositor, showNow = false, fromLater = false) {
       if (compositor._blurCinnamonDataWindow) {
          let data = compositor._blurCinnamonDataWindow;
          this._updateRect(compositor);
@@ -5876,7 +5881,7 @@ class BlurApplications extends BlurBase {
                // one, so the window being shown stays invisible (i.e. Guake after F12)
                Meta.later_add(Meta.LaterType.BEFORE_REDRAW, () => {
                   if (compositor._blurCinnamonDataWindow === data)
-                     this._setClip(compositor, true);
+                     this._setClip(compositor, true, true);
                   return false;
                });
             }
@@ -5951,7 +5956,7 @@ class BlurApplications extends BlurBase {
             }
          }
          if (cloneManager)
-            cloneManager.backgroundClipChanged(data.background);
+            fromLater ? cloneManager.backgroundClipChangedNow(data.background) : cloneManager.backgroundClipChanged(data.background);
       }
    }
 
