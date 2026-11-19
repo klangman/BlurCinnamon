@@ -672,8 +672,20 @@ function disconnectArtifactMitigation(windowClone) {
 }
 
 function getWindowCloneRect(metaWindow, background) {
-   if (background._blurCinnamonName !== "OsdWindow")
-      return metaWindow.get_buffer_rect();
+   if (background._blurCinnamonName !== "OsdWindow") {
+      let rect = metaWindow.get_buffer_rect();
+      // For a window's blur to stay on while a workspace switch slides the windows, the windows in
+      // it have to be where they are drawn now, not where they will end up. Only a window's position
+      // is followed: a clone draws its source without the source's transform, so a window scaled
+      // by its own animation keeps its buffer rect, and a translation isn't followed either.
+      // The other backgrounds (panels, menus, ...) place their clones as they always did.
+      let actor = metaWindow.get_compositor_private();
+      if (background._blurCinnamonMetaWindowOwner && actor && actor.scale_x === 1 && actor.scale_y === 1) {
+         let [x, y] = _stagePosition(actor);
+         return { x: x, y: y, width: rect.width, height: rect.height };
+      }
+      return rect;
+   }
 
    const compositor = metaWindow.get_compositor_private();
    if (!compositor || !compositor.get_stage())
@@ -1245,6 +1257,10 @@ function getCubeNotifier() {
    return notifier;
 }
 
+// The window manager signals, besides "switch-workspace", after which Cinnamon may move a window actor with a
+// transition of x or y (e.g. the "fly" effects). Each is emitted with that actor.
+const WINDOW_EFFECT_SIGNALS = ["map", "minimize", "unminimize", "destroy"];
+
 // Manage the window clones that are attached to blurred backgrounds when Dynamic Blurring is enabled on one or more components.
 // This will create and delete window clones as needed based on whether or not there is any overlap between a window and the
 // blurred background clip regions. Also tracks windows as they appear, disappear or move and makes the appropriate changes
@@ -1257,7 +1273,14 @@ class CloneManager {
       this._activeWorkspaceIdx = global.workspace_manager.get_active_workspace_index();
 
       this._signalManager.connect(global.screen, "window-added", (screen, metaWindow, monitor) => this._onWindowAppeared(metaWindow) );
-      this._signalManager.connect(global.window_manager, "switch-workspace", () => this._updateCurrentWorkspace() );
+      this._signalManager.connect(global.window_manager, "switch-workspace", () => this._onSwitchWorkspace() );
+      for (let signal of WINDOW_EFFECT_SIGNALS) {
+         this._signalManager.connect(global.window_manager, signal, (wm, actor) => {
+            let metaWindow = actor.get_meta_window();
+            if (metaWindow && metaWindow._blurCinnamonAllocEventID)
+               this._queueAllocationChanged(metaWindow);
+         });
+      }
       this._signalManager.connect(global.display, "notify::focus-window", () => this._onFocusChanged() );
       this._signalManager.connect(global, 'scale-changed', () => this._uiScaleChanged());
       this._setupWindowListeners();
@@ -1545,6 +1568,16 @@ class CloneManager {
       });
    }
 
+   // Cinnamon is about to slide the windows, or has just started to (see _queueAllocationChanged())
+   _onSwitchWorkspace() {
+      this._updateCurrentWorkspace();
+      for (let compositor of global.get_window_actors()) {
+         let metaWindow = compositor.get_meta_window();
+         if (metaWindow._blurCinnamonAllocEventID)
+            this._queueAllocationChanged(metaWindow);
+      }
+   }
+
    _updateCurrentWorkspace() {
        let currentWs = global.workspace_manager.get_active_workspace_index();
        if (currentWs === this._activeWorkspaceIdx)
@@ -1597,14 +1630,22 @@ class CloneManager {
       delete metaWindow._blurCinnamonSizeEventID;
    }
 
-   // At most one _allocationChanged() per window per frame
+   // At most one _allocationChanged() per window per frame.
+   // A transition of an allocated actor's x or y, as in a workspace switch or a "fly" effect, only
+   // notifies the new position from inside the relayout, and a call queued there runs a frame late. So
+   // this is queued when one may begin (see WINDOW_EFFECT_SIGNALS), and once queued it runs on every
+   // frame of such a transition.
    _queueAllocationChanged(metaWindow) {
       if (metaWindow._blurCinnamonAllocLaterId)
          return;
       metaWindow._blurCinnamonAllocLaterId = Meta.later_add(Meta.LaterType.BEFORE_REDRAW, () => {
          delete metaWindow._blurCinnamonAllocLaterId;
-         if (metaWindow._blurCinnamonAllocEventID && metaWindow.get_compositor_private())
+         let compositor = metaWindow.get_compositor_private();
+         if (metaWindow._blurCinnamonAllocEventID && compositor) {
             this._allocationChanged(metaWindow);
+            if (compositor.get_transition("x") || compositor.get_transition("y"))
+               this._queueAllocationChanged(metaWindow);
+         }
          return false;
       });
    }
@@ -1615,6 +1656,11 @@ class CloneManager {
             cloneWindowsForBackground(background, background._blurCinnamonDesktopOnly);
             return;
          }
+         // A closing window has left the stacking order, so the other windows of its layer would count
+         // as above it and lose their clones: the blur keeps the clones it has until the window is gone
+         let owner = background._blurCinnamonMetaWindowOwner;
+         if (owner && !owner.get_compositor_private())
+            return;
          const rect = getWindowCloneRect(metaWindow, background);
          let [blurX, blurY, blurWidth, blurHeight] = getBackgroundClip(background);
          let blurX2 = blurX + blurWidth;
