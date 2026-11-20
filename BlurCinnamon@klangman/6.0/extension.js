@@ -519,25 +519,49 @@ function getViewportMargin(viewport) {
    return Math.ceil(effect.sample_reach) + VIEWPORT_EDGE_PAD;
 }
 
-// The visible rect grown by margin on every side, then cut to the stage, as [x, y, width, height].
+// The area a blur over the given visible rect may sample, as [x, y, width, height]: the box around the monitors
+// the rect is on, or the whole stage when it is on none of them. The wallpaper is a single stage-sized image,
+// so a blur that samples past the edge of its monitor picks up the wallpaper of the monitor next to it. For a
+// rect on two monitors that don't line up, the box also takes in some of the stage that neither shows. Less
+// than half a pixel on a monitor doesn't count: the rect of a window that is being animated isn't exact.
+function getSamplingBounds(x, y, width, height) {
+   let x1 = Infinity, y1 = Infinity, x2 = -Infinity, y2 = -Infinity;
+   for (let monitor of Main.layoutManager.monitors) {
+      let monitorX2 = monitor.x + monitor.width;
+      let monitorY2 = monitor.y + monitor.height;
+      if (rectOverlap(x + 0.5, y + 0.5, x + width - 0.5, y + height - 0.5, monitor.x, monitor.y, monitorX2, monitorY2)) {
+         x1 = Math.min(x1, monitor.x);
+         y1 = Math.min(y1, monitor.y);
+         x2 = Math.max(x2, monitorX2);
+         y2 = Math.max(y2, monitorY2);
+      }
+   }
+   if (x1 === Infinity)
+      return [0, 0, global.stage.width, global.stage.height];
+   return [x1, y1, x2 - x1, y2 - y1];
+}
+
+// The visible rect grown by margin on every side, then cut to the box around its monitors, as [x, y, width, height].
 // Nothing outside the stage is ever cloned, so any part of the viewport out there would be transparent.
 // The blur would then mix that transparency into the pixels near the screen edge, and every inner pass
 // of the effect chain (blur passes, desaturate) stores partial alpha as a*a (see SNIPPET_CODE in
 // effect_base.js), compounding pass after pass. The final pass then lets the unblurred scene behind show
 // through over the blurred colour: a bright, glowing band along the screen edge wherever a window hangs
-// off the screen (worst with Dual Kawase, which has the most passes). Cut to the stage, the FBO holds
-// only real, opaque content and the shaders' own edge clamp applies at the screen edge, as it does for a
-// panel there. The corner effect's clip stays the full visible rect, so off-screen corners stay off screen.
-// stage is the rect to cut to, in the coordinates of x and y: the stage, unless those aren't stage coordinates.
-function getExpandedRect(x, y, width, height, margin, stage = [0, 0, global.stage.width, global.stage.height]) {
-   if (![x, y, width, height, margin, ...stage].every(Number.isFinite) || width <= 0 || height <= 0)
+// off the screen (worst with Dual Kawase, which has the most passes). Cut to its monitors (see
+// getSamplingBounds()), the FBO holds only real, opaque content, and the shaders' own edge clamp applies at
+// their edges, including an edge shared with another monitor, so the blur doesn't take in that monitor's
+// wallpaper. The corner effect's clip stays the full visible rect, so off-screen corners stay off screen.
+// bounds is the rect to cut to, in the coordinates of x and y: the rect's sampling bounds, unless those
+// aren't stage coordinates.
+function getExpandedRect(x, y, width, height, margin, bounds = getSamplingBounds(x, y, width, height)) {
+   if (![x, y, width, height, margin, ...bounds].every(Number.isFinite) || width <= 0 || height <= 0)
       return [0, 0, 0, 0];
 
    margin = Math.max(0, margin);
-   let x1 = Math.max(Math.ceil(stage[0]), Math.floor(x - margin));
-   let y1 = Math.max(Math.ceil(stage[1]), Math.floor(y - margin));
-   let x2 = Math.min(Math.floor(stage[0] + stage[2]), Math.ceil(x + width + margin));
-   let y2 = Math.min(Math.floor(stage[1] + stage[3]), Math.ceil(y + height + margin));
+   let x1 = Math.max(Math.ceil(bounds[0]), Math.floor(x - margin));
+   let y1 = Math.max(Math.ceil(bounds[1]), Math.floor(y - margin));
+   let x2 = Math.min(Math.floor(bounds[0] + bounds[2]), Math.ceil(x + width + margin));
+   let y2 = Math.min(Math.floor(bounds[1] + bounds[3]), Math.ceil(y + height + margin));
 
    // Entirely off the stage: nothing to show
    if (x2 <= x1 || y2 <= y1)
@@ -931,19 +955,19 @@ function _frameInActorCoordinates(metaWindow, actor, lastRect) {
    return { x: frameRect.x - bufferRect.x, y: frameRect.y - bufferRect.y, width: frameRect.width, height: frameRect.height };
 }
 
-// The stage in a window actor's coordinates (see _stageTransform()), as [x, y, width, height], for
+// A stage rect in a window actor's coordinates (see _stageTransform()), as [x, y, width, height], for
 // getExpandedRect() to cut a viewport inside that actor to. Muffin leaves part of an effect's texture
 // undrawn when the texture is larger than the stage (see Utils.extendOffscreenViewport()), which a
 // viewport inside a scaled-down actor could be. So the rect is never larger than the stage itself: it
-// is then the part of the stage around (centerX, centerY).
-function _stageInActorCoordinates([ox, oy, sx, sy], centerX, centerY) {
+// is then the part of the given rect around (centerX, centerY).
+function _stageRectInActorCoordinates([ox, oy, sx, sy], [stageX, stageY, stageWidth, stageHeight], centerX, centerY) {
    let limit = (start, size, maxSize, center) => {
       if (size <= maxSize)
          return [start, size];
       return [Math.min(Math.max(center - maxSize / 2, start), start + size - maxSize), maxSize];
    };
-   let [x, width] = limit(-ox / sx, global.stage.width / sx, global.stage.width, centerX);
-   let [y, height] = limit(-oy / sy, global.stage.height / sy, global.stage.height, centerY);
+   let [x, width] = limit((stageX - ox) / sx, stageWidth / sx, global.stage.width, centerX);
+   let [y, height] = limit((stageY - oy) / sy, stageHeight / sy, global.stage.height, centerY);
    return [x, y, width, height];
 }
 
@@ -2408,6 +2432,7 @@ class BlurBase {
          let sceneClone = new Clutter.Clone({source: background, reactive: false});
          viewport.add_child(sceneClone);
          viewport._blurCinnamonSceneClone = sceneClone;
+         viewport._blurCinnamonDynamic = isDynamicBlurType(blurType);
          effectTarget = viewport;
       }
 
@@ -2492,9 +2517,9 @@ class BlurBase {
       return background._blurCinnamonDimmer;
    }
 
+   // Updates a background that has no viewport, which only None and Transparent use (see _wantsViewport()), so
+   // there is no blur effect to update here: the types that blur are updated by _updateViewportEffects().
    _updateEffects(background, opacity, blendColor, blurType, radius, saturation) {
-      // Setup the blur effect properly
-      let curEffect = background.get_effect(BLUR_EFFECT_NAME);
       let cornerEffect = background.get_effect(CORNER_EFFECT_NAME);
       let desatEffect = background.get_effect(DESAT_EFFECT_NAME);
       let dynamicEffectActive = this._isDynamicEffectActive(background);
@@ -2529,52 +2554,7 @@ class BlurBase {
          if (desatEffect) { background.add_effect_with_name( DESAT_EFFECT_NAME, desatEffect ); }
          this.parent.add_child(background);
       }
-      if (blurType === BlurType.None && curEffect) {
-         background.remove_effect(curEffect);
-         this._releaseBlurEffect(curEffect);
-      } else if (blurType === BlurType.Simple && !(curEffect instanceof Clutter.BlurEffect)) {
-         if (curEffect) {
-            background.remove_effect(curEffect);
-            this._releaseBlurEffect(curEffect);
-         }
-         let blurEffect =  this._aquireSimpleBlurEffect();
-         background.add_effect_with_name( BLUR_EFFECT_NAME, blurEffect );
-      } else if ((blurType === BlurType.Gaussian || blurType === BlurType.DynamicBlur) && !(curEffect instanceof GaussianBlur.GaussianBlurEffect)) {
-         if (curEffect) {
-            background.remove_effect(curEffect);
-            this._releaseBlurEffect(curEffect);
-         }
-         let blurEffect = this._aquireGaussianEffect(radius);
-         background.add_effect_with_name( BLUR_EFFECT_NAME, blurEffect );
-      } else if ((blurType === BlurType.MonteCarlo || blurType === BlurType.DynamicMC) && !(curEffect instanceof MonteCarloBlur.MonteCarloBlurEffect)) {
-         if (curEffect) {
-            background.remove_effect(curEffect);
-            this._releaseBlurEffect(curEffect);
-         }
-         let blurEffect = this._aquireMonteCarloEffect(radius);
-         background.add_effect_with_name( BLUR_EFFECT_NAME, blurEffect );
-      } else if ((blurType === BlurType.DualKawase || blurType === BlurType.DynamicDK) && !(curEffect instanceof DualKawaseBlur.DualFilteringBlurEffect)) {
-         if (curEffect) {
-            background.remove_effect(curEffect);
-            this._releaseBlurEffect(curEffect);
-         }
-         let blurEffect = this._aquireDualKawaseEffect(radius);
-         background.add_effect_with_name( BLUR_EFFECT_NAME, blurEffect );
-      } else if (isLiquidGlassBlurType(blurType) && !(curEffect instanceof Refraction.RefractionEffect)) {
-         if (curEffect) {
-            background.remove_effect(curEffect);
-            this._releaseBlurEffect(curEffect);
-         }
-         let blurEffect = this._aquireLiquidGlassEffect(radius);
-         background.add_effect_with_name( BLUR_EFFECT_NAME, blurEffect );
-      } else if (blurType === BlurType.Transparent && Meta.is_wayland_compositor() && curEffect) {
-         // Wayland keeps the same actor when switching to Transparent, so just drop the blur
-         background.remove_effect(curEffect);
-         this._releaseBlurEffect(curEffect);
-      } else if (blurType === BlurType.Transparent && background instanceof Meta.X11BackgroundActor) {
-         if (curEffect) {
-            background.remove_effect(curEffect);
-         }
+      if (blurType === BlurType.Transparent && background instanceof Meta.X11BackgroundActor) {
          let dimmer = background._blurCinnamonDimmer;
          background._blurCinnamonGroup.remove_child(background._blurCinnamonDimmer);
          this.parent.remove_child(background);
@@ -2584,8 +2564,8 @@ class BlurBase {
          let stageWidth = global.stage.width;
          let stageHeight = global.stage.height;
          background = new Clutter.Actor({width: stageWidth, height: stageHeight});
-         // Same group/dimmer layout as _createBackgroundAndEffects, so switching back to a blurred
-         // type (which removes the dimmer from _blurCinnamonGroup) works
+         // Same group/dimmer layout as _createBackgroundAndEffects, so switching back to None
+         // (which removes the dimmer from _blurCinnamonGroup) works
          let group = new St.Group({clip_to_allocation: true});
          group.set_size(stageWidth, stageHeight);
          group.add_child(dimmer);
@@ -2598,24 +2578,8 @@ class BlurBase {
          if (desatEffect) { background.add_effect_with_name( DESAT_EFFECT_NAME, desatEffect ); }
          this.parent.add_actor(background);
       }
-      curEffect = this._getBlurEffect(background);
-      // Adjust the blur effects
-      if ((curEffect instanceof GaussianBlur.GaussianBlurEffect || curEffect instanceof MonteCarloBlur.MonteCarloBlurEffect || curEffect instanceof DualKawaseBlur.DualFilteringBlurEffect) && curEffect.radius != radius) {
-         curEffect.radius = radius;
-      }
-      // If Monte Carlo, update it's settings
-      if (curEffect instanceof MonteCarloBlur.MonteCarloBlurEffect) {
-         curEffect.iterations = settings.montecarloIterations;
-         curEffect.use_base_pixel = settings.montecarloUseBasePixel;
-         curEffect.prefer_closer_pixels = settings.montecarloPerferCloserPixels;
-      }
-      // If Liquid Glass, update it's settings
-      if (curEffect instanceof Refraction.RefractionEffect) {
-         applyLiquidGlassSettings(curEffect, radius);
-      }
-      this._syncLiquidGlassCornerRadius(background);
       // Setup/Adjust the desaturation effect
-      curEffect = background.get_effect(DESAT_EFFECT_NAME);
+      let curEffect = background.get_effect(DESAT_EFFECT_NAME);
       if (curEffect && saturation === 100) {
          background.remove_effect(curEffect);
       } else if (curEffect && curEffect.factor !== (100-saturation)/100) {
@@ -2654,30 +2618,37 @@ class BlurBase {
    // Generic equivalent of BlurBase._updateEffects(), but for a background that's been wrapped in a
    // viewport (see _createBackgroundAndEffects's useViewport): the blur/corner/desaturate effects
    // live on viewport, not background, so _updateEffects() itself must never be called on a wrapped
-   // background directly - it looks up BLUR_EFFECT_NAME etc. on the background actor it's given,
-   // and finding none there (they're all on viewport instead) would make it create a *second*,
-   // duplicate set of effects on background alongside viewport's real ones.
+   // background directly - it looks up DESAT_EFFECT_NAME on the background actor it's given, and
+   // finding none there (it's on viewport instead) would make it add a *second* desaturate effect
+   // on background alongside viewport's real one.
    _updateViewportEffects(background, viewport, opacity, blendColor, blurType, radius, saturation) {
       let curEffect = this._getBlurEffect(viewport);
-      if (blurType === BlurType.DynamicBlur && !(curEffect instanceof GaussianBlur.GaussianBlurEffect)) {
+      let effectType = staticBlurType(blurType);
+      if (effectType === BlurType.Simple && !(curEffect instanceof Clutter.BlurEffect)) {
+         if (curEffect) {
+            viewport.remove_effect(curEffect);
+            this._releaseBlurEffect(curEffect);
+         }
+         viewport.add_effect_with_name( BLUR_EFFECT_NAME, this._aquireSimpleBlurEffect() );
+      } else if (effectType === BlurType.Gaussian && !(curEffect instanceof GaussianBlur.GaussianBlurEffect)) {
          if (curEffect) {
             viewport.remove_effect(curEffect);
             this._releaseBlurEffect(curEffect);
          }
          viewport.add_effect_with_name( BLUR_EFFECT_NAME, this._aquireGaussianEffect(radius) );
-      } else if (blurType === BlurType.DynamicMC && !(curEffect instanceof MonteCarloBlur.MonteCarloBlurEffect)) {
+      } else if (effectType === BlurType.MonteCarlo && !(curEffect instanceof MonteCarloBlur.MonteCarloBlurEffect)) {
          if (curEffect) {
             viewport.remove_effect(curEffect);
             this._releaseBlurEffect(curEffect);
          }
          viewport.add_effect_with_name( BLUR_EFFECT_NAME, this._aquireMonteCarloEffect(radius) );
-      } else if (blurType === BlurType.DynamicDK && !(curEffect instanceof DualKawaseBlur.DualFilteringBlurEffect)) {
+      } else if (effectType === BlurType.DualKawase && !(curEffect instanceof DualKawaseBlur.DualFilteringBlurEffect)) {
          if (curEffect) {
             viewport.remove_effect(curEffect);
             this._releaseBlurEffect(curEffect);
          }
          viewport.add_effect_with_name( BLUR_EFFECT_NAME, this._aquireDualKawaseEffect(radius) );
-      } else if (blurType === BlurType.DynamicLG && !(curEffect instanceof Refraction.RefractionEffect)) {
+      } else if (effectType === BlurType.LiquidGlass && !(curEffect instanceof Refraction.RefractionEffect)) {
          if (curEffect) {
             viewport.remove_effect(curEffect);
             this._releaseBlurEffect(curEffect);
@@ -2784,7 +2755,18 @@ class BlurBase {
    _needsBackgroundRebuild(background, blurType, wantsViewport) {
       const changesBackgroundKind = !Meta.is_wayland_compositor() &&
          ((background instanceof Meta.X11BackgroundActor) !== (blurType !== BlurType.Transparent));
-      return !!background._blurCinnamonViewport !== wantsViewport || changesBackgroundKind;
+      return this._viewportMismatch(background, blurType, wantsViewport) || changesBackgroundKind;
+   }
+
+   // Whether background has to be rebuilt to gain or lose its viewport, or because the viewport was made for a
+   // static blur type and blurType is a dynamic one, or the other way around. Only a dynamic type's background
+   // is registered with the CloneManager and has windows cloned into it, so switching between the two rebuilds
+   // the background.
+   _viewportMismatch(background, blurType, wantsViewport) {
+      let viewport = background._blurCinnamonViewport;
+      if (!viewport)
+         return wantsViewport;
+      return !wantsViewport || viewport._blurCinnamonDynamic !== isDynamicBlurType(blurType);
    }
 
    // Generic viewport teardown helper for every consumer besides windows (BlurApplications does
@@ -2811,13 +2793,13 @@ class BlurBase {
       background.destroy();
    }
 
-   // Whether blurType is one of the three Dynamic* types - the only types _createBackgroundAndEffects's
-   // useViewport is meant for (see BlurApplications._blurWindow's own useViewport computation for the
-   // full rationale: correctness for Dynamic types specifically, since only those clone windows via
-   // CloneManager and so are the only ones that can hit the wallpaper-bleed bug viewport-wrapping
-   // fixes - plus the same FBO-shrink GPU/CPU win as a bonus).
+   // Whether blurType blurs, which is what _createBackgroundAndEffects's useViewport is meant for (see
+   // BlurApplications._blurWindow's own useViewport computation for the full rationale). A blur reads the
+   // pixels around each pixel, and the viewport keeps that within the visible rect plus the blur's margin,
+   // cut to its monitors (see getExpandedRect()); it also shrinks the FBOs from the whole stage down to that
+   // area. None and Transparent read nothing around a pixel, so they keep the plain background.
    _wantsViewport(blurType) {
-      return isDynamicBlurType(blurType);
+      return blurType !== BlurType.None && blurType !== BlurType.Transparent;
    }
 
    // viewport (see _createBackgroundAndEffects's useViewport): when the caller's background was
@@ -4200,11 +4182,12 @@ class BlurPanels extends BlurBase {
                let blurredPanel = panels[i].__blurredPanel;
                if (blurredPanel) {
                   let wantsViewport = this._wantsViewport(blurType);
-                  if (!!blurredPanel.viewport !== wantsViewport) {
-                     // Whether this panel's background needs to be wrapped in a viewport (see
-                     // _createBackgroundAndEffects's useViewport) has changed - rebuild rather than
-                     // migrate the actor tree in place, the same way BlurApplications.updateEffects()
-                     // rebuilds for the equivalent transition.
+                  if (this._viewportMismatch(blurredPanel.background, blurType, wantsViewport)) {
+                     // This panel's background has to gain or lose its viewport (see
+                     // _createBackgroundAndEffects's useViewport), or needs one made for the other kind
+                     // of blur (see _viewportMismatch()) - rebuild rather than migrate the actor tree in
+                     // place, the same way BlurApplications.updateEffects() rebuilds for the equivalent
+                     // transition.
                      this._unblurPanel(panels[i]);
                      this._blurPanel(panels[i]);
                      blurredPanel = panels[i].__blurredPanel;
@@ -4636,13 +4619,14 @@ class BlurPopupMenus extends BlurBase {
       let accentOpacity = settings.popupAccentOpacity;
 
       let wantsViewport = this._wantsViewport(blurType);
-      if (!!this._viewport !== wantsViewport) {
-         // Whether the shared menu background needs to be wrapped in a viewport (see
-         // _createBackgroundAndEffects's useViewport) has changed - rebuild rather than migrate
-         // the actor tree in place, the same way BlurApplications.updateEffects() rebuilds for the
-         // equivalent transition. Corner radius is rebuilt at the same default-10 the constructor
-         // uses - _onOpenStateChanged() re-derives the real radius from the menu's theme node the
-         // next time a menu opens, exactly as it already does after construction.
+      if (this._viewportMismatch(this._background, blurType, wantsViewport)) {
+         // The shared menu background has to gain or lose its viewport (see
+         // _createBackgroundAndEffects's useViewport), or needs one made for the other kind of blur
+         // (see _viewportMismatch()) - rebuild rather than migrate the actor tree in place, the
+         // same way BlurApplications.updateEffects() rebuilds for the equivalent transition. Corner
+         // radius is rebuilt at the same default-10 the constructor uses - _onOpenStateChanged()
+         // re-derives the real radius from the menu's theme node the next time a menu opens,
+         // exactly as it already does after construction.
          this._destroyBackgroundAndViewport(this._background, getBackgroundParent());
          this._background = this._createBackgroundAndEffects(opacity, blendColor, blurType, radius, saturation, getBackgroundParent(), 10, true, true, wantsViewport);
          this._background._blurCinnamonName = "Menus";
@@ -4986,13 +4970,14 @@ class BlurNotifications extends BlurBase {
 
       this._blurType = blurType;
       let wantsViewport = this._wantsViewport(blurType);
-      if (!!this._viewport !== wantsViewport) {
-         // Whether the shared notification background needs to be wrapped in a viewport (see
-         // _createBackgroundAndEffects's useViewport) has changed - rebuild rather than migrate
-         // the actor tree in place, the same way BlurApplications.updateEffects() rebuilds for the
-         // equivalent transition. Corner radius is rebuilt at the same default-10 the constructor
-         // uses - the block below re-derives the real radius from the notification's theme node
-         // right after, exactly as it already did after construction.
+      if (this._viewportMismatch(this._background, blurType, wantsViewport)) {
+         // The shared notification background has to gain or lose its viewport (see
+         // _createBackgroundAndEffects's useViewport), or needs one made for the other kind of blur
+         // (see _viewportMismatch()) - rebuild rather than migrate the actor tree in place, the
+         // same way BlurApplications.updateEffects() rebuilds for the equivalent transition. Corner
+         // radius is rebuilt at the same default-10 the constructor uses - the block below
+         // re-derives the real radius from the notification's theme node right after, exactly as it
+         // already did after construction.
          this._destroyBackgroundAndViewport(this._background, getBackgroundParent());
          this._background = this._createBackgroundAndEffects(opacity, blendColor, blurType, radius, saturation, getBackgroundParent(), 10, true, true, wantsViewport);
          this._background._blurCinnamonName = "Notifications";
@@ -5219,10 +5204,11 @@ class BlurTooltips extends BlurBase {
       let [opacity, blendColor, blurType, radius, saturation] = this._getSettings(settings.tooltipsOverride);
       // Settings are re-read fresh on every show (tooltips are ephemeral, unlike the classes with a
       // live updateEffects() dispatcher), so a blur-type change since the last show is handled right
-      // here: rebuild rather than migrate the actor tree in place whenever whether this background
-      // needs to be wrapped in a viewport (see _createBackgroundAndEffects's useViewport) changes.
+      // here: rebuild rather than migrate the actor tree in place whenever this background has to
+      // gain or lose its viewport (see _createBackgroundAndEffects's useViewport), or needs one made
+      // for the other kind of blur (see _viewportMismatch()).
       let wantsViewport = this._wantsViewport(blurType);
-      if (!!this._viewport !== wantsViewport) {
+      if (this._viewportMismatch(this._background, blurType, wantsViewport)) {
          this._destroyBackgroundAndViewport(this._background, getBackgroundParent());
          this._background = this._createBackgroundAndEffects(opacity, blendColor, blurType, radius, saturation, getBackgroundParent(), 10, true, true, wantsViewport);
          this._background._blurCinnamonName = "Tooltips";
@@ -5547,7 +5533,10 @@ class BlurApplications extends BlurBase {
          // even when a window was really there - and it cuts the pixel count the blur has to
          // process from the whole monitor down to just the clip area, which is also a meaningful
          // GPU/CPU win.
-         let useViewport = (isDynamicBlurType(blurType)) && metaWindow.get_wm_class() !== "Plank";
+         //
+         // The static types use it too: without it, their FBOs are as large as the whole stage and
+         // the blur samples across the edge between two monitors (see getExpandedRect()).
+         let useViewport = this._wantsViewport(blurType) && metaWindow.get_wm_class() !== "Plank";
 
          // Create the effect(s) and add them to the window. background needs to sit at the bottom
          // of this window's compositor actor (index 0, below the window's own real content), and
@@ -5916,15 +5905,19 @@ class BlurApplications extends BlurBase {
             data.viewport._blurCinnamonSamplingRect = [rect.x, rect.y, rect.width, rect.height];
 
             let margin = getViewportMargin(data.viewport);
-            let stage = _stageInActorCoordinates(transform, rect.x + rect.width / 2, rect.y + rect.height / 2);
-            let [ex, ey, ew, eh] = getExpandedRect(rect.x, rect.y, rect.width, rect.height, margin, stage);
+            // The monitors the window is drawn on now, which an animation can change
+            let bounds = getSamplingBounds(ox + sx * rect.x, oy + sy * rect.y, sx * rect.width, sy * rect.height);
+            bounds = _stageRectInActorCoordinates(transform, bounds, rect.x + rect.width / 2, rect.y + rect.height / 2);
+            let [ex, ey, ew, eh] = getExpandedRect(rect.x, rect.y, rect.width, rect.height, margin, bounds);
             data.background.set_clip( ox + sx * ex, oy + sy * ey, sx * ew, sy * eh );
 
             // Title-bar-only blur: the margin below the title bar lies over this window's own opaque body,
             // and Muffin doesn't paint the parts of the windows underneath that it hides - not even through
             // our clones of them - so the blur would sample bare wallpaper there. Stop this window from
-            // culling the windows below it (see NoCullEffect) so the margin has real content.
-            this._setCullsWindowsBelow(compositor, !data.titlebarsOnly);
+            // culling the windows below it (see NoCullEffect) so the margin has real content. On X11 a
+            // static blur only shows the wallpaper, which Muffin doesn't cull, so it doesn't need that. (On
+            // Wayland the wallpaper can be a clone of a window too, which this doesn't handle.)
+            this._setCullsWindowsBelow(compositor, !(data.titlebarsOnly && data.viewport._blurCinnamonDynamic));
 
             // Size/position the viewport to the expanded rect, and offset its clone of the background
             // so the matching crop of the background/window-clone composite lands inside it. The
@@ -6037,7 +6030,7 @@ class BlurApplications extends BlurBase {
             if (!enabled) {
                this._unblurWindow(compositor);
             } else {
-               let wantsViewport = (isDynamicBlurType(blurType)) && windows[i].get_wm_class() !== "Plank";
+               let wantsViewport = this._wantsViewport(blurType) && windows[i].get_wm_class() !== "Plank";
                if (this._needsBackgroundRebuild(data.background, blurType, wantsViewport)) {
                   this._queueWindowRebuild(windows[i]);
                   continue;
@@ -6053,7 +6046,7 @@ class BlurApplications extends BlurBase {
                // may have changed along with the blur type or radius.
                this._updateWindowCorners(compositor, corner_radius, top, bottom);
                this._applyWindowOpacity(windows[i], window_opacity);
-               if (wantsViewport && !this._isDynamicEffectActive(data.background)) {
+               if (wantsViewport && isDynamicBlurType(blurType) && !this._isDynamicEffectActive(data.background)) {
                   this._createDynamicEffect(data.background, data.metaWindow);
                }
             }
