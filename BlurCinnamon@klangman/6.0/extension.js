@@ -2754,6 +2754,7 @@ class BlurBase {
 
       width = Math.max(0, width);
       height = Math.max(0, height);
+      const previousCloneClip = cloneManager && background._blurCinnamonWinClones ? getBackgroundClip(background) : null;
       if (viewport) {
          // Remember the visible rect so the margin can be re-derived if the blur radius/type changes
          viewport._blurCinnamonVisibleRect = [x, y, width, height];
@@ -2777,8 +2778,13 @@ class BlurBase {
             backgroundCornerEffect.clip = [x+2, y+2, Math.max(0, width-3), Math.max(0, height-3)];
          }
       }
-      if (cloneManager)
-         cloneManager.backgroundClipChanged(background);
+      if (cloneManager && background._blurCinnamonWinClones) {
+         // Window selection depends on the effective sampling rect, including the blur margin.
+         // Geometry and masks still update above even when the required window region is unchanged.
+         const cloneClip = getBackgroundClip(background);
+         if (!previousCloneClip || cloneClip.some((value, index) => value !== previousCloneClip[index]))
+            cloneManager.backgroundClipChanged(background);
+      }
    }
 
    _needsBackgroundRebuild(background, blurType, wantsViewport) {
@@ -4323,6 +4329,7 @@ class BlurPopupMenus extends BlurBase {
       super();
       debugMsg( "Constructing popup menu object" );
       this._menus = [];
+      this._reclipLaterId = 0;
       blurPopupMenusThis = this; // Make "this" available to monkey patched functions
       this.original_popupmenu_open = PopupMenu.PopupMenu.prototype.open;
       PopupMenu.PopupMenu.prototype.open = this._popupMenuOpen;
@@ -4366,6 +4373,7 @@ class BlurPopupMenus extends BlurBase {
          // If we applied effects to this menu in the past, remove the effects now
          let idx = blurPopupMenusThis._menus.indexOf(this);
          if (idx !== -1) {
+            blurPopupMenusThis._cancelAccentActorsScan(this);
             this.blurCinnamonSignalManager.disconnectAllSignals();
             delete this.blurCinnamonSignalManager;
             blurPopupMenusThis._restoreMenuStyle(this);
@@ -4375,8 +4383,62 @@ class BlurPopupMenus extends BlurBase {
       blurPopupMenusThis.original_popupmenu_open.call(this, animate);
    }
 
+   _cancelMenuReclip() {
+      if (this._reclipLaterId) {
+         Meta.later_remove(this._reclipLaterId);
+         this._reclipLaterId = 0;
+      }
+   }
+
+   _queueMenuReclip(menu) {
+      if (menu !== this._currentMenu || this._reclipLaterId)
+         return;
+
+      let laterId = 0;
+      const isCurrent = () => this._currentMenu === menu && this._reclipLaterId === laterId;
+      laterId = Meta.later_add(Meta.LaterType.BEFORE_REDRAW, () => {
+         if (!isCurrent()) return false;
+         try {
+            const actor = menu.actor;
+            if (!actor.visible) {
+               this._applyBackgroundClip(this._background, this._viewport, 0, 0, 0, 0);
+               if (isCurrent()) this._reclipLaterId = 0;
+               return false;
+            }
+            if (!actor.get_stage() || !actor.is_mapped())
+               return true;
+
+            const ready = this._setClip(menu);
+            if (!isCurrent()) return false;
+            if (!ready) return true;
+
+            // The initial clip is empty, so addBackground() cannot populate window clones yet.
+            // Populate them before this frame is painted instead of waiting for an idle.
+            // Pending work also includes window changes unrelated to the menu's geometry.
+            const background = this._background;
+            if (cloneManager && background._blurCinnamonWinClones && background._blurCinnamonRecloneId) {
+               Mainloop.source_remove(background._blurCinnamonRecloneId);
+               background._blurCinnamonRecloneId = 0;
+               cloneManager.backgroundClipChangedNow(background);
+            }
+            if (!isCurrent()) return false;
+            this._reclipLaterId = 0;
+            return false;
+         } catch (error) {
+            if (isCurrent()) {
+               this._reclipLaterId = 0;
+               this._applyBackgroundClip(this._background, this._viewport, 0, 0, 0, 0);
+            }
+            global.logError(error);
+            return false;
+         }
+      });
+      this._reclipLaterId = laterId;
+   }
+
    // Set the visible section of the background based on the size of the popup menu
    _setClip(menu){
+      const reclipLaterId = this._reclipLaterId;
       if (menu && this._currentMenu && menu === this._currentMenu) {
          let actor = menu.actor;
          if (actor.visible) {
@@ -4386,27 +4448,33 @@ class BlurPopupMenus extends BlurBase {
             let pTop = themeNode.get_padding(St.Side.TOP);
             let pBottom = themeNode.get_padding(St.Side.BOTTOM);
             let bm = menu.box.get_margin();
-            let width = actor.width-(bm.left+bm.right+pLeft+pRight);
-            let height = actor.height-(bm.top+bm.bottom+pTop+pBottom);
-            this._applyBackgroundClip(this._background, this._viewport, actor.x+bm.left+pLeft, actor.y+bm.top+pTop, width, height);
-            // An animated menu opens with a zero size clip (see _onOpenStateChanged()), so the Dynamic blur
-            // has no window clones yet. _applyBackgroundClip() only updates the clones on idle, which is
-            // after this frame is painted (and idles can be held off for several frames while the open
-            // animation runs), so the menu would show the blurred wallpaper alone until then. Create the
-            // clones for the first real clip right now so they are in the first frame the menu is drawn.
-            if (this._initialClonesPending && width > 0 && height > 0) {
-               this._initialClonesPending = false;
-               if (cloneManager)
-                  cloneManager.backgroundClipChangedNow(this._background);
-            }
+            // Read allocated bounds only after layout. The width/height properties
+            // may include CSS margins while a relayout is pending.
+            // BEFORE_REDRAW can run before Clutter's normal relayout. This helper completes
+            // pending layout here. Waiting for has_allocation() can stall throughout an animation.
+            // _setClip() runs from the scheduled callback, never directly inside allocation handlers.
+            const box = Cinnamon.util_get_transformed_allocation(actor);
+            const width = box.x2 - box.x1;
+            const height = box.y2 - box.y1;
+            if (![box.x1, box.y1, width, height].every(Number.isFinite) || width <= 0 || height <= 0)
+               return false;
+            // Completing layout can emit signals that close, reopen or replace this menu.
+            if (menu !== this._currentMenu || reclipLaterId !== this._reclipLaterId)
+               return false;
+            this._applyBackgroundClip(this._background, this._viewport,
+               box.x1+bm.left+pLeft, box.y1+bm.top+pTop,
+               width-(bm.left+bm.right+pLeft+pRight), height-(bm.top+bm.bottom+pTop+pBottom));
          } else {
             this._applyBackgroundClip(this._background, this._viewport, 0, 0, 0, 0);
          }
+         return true;
       }
+      return false;
    }
 
    _onOpenStateChanged(menu, open) {
       if (open) {
+         this._cancelAccentActorsScan(this._currentMenu);
          debugMsg( `Applying setting to new popup menu: ${menu}` );
          let [opacity, blendColor, blurType, radius, saturation] = this._getSettings(settings.popupOverride);
 
@@ -4459,14 +4527,13 @@ class BlurPopupMenus extends BlurBase {
             }
          }
 
+         this._cancelMenuReclip();
          this._currentMenu = menu;
-         if (menu.animating) {
-            // Make the background visible but zero size initially, let the paint signal re-clip the background as needed
-            this._applyBackgroundClip(this._background, this._viewport, 0, 0, 0, 0);
-         } else {
-            // Use the exact same clip-rect formula _setClip() uses for every later notify::allocation update
-            this._setClip(menu);
-         }
+         // Make the background visible but zero size initially, let the paint signal re-clip the background as needed
+         this._applyBackgroundClip(this._background, this._viewport, 0, 0, 0, 0);
+         // Use the exact same clip-rect formula _setClip() uses for every later notify::allocation update
+         // Schedule every open, even if the final allocation is unchanged and emits no notification.
+         this._queueMenuReclip(menu);
          this._background.show();
          if (this._viewport) this._viewport.show();
          debugMsg( "Blurred actor is now visible" );
@@ -4474,12 +4541,12 @@ class BlurPopupMenus extends BlurBase {
          // If Dynamic Blurring is enabled, create window clones and add them to the background
          if (isDynamicBlurType(blurType)) {
             this._createDynamicEffect(this._background);
-            // With a zero size clip no clones were created, _setClip() must create them with the first real clip
-            this._initialClonesPending = menu.animating;
          }
 
          // Now that the menu is open we need to know if new actors are added so we can check for accent elements
-         menu.blurCinnamonSignalManager.connect(menu.actor, 'queue-relayout', () => {this._findAccentActors(menu, menu.actor);} );
+         menu.blurCinnamonSignalManager.connect(menu.actor, 'queue-relayout', () => this._queueAccentActorsScan(menu) );
+      } else {
+         this._cancelAccentActorsScan(menu);
       }
    }
 
@@ -4490,13 +4557,18 @@ class BlurPopupMenus extends BlurBase {
    }
 
    _onDestroyed(menu) {
-      if (this._currentMenu === menu && this._background.is_visible()) {
-         // In some cases the Tween for the popupMenu close animation will not call its onComplete function
-         // and therefore no "menu-animated-closed" signal which would call _onClosed().
-         // In those cases we must unblur the popup menu, but the menu is already gone so we just hide the background.
-         debugMsg( "Unblurring on destroy" );
-         this._background.hide();
-         if (this._viewport) this._viewport.hide();
+      this._cancelAccentActorsScan(menu);
+      if (this._currentMenu === menu) {
+         this._cancelMenuReclip();
+         if (this._background.is_visible()) {
+            // In some cases the Tween for the popupMenu close animation will not call its onComplete function
+            // and therefore no "menu-animated-closed" signal which would call _onClosed().
+            // In those cases we must unblur the popup menu, but the menu is already gone so we just hide the background.
+            debugMsg( "Unblurring on destroy" );
+            this._background.hide();
+            if (this._viewport) this._viewport.hide();
+         }
+         this._currentMenu = null;
       }
       if (menu.blurCinnamonSignalManager) {
          menu.blurCinnamonSignalManager.disconnectAllSignals();
@@ -4532,19 +4604,21 @@ class BlurPopupMenus extends BlurBase {
 
    _applyActorStyle(actor, color) {
       let radius = 0;
-      if (!actor._blurCinnamonData) {
-         actor._blurCinnamonData = {original_entry_color: actor.get_background_color(), original_entry_style: actor.get_style(),
+      let style = actor.get_style();
+      if (!actor._blurCinnamonData || style !== actor._blurCinnamonData.applied_entry_style) {
+         actor._blurCinnamonData = {original_entry_color: actor.get_background_color(), original_entry_style: style,
                                     original_entry_class: actor.get_style_class_name(), original_entry_pseudo_class: actor.get_style_pseudo_class()};
-      } else {
-         let style = actor.get_style();
-         if (style.startsWith(actor._blurCinnamonData.original_entry_style) === false) {
-            actor._blurCinnamonData = {original_entry_color: actor.get_background_color(), original_entry_style: actor.get_style(),
-                                    original_entry_class: actor.get_style_class_name(), original_entry_pseudo_class: actor.get_style_pseudo_class()};
-         }
       }
 
+      // Preserve the original value, including null, for exact restoration.
+      let originalStyle = actor._blurCinnamonData.original_entry_style ?? "";
+      if (originalStyle.length > 0 && !originalStyle.trimEnd().endsWith(";"))
+         originalStyle += ";";
       let rgba = `rgba(${color.red}, ${color.green}, ${color.blue}, ${color.alpha/255.0})`
-      actor.set_style( actor._blurCinnamonData.original_entry_style + `background-gradient-direction: vertical; background-gradient-start: ${rgba}; background-gradient-end: ${rgba};`  );
+      let appliedStyle = originalStyle + (originalStyle.length > 0 ? " " : "") + `background-gradient-direction: vertical; background-gradient-start: ${rgba}; background-gradient-end: ${rgba};`;
+      // Identify CSS exactly so reapplication never rebases it
+      actor._blurCinnamonData.applied_entry_style = appliedStyle;
+      actor.set_style(appliedStyle);
       return;
    }
 
@@ -4572,6 +4646,35 @@ class BlurPopupMenus extends BlurBase {
       actor.set_style_class_name(orgStyleData.original_entry_class);
       actor.set_style_pseudo_class(orgStyleData.original_entry_pseudo_class);
       delete actor._blurCinnamonData;
+   }
+
+   _cancelAccentActorsScan(menu) {
+      if (menu && menu._blurCinnamonAccentLaterId) {
+         Meta.later_remove(menu._blurCinnamonAccentLaterId);
+         delete menu._blurCinnamonAccentLaterId;
+      }
+   }
+
+   // Coalesce content checks before painting; the initial discovery still runs synchronously on open
+   _queueAccentActorsScan(menu) {
+      if (menu !== this._currentMenu || !menu.isOpen || !settings.allowTransparentColorPopup || menu._blurCinnamonAccentLaterId)
+         return;
+
+      const laterId = Meta.later_add(Meta.LaterType.BEFORE_REDRAW, () => {
+         if (menu._blurCinnamonAccentLaterId !== laterId)
+            return false;
+         // Allow changes during the traversal to schedule a follow-up check
+         delete menu._blurCinnamonAccentLaterId;
+         if (menu !== this._currentMenu || !menu.isOpen || !settings.allowTransparentColorPopup)
+            return false;
+         try {
+            this._findAccentActors(menu, menu.actor);
+         } catch (error) {
+            global.logError(error);
+         }
+         return false;
+      });
+      menu._blurCinnamonAccentLaterId = laterId;
    }
 
    // Look for Popup menu accent actors
@@ -4620,19 +4723,23 @@ class BlurPopupMenus extends BlurBase {
          menu.blurCinnamonSignalManager.connect(menu, "open-state-changed", Lang.bind(this, this._onOpenStateChanged) );
          menu.blurCinnamonSignalManager.connect(menu, "menu-animated-closed", Lang.bind(this, this._onClosed) );
          menu.blurCinnamonSignalManager.connect(menu, "destroy", () => {this._onDestroyed(menu)} );
-         connectDeferredClip(menu.blurCinnamonSignalManager, menu.actor, () => this._setClip(menu) );
+         const queueReclip = () => this._queueMenuReclip(menu);
+         menu.blurCinnamonSignalManager.connect(menu.actor, "notify::allocation", queueReclip);
+         menu.blurCinnamonSignalManager.connect(menu.actor, "notify::size", queueReclip);
+         menu.blurCinnamonSignalManager.connect(menu.actor, "notify::position", queueReclip);
          this._menus.push(menu);
       }
       debugMsg( "attach complete" );
    }
 
    _unblurPopupMenu(menu) {
+      this._cancelAccentActorsScan(menu);
       if (this._currentMenu === menu) {
+         this._cancelMenuReclip();
          this._background.hide();
          if (this._viewport) this._viewport.hide();
          debugMsg( "blur actor hidden" );
          this._currentMenu = null;
-         this._initialClonesPending = false;
          // In case we are using Dynamic Blur, destroy it
          this._destroyDynamicEffect(this._background);
       }
@@ -4641,6 +4748,8 @@ class BlurPopupMenus extends BlurBase {
    }
 
    updateEffects() {
+      this._cancelAccentActorsScan(this._currentMenu);
+      this._cancelMenuReclip();
       debugMsg("updateEffects for popup menus" );
       this._changeCount++;
 
@@ -4692,8 +4801,12 @@ class BlurPopupMenus extends BlurBase {
    }
 
    destroy() {
+      this._cancelMenuReclip();
+      this._currentMenu = null;
       // Restore monkey patched PopupMenu open & close functions
       debugMsg( "Destroying Popup Menu object" );
+      for (const menu of this._menus)
+         this._cancelAccentActorsScan(menu);
       PopupMenu.PopupMenu.prototype.open = this.original_popupmenu_open;
       this._destroyBackgroundAndViewport(this._background, getBackgroundParent());
       // Remove all data in the menus associated with blurCinnamon
