@@ -153,6 +153,21 @@ const PANEL_HOVER_SELECTORS = [
 ];
 const PANEL_HOVER_FILE_PREFIX = "panel-hover-";
 
+// A new window's actor exists (with its full size) before the app has drawn anything into it.
+// Until then the window is empty, but its blurred background would still be drawn, a visible
+// blurred frame for as long as the app takes to draw (a second or more for slow starters like
+// Resources). So new windows are blurred only once Muffin says their first frame is on screen.
+// If that never comes, blur them anyway after this long. It only matters if the first-frame
+// signal is missed, and a window left unblurred for good would be worse than a late blur.
+const FIRST_FRAME_TIMEOUT_MS = 10000;
+const HAS_FIRST_FRAME_SIGNAL = (() => {
+   try {
+      return GObject.signal_lookup("first-frame", Meta.WindowActor) !== 0;
+   } catch (e) {
+      return false;
+   }
+})();
+
 // Detect workspace API availability once when the module is loaded, used by "windowIsOnWorkspace"
 const HAS_LOCATED_ON_WORKSPACE = typeof Meta.Window.prototype.located_on_workspace === 'function';
 const HAS_IS_ON_ALL_WORKSPACES = typeof Meta.Window.prototype.is_on_all_workspaces === 'function';
@@ -5385,6 +5400,10 @@ class BlurApplications extends BlurBase {
       // BlurApplication global listeners
       this._signalManager = new SignalManager.SignalManager(null);
       this._signalManager.connect(global.screen, "window-added", this._windowAdded, this);
+      // New windows are blurred only once they have drawn their first frame (see FIRST_FRAME_TIMEOUT_MS)
+      this._firstFrameWaits = new Set();
+      if (HAS_FIRST_FRAME_SIGNAL)
+         this._signalManager.connect(global.display, "window-created", this._waitForFirstFrame, this);
       this._signalManager.connect(global.display, "grab-op-begin", this._onWindowGrabbed, this);
       this._signalManager.connect(global.window_manager, "switch-workspace", this._onSwitchWorkspace, this);
       for (let signal of WINDOW_EFFECT_SIGNALS)
@@ -5478,6 +5497,45 @@ class BlurApplications extends BlurBase {
       this._windowsWaitingForWmClass.push(metaWindow);
    }
 
+   // Hold off blurring a new window until its first frame has been drawn (see FIRST_FRAME_TIMEOUT_MS).
+   // _blurWindow() does nothing for the window while it waits.
+   _waitForFirstFrame(display, metaWindow) {
+      let compositor = metaWindow.get_compositor_private();
+      if (!compositor || compositor._blurCinnamonWaiting)
+         return;
+      let waiting = { compositor: compositor, frameId: 0, destroyId: 0, timeoutId: 0 };
+      compositor._blurCinnamonWaiting = waiting;
+      this._firstFrameWaits.add(waiting);
+      // window-added may have come first and blurred it already. Nothing has been drawn yet, so
+      // take that back until there is something to draw.
+      this._unblurWindow(compositor);
+      let done = (blur) => {
+         this._stopWaitingForFirstFrame(waiting);
+         if (blur && !this._destroyed)
+            this._blurWindow(metaWindow);
+      };
+      waiting.frameId = compositor.connect("first-frame", () => done(true));
+      waiting.destroyId = compositor.connect("destroy", () => done(false));
+      waiting.timeoutId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, FIRST_FRAME_TIMEOUT_MS, () => {
+         waiting.timeoutId = 0;
+         done(true);
+         return GLib.SOURCE_REMOVE;
+      });
+   }
+
+   _stopWaitingForFirstFrame(waiting) {
+      if (!this._firstFrameWaits.delete(waiting))
+         return;
+      let compositor = waiting.compositor;
+      if (waiting.frameId)
+         compositor.disconnect(waiting.frameId);
+      if (waiting.destroyId)
+         compositor.disconnect(waiting.destroyId);
+      if (waiting.timeoutId)
+         GLib.source_remove(waiting.timeoutId);
+      compositor._blurCinnamonWaiting = undefined;
+   }
+
    _cancelWaitForWmClass(metaWindow) {
       if (!metaWindow._blurCinnamonWmClassId)
          return;
@@ -5508,8 +5566,9 @@ class BlurApplications extends BlurBase {
    _blurWindow(metaWindow) {
       // Get the windows compositor actor
       let compositor = metaWindow.get_compositor_private();
-      // Nothing to blur yet, or already blurred (e.g. the wm_class wait and a settings change both got here)
-      if (!compositor || compositor._blurCinnamonDataWindow)
+      // Nothing to blur yet, already blurred (e.g. the wm_class wait and a settings change both got here),
+      // or still waiting for the window's first frame (see _waitForFirstFrame())
+      if (!compositor || compositor._blurCinnamonDataWindow || compositor._blurCinnamonWaiting)
          return;
 
       // Get the effect setting that should apply to Application windows
@@ -6350,6 +6409,8 @@ class BlurApplications extends BlurBase {
       this._signalManager.disconnectAllSignals();
       this._windowsWaitingForWmClass.slice().forEach( (metaWindow) => this._cancelWaitForWmClass(metaWindow) );
       this._windowsWaitingForWmClass = null;
+      for (let waiting of [...this._firstFrameWaits])
+         this._stopWaitingForFirstFrame(waiting);
       this._disconnectRoundedCornersNotifier();
       if (this._roundedCornersIdleId) {
          Mainloop.source_remove(this._roundedCornersIdleId);
@@ -6563,7 +6624,9 @@ class BlurDesklets extends BlurBase {
       // Remove any deskletList entries that are not currently enabled
       let deskletList = settings.settings.getValue("desklets-list");
       for (let i=deskletList.length-1 ; i>=0 ; i-- ) {
-         if ( !desklets.find( (element) => element.desklet.instance_id == deskletList[i].instance ) ) {
+         // Match on the definition's desklet_id: a definition's desklet is null when that desklet
+         // failed to load (or hasn't been created yet), and its blur entry should be kept for then.
+         if ( !desklets.find( (element) => element.desklet_id == deskletList[i].instance ) ) {
             deskletList.splice(i, 1);
          }
       }
