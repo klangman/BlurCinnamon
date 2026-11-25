@@ -5,13 +5,18 @@ uniform float width;
 uniform float height;
 uniform int is_last_pass;
 
+#ifndef BLURCINNAMON_PYRAMID
 vec4 sampleBoundary(vec2 uv, vec2 uv_offset, vec2 pixel_step) {
     vec2 pos = clamp(uv + uv_offset * pixel_step, vec2(3.0 / width, 3.0 / height), vec2(1.0 - 3.0 / width, 1.0 - 3.0 / height));
     return texture2D(tex, pos);
 }
+#endif
 
 void blurcinnamon_main() {
     vec2 uv = cogl_tex_coord_in[0].xy;
+#ifdef BLURCINNAMON_PYRAMID
+    uv = pyramid_uv(uv, vec2(width, height));
+#endif
     vec2 pixel_step = vec2(1.0 / width, 1.0 / height);
 
     // Cross at a distance of 1.5 | Diagonals at a distance of 0.5
@@ -39,6 +44,9 @@ void blurcinnamon_main() {
 // the opacity exactly once. Without this, actor.opacity has no effect on any actor using these effects.
 void main() {
     blurcinnamon_main();
+#ifdef BLURCINNAMON_PYRAMID
+    cogl_color_out = pyramid_output(cogl_color_out, cogl_tex_coord_in[0].xy, vec2(width, height));
+#else
     // The scene being blurred is meant to be opaque, but something drawn into it with the wrong blend can
     // leave its alpha a little below 1 (e.g. another extension's GLSLEffect over the wallpaper: right
     // colour, alpha of a*a + (1-a)). Every inner pass of an effect chain then stores that alpha squared
@@ -51,4 +59,5 @@ void main() {
     cogl_color_out *= cogl_color_in;
     // Break up the banding of 8-bit output, see effect_base.js
     cogl_color_out = blurcinnamon_dither(cogl_color_out);
+#endif
 }

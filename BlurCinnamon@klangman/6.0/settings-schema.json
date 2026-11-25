@@ -38,7 +38,7 @@
       "generic-effect-settings" : {
          "type" : "section",
          "title" : "Generic effect settings",
-         "keys" : ["opacity", "blendColor", "blurType", "show-blur-info", "radius", "saturation", "grain"]
+         "keys" : ["opacity", "blendColor", "blurType", "show-blur-info", "radius", "saturation", "grain", "dual-kawase-mode"]
       },
 
       "effect-specific-settings" : {
@@ -78,6 +78,18 @@
          "title" : "About Blur Cinnamon",
          "keys" : ["about-text"]
       }
+   },
+
+   "dual-kawase-mode": {
+      "type": "combobox",
+      "default": "auto",
+      "options": {
+         "Automatic (pyramid where validated)": "auto",
+         "Pyramid (where supported)": "pyramid",
+         "Stable (legacy full-resolution)": "stable"
+      },
+      "description": "Dual Kawase implementation",
+      "tooltip": "Select the Dual Kawase backend used by Dual Kawase and Liquid Glass blur. Automatic uses the lower-resolution pyramid on validated Cinnamon versions and surfaces, falling back to the stable full-resolution filter where unsupported or if framebuffer allocation fails."
    },
 
    "appswitcher-warning": {

@@ -103,6 +103,7 @@ function importLocal(name) {
 const GaussianBlur = importLocal("gaussian_blur");
 const MonteCarloBlur = importLocal("monte_carlo_blur");
 const DualKawaseBlur = importLocal("dual_kawase_blur");
+const Kawase = importLocal("kawase_pyramid");
 const Refraction = importLocal("refraction");
 const CornerEffect = importLocal("corner");
 const EffectPool = importLocal("effect_base");
@@ -110,6 +111,26 @@ const Utils = importLocal("utils");
 
 const ANIMATION_TIME = 0.25;
 const AUTOHIDE_ANIMATION_TIME = 0.2;  // This is a copy of "Panel.AUTOHIDE_ANIMATION_TIME", we can't legally access it since it's a const and EC6 does not allow it
+
+const DualKawaseMode = {
+   Auto: "auto",
+   Pyramid: "pyramid",
+   Stable: "stable",
+};
+
+function useKawasePyramid(hasViewport = false) {
+   const mode = settings?.dualKawaseMode ?? DualKawaseMode.Auto;
+   if (mode === DualKawaseMode.Stable)
+      return false;
+   if (mode === DualKawaseMode.Auto && !Kawase.isDefaultSupported())
+      return false;
+   return hasViewport || Kawase.supportsActor(null);
+}
+
+function dualKawaseKind(hasViewport = false) {
+   return useKawasePyramid(hasViewport)
+      ? Kawase.PyramidEffect : DualKawaseBlur.DualFilteringBlurEffect;
+}
 
 const BLUR_EFFECT_NAME = "blur";
 const DESAT_EFFECT_NAME = "desat";
@@ -321,6 +342,42 @@ function printStackTrace(header) {
    log( "Stack:\n"+err.stack );
 }
 
+// Shell-owned backgrounds use Gaussian for the Liquid Glass setting because
+// neither Overview, Expo nor the 3D switcher has a glass shape to refract.
+function addShellBackgroundEffects(actor, blurType, radius, grain, saturation) {
+   const effects = [];
+   if (blurType > BlurType.None) {
+      const params = {radius, brightness: 1, width: 0, height: 0, grain};
+      let effect;
+      if (blurType === BlurType.Simple)
+         effect = new Clutter.BlurEffect();
+      else if (blurType === BlurType.Gaussian || blurType === BlurType.DynamicBlur || isLiquidGlassBlurType(blurType))
+         effect = new GaussianBlur.GaussianBlurEffect(params);
+      else if (blurType === BlurType.MonteCarlo || blurType === BlurType.DynamicMC)
+         effect = new MonteCarloBlur.MonteCarloBlurEffect({...params, iterations: settings.montecarloIterations,
+            prefer_closer_pixels: settings.montecarloPerferCloserPixels, use_base_pixel: settings.montecarloUseBasePixel});
+      else
+         effect = new (dualKawaseKind())(params);
+      actor.add_effect_with_name(BLUR_EFFECT_NAME, effect);
+      effects.push(effect);
+   }
+   if (saturation < 100) {
+      const desat = new Clutter.DesaturateEffect({factor: (100 - saturation) / 100});
+      actor.add_effect_with_name(DESAT_EFFECT_NAME, desat);
+      effects.push(desat);
+   }
+   return effects;
+}
+
+function shellBackgroundTargets(background, blurType) {
+   // The 6.8 shell groups separate wallpaper actors for each monitor.
+   // Process them independently so the blur can't sample the next monitor.
+   if (dualKawaseKind() === Kawase.PyramidEffect && staticBlurType(blurType) === BlurType.DualKawase &&
+       typeof Main.createFullScreenBackground === "function")
+      return background.get_children();
+   return [background];
+}
+
 function _animateVisibleOverview() {
    if (this.visible || this.animationInProgress)
       return;
@@ -336,29 +393,23 @@ function _animateVisibleOverview() {
    let saturation = (settings.overviewOverride) ? settings.overviewSaturation : settings.saturation;
    let grain = (settings.overviewOverride) ? settings.overviewGrain : settings.grain;
 
-   // Get the overview's background image and add the BlurEffect to it if configured to do so
-   // The Liquid Glass blur doesn't make any sense for the Overview so we'll default to Gaussian if the generic settings calls for Liquid Glass
-   let desktopBackground = children[0];
-   if (blurType > BlurType.None) {
-      let fx;
-      if (blurType === BlurType.Simple) {
-         fx = new Clutter.BlurEffect();
-      } else if (blurType === BlurType.Gaussian || blurType === BlurType.DynamicBlur || isLiquidGlassBlurType(blurType)) {
-         fx = new GaussianBlur.GaussianBlurEffect( { radius: radius, brightness: 1, width: 0, height: 0, grain: grain } );
-      } else if (blurType === BlurType.MonteCarlo || blurType === BlurType.DynamicMC) {
-         fx = new MonteCarloBlur.MonteCarloBlurEffect( { radius: radius, iterations: settings.montecarloIterations, prefer_closer_pixels: settings.montecarloPerferCloserPixels, use_base_pixel: settings.montecarloUseBasePixel, brightness: 1, width: 0, height: 0, grain: grain } );
-      } else { // Dual-Kawase
-         fx = new DualKawaseBlur.DualFilteringBlurEffect( { radius: radius, brightness: 1, width: 0, height: 0, grain: grain } );
-      }
-      desktopBackground.add_effect_with_name( BLUR_EFFECT_NAME, fx );
+   // In 6.8 all existing children are monitor backgrounds. Older Overview
+   // appends a shade actor after the background.
+   let backgroundShade;
+   if (this._shadeEffect) {
+      backgroundShade = new St.Bin({style_class: 'workspace-overview-background-shade'});
+      backgroundShade.set_size(global.screen_width, global.screen_height);
+      this._background.add_child(backgroundShade);
+   } else {
+      backgroundShade = children.pop();
    }
-   if (saturation<100) {
-      let desat = new Clutter.DesaturateEffect({factor: (100-saturation)/100});
-      desktopBackground.add_effect_with_name( DESAT_EFFECT_NAME, desat );
-   }
-   // Get the overview's backgroundShade child and set it's color to see-through solid black/"Color blend" color
-   let backgroundShade = children[1];
-   let [ret,color] = Clutter.Color.from_string( blendColor );
+   for (const background of children)
+      addShellBackgroundEffects(background, blurType, radius, grain, saturation);
+   if (!backgroundShade)
+      return;
+
+   // Dim the backgroundShade by making the black/"Color blend" color less see-through by the configured percentage
+   const [, color] = Clutter.Color.from_string(blendColor);
    backgroundShade.set_opacity(0);
    backgroundShade.set_background_color(color);
 
@@ -381,25 +432,9 @@ function _animateVisibleExpo() {
    let saturation = (settings.expoOverride) ? settings.expoSaturation : settings.saturation;
    let grain = (settings.expoOverride) ? settings.expoGrain : settings.grain;
 
-   // The Liquid Glass blur doesn't make any sense for the Expo so we'll default to Gaussian if the generic settings calls for Liquid Glass
-   let desktopBackground = this._background
-   if (blurType > BlurType.None) {
-      let fx;
-      if (blurType === BlurType.Simple) {
-         fx =  new Clutter.BlurEffect();
-      } else if (blurType === BlurType.Gaussian || blurType === BlurType.DynamicBlur || isLiquidGlassBlurType(blurType)) {
-         fx = new GaussianBlur.GaussianBlurEffect( {radius: radius, brightness: 1, width: 0, height: 0, grain: grain} );
-      } else if (blurType === BlurType.MonteCarlo || blurType === BlurType.DynamicMC) {
-         fx = new MonteCarloBlur.MonteCarloBlurEffect( { radius: radius, iterations: settings.montecarloIterations, prefer_closer_pixels: settings.montecarloPerferCloserPixels, use_base_pixel: settings.montecarloUseBasePixel, brightness: 1, width: 0, height: 0, grain: grain } );
-      } else { // Dual-Kawase
-         fx = new DualKawaseBlur.DualFilteringBlurEffect( { radius: radius, brightness: 1, width: 0, height: 0, grain: grain } );
-      }
-      desktopBackground.add_effect_with_name( BLUR_EFFECT_NAME, fx );
-   }
-   if (saturation<100) {
-      let desat = new Clutter.DesaturateEffect({factor: (100-saturation)/100});
-      desktopBackground.add_effect_with_name( DESAT_EFFECT_NAME, desat );
-   }
+   for (const background of shellBackgroundTargets(this._background, blurType))
+      addShellBackgroundEffects(background, blurType, radius, grain, saturation);
+
    // Create a shade, set it's color in accordance with the settings and make it invisible
    let backgroundShade = new St.Bin({style_class: 'workspace-overview-background-shade'});
    this._backgroundShade = backgroundShade;
@@ -424,27 +459,8 @@ function _showAppSwitcher3D(...params) {
       let saturation = (settings.appswitcherOverride) ? settings.appswitcherSaturation : settings.saturation;
       let grain = (settings.appswitcherOverride) ? settings.appswitcherGrain : settings.grain;
 
-      // The Liquid Glass blur doesn't make any sense for the 3dAppSwicher so we'll default to Gaussian of the generic settings calls for Liquid Glass
-      let desktopBackground = this._background
-      if (blurType > BlurType.None) {
-         let fx;
-         if (blurType === BlurType.Simple) {
-            fx =  new Clutter.BlurEffect();
-         } else if (blurType === BlurType.Gaussian || blurType === BlurType.DynamicBlur || isLiquidGlassBlurType(blurType)) {
-            fx = new GaussianBlur.GaussianBlurEffect( {radius: radius, brightness: 1, width: 0, height: 0, grain: grain} );
-         } else if (blurType === BlurType.MonteCarlo || blurType === BlurType.DynamicMC) {
-            fx = new MonteCarloBlur.MonteCarloBlurEffect( { radius: radius, iterations: settings.montecarloIterations, prefer_closer_pixels: settings.montecarloPerferCloserPixels, use_base_pixel: settings.montecarloUseBasePixel, brightness: 1, width: 0, height: 0, grain: grain } );
-         } else { // Dual-Kawase
-            fx = new DualKawaseBlur.DualFilteringBlurEffect( { radius: radius, brightness: 1, width: 0, height: 0, grain: grain } );
-         }
-         desktopBackground.add_effect_with_name( BLUR_EFFECT_NAME, fx );
-         this._blurCinnamonBlurEffect = fx;
-      }
-      if (saturation<100) {
-         let desat = new Clutter.DesaturateEffect({factor: (100-saturation)/100});
-         desktopBackground.add_effect_with_name( DESAT_EFFECT_NAME, desat );
-         this._blurCinnamonDesatEffect = desat;
-      }
+      this._blurCinnamonBackgroundEffects = shellBackgroundTargets(this._background, blurType)
+         .flatMap(background => addShellBackgroundEffects(background, blurType, radius, grain, saturation));
 
       let [ret,color] = Clutter.Color.from_string( blendColor );
       if (!ret) { [ret,color] = Clutter.Color.from_string( "rgba(0,0,0,0)" ); }
@@ -463,12 +479,9 @@ function _showAppSwitcher3D(...params) {
 }
 
 function _hideAppSwitcher3D(...params) {
-   if (this._background && this._blurCinnamonBlurEffect) {
-      this._background.remove_effect(this._blurCinnamonBlurEffect);
-   }
-   if (this._background && this._blurCinnamonDesatEffect) {
-      this._background.remove_effect(this._blurCinnamonDesatEffect);
-   }
+   for (const effect of this._blurCinnamonBackgroundEffects ?? [])
+      effect.get_actor()?.remove_effect(effect);
+   this._blurCinnamonBackgroundEffects = null;
 
    // Enable all panels
    if (settings.appswitcherDisablePanels) {
@@ -536,11 +549,26 @@ const VIEWPORT_EDGE_PAD = 3;
 // How many pixels a wrapped viewport must extend past the visible rect, on every side, so that the blur
 // effect always has real, correctly cloned content to sample for every visible pixel. Each blur effect
 // reports its own maximum sampling distance through sample_reach (see the .js file of each effect).
-function getViewportMargin(viewport) {
-   let effect = viewport.get_effect(BLUR_EFFECT_NAME);
-   if (!effect || !effect.sample_reach)
-      return 0;
-   return Math.ceil(effect.sample_reach) + VIEWPORT_EDGE_PAD;
+function getViewportMargin(viewport, rect, stageRect = rect) {
+   const effect = viewport.get_effect(BLUR_EFFECT_NAME);
+   if (!effect) return 0;
+   let reach;
+   if (effect.get_sampling_margin) {
+      const [x, y, w, h] = stageRect;
+      let scale = 1;
+      for (const monitor of Main.layoutManager.monitors) {
+         if (rectOverlap(x, y, x + w, y + h, monitor.x, monitor.y,
+             monitor.x + monitor.width, monitor.y + monitor.height)) {
+            scale = Math.max(scale, global.display.get_monitor_scale?.(monitor.index) || 1);
+         }
+      }
+      // Clutter may still report the old scale before the viewport is allocated.
+      reach = Math.max(effect.get_sampling_margin(rect[2], rect[3], scale),
+         effect.get_sampling_margin(rect[2], rect[3]));
+   } else {
+      reach = effect.sample_reach;
+   }
+   return reach ? Math.ceil(reach) + VIEWPORT_EDGE_PAD : 0;
 }
 
 // The area a blur over the given visible rect may sample, as [x, y, width, height]: the box around the monitors
@@ -2199,6 +2227,7 @@ class BlurBase {
       [ BlurBase.cornerEffectCache, BlurBase.gaussianEffectCache, BlurBase.liquidGlassEffectCache,
         BlurBase.monteCarloEffectCache, BlurBase.dualKawaseEffectCache ].forEach( (pool) => EffectPool.drainPool(pool) );
       GaussianBlur.drainPools();
+      Kawase.drainPools();
       DualKawaseBlur.drainPools();
    }
 
@@ -2244,13 +2273,15 @@ class BlurBase {
    }
 
    _aquireLiquidGlassEffect(radius, grain) {
+      const usePyramid = useKawasePyramid(true);
       if (BlurBase.liquidGlassEffectCache.length > 0) {
          let effect = BlurBase.liquidGlassEffectCache.pop();
+         effect.use_kawase_pyramid = usePyramid;
          applyLiquidGlassSettings(effect, radius);
          effect.grain = grain;
          return(effect);
       } else {
-         return(new Refraction.RefractionEffect( {...getLiquidGlassParams(radius), grain: grain} ));
+         return new Refraction.RefractionEffect({...getLiquidGlassParams(radius), grain, use_kawase_pyramid: usePyramid});
       }
    }
 
@@ -2278,7 +2309,9 @@ class BlurBase {
       EffectPool.releaseToPool(BlurBase.monteCarloEffectCache, effect);
    }
 
-   _aquireDualKawaseEffect(radius, grain) {
+   _aquireDualKawaseEffect(radius, grain, hasViewport) {
+      if (dualKawaseKind(hasViewport) === Kawase.PyramidEffect)
+         return new Kawase.PyramidEffect({radius, brightness: 1, grain});
       if (BlurBase.dualKawaseEffectCache.length > 0) {
          let effect = BlurBase.dualKawaseEffectCache.pop();
          effect.radius = radius;
@@ -2410,7 +2443,7 @@ class BlurBase {
       } else if (blurType === BlurType.MonteCarlo || blurType === BlurType.DynamicMC) {
          blurEffect = this._aquireMonteCarloEffect(radius, grain);
       } else if (blurType === BlurType.DualKawase || blurType === BlurType.DynamicDK) {
-         blurEffect = this._aquireDualKawaseEffect(radius, grain);
+         blurEffect = this._aquireDualKawaseEffect(radius, grain, useViewport);
       } else if (isLiquidGlassBlurType(blurType)) {
          blurEffect = this._aquireLiquidGlassEffect(radius, grain);
       }
@@ -2468,6 +2501,9 @@ class BlurBase {
       let effectTarget = background;
       if (useViewport) {
          viewport = new St.Group({clip_to_allocation: true});
+         // Wait for the visible rect before preparing pyramid buffers.
+         if (blurEffect instanceof Kawase.PyramidEffect || (useKawasePyramid(true) && isLiquidGlassBlurType(blurType)))
+            viewport.set_size(0, 0);
          let sceneClone = new Clutter.Clone({source: background, reactive: false});
          viewport.add_child(sceneClone);
          viewport._blurCinnamonSceneClone = sceneClone;
@@ -2663,6 +2699,10 @@ class BlurBase {
    _updateViewportEffects(background, viewport, opacity, blendColor, blurType, radius, saturation, grain) {
       let curEffect = this._getBlurEffect(viewport);
       let effectType = staticBlurType(blurType);
+      const wantsPyramid = useKawasePyramid(true) &&
+         (effectType === BlurType.DualKawase || effectType === BlurType.LiquidGlass);
+      if (wantsPyramid && !viewport._blurCinnamonVisibleRect && !viewport._blurCinnamonSamplingRect)
+         viewport.set_size(0, 0);
       if (effectType === BlurType.Simple && !(curEffect instanceof Clutter.BlurEffect)) {
          if (curEffect) {
             viewport.remove_effect(curEffect);
@@ -2681,12 +2721,12 @@ class BlurBase {
             this._releaseBlurEffect(curEffect);
          }
          viewport.add_effect_with_name( BLUR_EFFECT_NAME, this._aquireMonteCarloEffect(radius, grain) );
-      } else if (effectType === BlurType.DualKawase && !(curEffect instanceof DualKawaseBlur.DualFilteringBlurEffect)) {
+      } else if (effectType === BlurType.DualKawase && !(curEffect instanceof dualKawaseKind(true))) {
          if (curEffect) {
             viewport.remove_effect(curEffect);
             this._releaseBlurEffect(curEffect);
          }
-         viewport.add_effect_with_name( BLUR_EFFECT_NAME, this._aquireDualKawaseEffect(radius, grain) );
+         viewport.add_effect_with_name( BLUR_EFFECT_NAME, this._aquireDualKawaseEffect(radius, grain, true) );
       } else if (effectType === BlurType.LiquidGlass && !(curEffect instanceof Refraction.RefractionEffect)) {
          if (curEffect) {
             viewport.remove_effect(curEffect);
@@ -2695,7 +2735,7 @@ class BlurBase {
          viewport.add_effect_with_name( BLUR_EFFECT_NAME, this._aquireLiquidGlassEffect(radius, grain) );
       }
       curEffect = this._getBlurEffect(viewport);
-      if ((curEffect instanceof GaussianBlur.GaussianBlurEffect || curEffect instanceof MonteCarloBlur.MonteCarloBlurEffect || curEffect instanceof DualKawaseBlur.DualFilteringBlurEffect) && curEffect.radius != radius) {
+      if ((curEffect instanceof GaussianBlur.GaussianBlurEffect || curEffect instanceof MonteCarloBlur.MonteCarloBlurEffect || curEffect instanceof dualKawaseKind(true)) && curEffect.radius != radius) {
          curEffect.radius = radius;
       }
       if (curEffect instanceof MonteCarloBlur.MonteCarloBlurEffect) {
@@ -2704,9 +2744,10 @@ class BlurBase {
          curEffect.prefer_closer_pixels = settings.montecarloPerferCloserPixels;
       }
       if (curEffect instanceof Refraction.RefractionEffect) {
+         curEffect.use_kawase_pyramid = useKawasePyramid(true);
          applyLiquidGlassSettings(curEffect, radius);
       }
-      if (curEffect instanceof EffectPool.EffectBase) {
+      if (curEffect instanceof EffectPool.EffectBase || curEffect instanceof Kawase.PyramidEffect) {
          curEffect.grain = grain;
       }
       this._syncLiquidGlassCornerRadius(viewport);
@@ -2717,7 +2758,13 @@ class BlurBase {
       } else if (desatEffect && desatEffect.factor !== (100-saturation)/100) {
          desatEffect.set_factor((100-saturation)/100);
       } else if (!desatEffect && saturation < 100) {
+         // Install desaturation outside the pyramid blur and refraction,
+         // matching the order used when the viewport is first created.
+         const reorder = curEffect instanceof Kawase.PyramidEffect ||
+            curEffect instanceof Refraction.RefractionEffect;
+         if (reorder) viewport.remove_effect(curEffect);
          viewport.add_effect_with_name( DESAT_EFFECT_NAME, this._aquireDesaturateEffect( (100-saturation)/100 ) );
+         if (reorder) viewport.add_effect_with_name(BLUR_EFFECT_NAME, curEffect);
       }
 
       let dimmerColor = this._getColor( blendColor, opacity );
@@ -2771,7 +2818,7 @@ class BlurBase {
       if (viewport) {
          // Remember the visible rect so the margin can be re-derived if the blur radius/type changes
          viewport._blurCinnamonVisibleRect = [x, y, width, height];
-         let margin = (width > 0 && height > 0) ? getViewportMargin(viewport) : 0;
+         let margin = (width > 0 && height > 0) ? getViewportMargin(viewport, viewport._blurCinnamonVisibleRect) : 0;
          let [ex, ey, ew, eh] = getExpandedRect(x, y, width, height, margin);
          background.set_clip(ex, ey, ew, eh);
          viewport.set_position(ex, ey);
@@ -2803,7 +2850,10 @@ class BlurBase {
    _needsBackgroundRebuild(background, blurType, wantsViewport) {
       const changesBackgroundKind = !Meta.is_wayland_compositor() &&
          ((background instanceof Meta.X11BackgroundActor) !== (blurType !== BlurType.Transparent));
-      return this._viewportMismatch(background, blurType, wantsViewport) || changesBackgroundKind;
+      const changesDirectKawase = !wantsViewport && !background._blurCinnamonViewport &&
+         staticBlurType(blurType) === BlurType.DualKawase &&
+         !(this._getBlurEffect(background) instanceof dualKawaseKind(false));
+      return this._viewportMismatch(background, blurType, wantsViewport) || changesBackgroundKind || changesDirectKawase;
    }
 
    // Whether background has to be rebuilt to gain or lose its viewport, or because the viewport was made for a
@@ -4983,7 +5033,7 @@ class BlurDesktop extends BlurBase {
       if (blurType === BlurType.Simple)     return Clutter.BlurEffect;
       if (blurType === BlurType.Gaussian)   return GaussianBlur.GaussianBlurEffect;
       if (blurType === BlurType.MonteCarlo) return MonteCarloBlur.MonteCarloBlurEffect;
-      if (blurType === BlurType.DualKawase) return DualKawaseBlur.DualFilteringBlurEffect;
+      if (blurType === BlurType.DualKawase) return dualKawaseKind();
       return null;
    }
 
@@ -4995,8 +5045,8 @@ class BlurDesktop extends BlurBase {
          return new GaussianBlur.GaussianBlurEffect( {radius: this._radius, brightness: 1, width: 0, height: 0, grain: this._grain} );
       if (kind === MonteCarloBlur.MonteCarloBlurEffect)
          return new MonteCarloBlur.MonteCarloBlurEffect( { radius: this._radius, iterations: settings.montecarloIterations, prefer_closer_pixels: settings.montecarloPerferCloserPixels, use_base_pixel: settings.montecarloUseBasePixel, brightness: 1, width: 0, height: 0, grain: this._grain } );
-      if (kind === DualKawaseBlur.DualFilteringBlurEffect)
-         return new DualKawaseBlur.DualFilteringBlurEffect( { radius: this._radius, brightness: 1, width: 0, height: 0, grain: this._grain } );
+      if (kind === DualKawaseBlur.DualFilteringBlurEffect || kind === Kawase.PyramidEffect)
+         return new kind({radius: this._radius, brightness: 1, width: 0, height: 0, grain: this._grain});
       return null;
    }
 
@@ -5078,15 +5128,21 @@ class BlurDesktop extends BlurBase {
       }
       if (this._blurEnabled && !entry.blur) {
          entry.blur = this._createBlurEffect();
-         if (entry.blur)
+         if (entry.blur) {
+            const hasDesat = entry.desat && target.get_effect(DESAT_EFFECT_NAME) === entry.desat;
+            if (hasDesat)
+               target.remove_effect(entry.desat);
             target.add_effect_with_name( BLUR_EFFECT_NAME, entry.blur );
+            if (hasDesat)
+               target.add_effect_with_name( DESAT_EFFECT_NAME, entry.desat );
+         }
          return;
       }
       if (!entry.blur)
          return;
       if (!(entry.blur instanceof Clutter.BlurEffect) && entry.blur.radius != this._radius)
          entry.blur.radius = this._radius;
-      if (entry.blur instanceof EffectPool.EffectBase)
+      if (entry.blur instanceof EffectPool.EffectBase || entry.blur instanceof Kawase.PyramidEffect)
          entry.blur.grain = this._grain;
       if (entry.blur instanceof MonteCarloBlur.MonteCarloBlurEffect) {
          entry.blur.iterations = settings.montecarloIterations;
@@ -6189,9 +6245,10 @@ class BlurApplications extends BlurBase {
             // CloneManager uses to decide which windows to clone (see getBackgroundClip()).
             data.viewport._blurCinnamonSamplingRect = [rect.x, rect.y, rect.width, rect.height];
 
-            let margin = getViewportMargin(data.viewport);
             // The monitors the window is drawn on now, which an animation can change
-            let bounds = getSamplingBounds(ox + sx * rect.x, oy + sy * rect.y, sx * rect.width, sy * rect.height);
+            const stageRect = [ox + sx * rect.x, oy + sy * rect.y, sx * rect.width, sy * rect.height];
+            let margin = getViewportMargin(data.viewport, data.viewport._blurCinnamonSamplingRect, stageRect);
+            let bounds = getSamplingBounds(...stageRect);
             bounds = _stageRectInActorCoordinates(transform, bounds, rect.x + rect.width / 2, rect.y + rect.height / 2);
             let [ex, ey, ew, eh] = getExpandedRect(rect.x, rect.y, rect.width, rect.height, margin, bounds);
             data.background.set_clip( ox + sx * ex, oy + sy * ey, sx * ew, sy * eh );
@@ -7036,7 +7093,9 @@ class BlurDesklets extends BlurBase {
    // A string that changes whenever a global, blur type specific setting used by the given blur type changes
    _getExtraEffectSignature(blurType, radius) {
       if (isLiquidGlassBlurType(blurType))
-         return JSON.stringify( getLiquidGlassParams(radius) );
+         return `${settings.dualKawaseMode}/${JSON.stringify( getLiquidGlassParams(radius) )}`;
+      if (blurType === BlurType.DualKawase || blurType === BlurType.DynamicDK)
+         return settings.dualKawaseMode;
       if (blurType === BlurType.MonteCarlo || blurType === BlurType.DynamicMC)
          return `${settings.montecarloIterations}/${settings.montecarloUseBasePixel}/${settings.montecarloPerferCloserPixels}`;
       return "";
@@ -7202,6 +7261,7 @@ class BlurSettings {
       this.bind('blendColor', 'blendColor', colorChanged);
       this.bind('saturation', 'saturation', saturationChanged);
       this.bind('grain',      'grain',      grainChanged);
+      this.bind('dual-kawase-mode', 'dualKawaseMode', dualKawaseModeChanged);
 
       this.bind('monte-carlo-iterations', 'montecarloIterations', blurChanged);
       this.bind('monte-carlo-use-base-pixel', 'montecarloUseBasePixel', blurChanged);
@@ -7484,6 +7544,15 @@ function grainChanged() {
    updateFocusedWindowEffect();
 }
 
+function dualKawaseModeChanged() {
+   EffectPool.drainPool(BlurBase.liquidGlassEffectCache);
+   blurChanged();
+   EffectPool.drainPool(BlurBase.dualKawaseEffectCache);
+   DualKawaseBlur.drainPools();
+   Kawase.drainIdlePools();
+   Utils.scheduleFramebufferGC();
+}
+
 function blurChanged() {
    if (blurPanels) {
       blurPanels.updateEffects();
@@ -7722,7 +7791,6 @@ function enable() {
 
 function disable() {
   cancelWindowEnableIdle();
-  Utils.cancelFramebufferGC();
 
    if (Overview.Overview.prototype._oldAnimateVisible) {
       delete Overview.Overview.prototype._oldAnimateVisible;
@@ -7803,6 +7871,7 @@ function disable() {
 
    // All components have released their effects into the pools by now
    BlurBase.drainEffectPools();
+   Utils.cancelFramebufferGC();
 
    // If disabled was called to remove the extension entirely rather than a reload
    // we can reset the "new-install" value so that if the user adds the extension
