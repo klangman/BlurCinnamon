@@ -911,6 +911,17 @@ function _stagePosition(actor) {
 // slide, a menu being placed), before the relayout, so for those the deferred call still lands in the
 // frame that draws the change; only layout-driven size changes are picked up a frame later. Calls are
 // coalesced to one per frame, and dropped once signalManager no longer has these handlers connected.
+// True when the panel is hidden because its monitor has a fullscreen window. Cinnamon still shows panels over a
+// fullscreen window in some cases (e.g. while the menu or Alt-Tab is open on that monitor, or a raised panel on 6.8+).
+// Its Chrome tracks that with skip_paint on Main.uiGroup rather than the actor's visibility, so follow that.
+function panelHiddenByFullscreen(panel) {
+   if (!global.display.get_monitor_in_fullscreen(panel.monitorIndex))
+      return false;
+   if (typeof Main.uiGroup.get_skip_paint === "function")
+      return Main.uiGroup.get_skip_paint(panel.actor);
+   return true;
+}
+
 function connectDeferredClip(signalManager, actor, fn) {
    let laterId = 0;
    const queue = () => {
@@ -3406,6 +3417,23 @@ class BlurPanels extends BlurBase {
       this._cubeStartingId = this._cubeNotifier.connect("cube-starting", () => this._onCubeStarting());
       this._cubeFinishedId = this._cubeNotifier.connect("cube-finished", () => this._onCubeFinished());
 
+      // Cinnamon's Chrome decides when a panel is shown over a fullscreen window (modal menus, Alt-Tab, raised
+      // panels), so re-check the panel backgrounds whenever it recalculates chrome visibility (see #86)
+      this._chrome = Main.layoutManager._chrome;
+      if (this._chrome && typeof this._chrome._updateVisibility === "function") {
+         this._originalUpdateVisibility = this._chrome._updateVisibility;
+         const originalUpdateVisibility = this._originalUpdateVisibility;
+         this._chrome._updateVisibility = function(...params) {
+            const ret = originalUpdateVisibility.apply(this, params);
+            try {
+               blurPanelsThis._fullscreen_changed();
+            } catch (e) {
+               global.logError(e);
+            }
+            return ret;
+         };
+      }
+
       // Monkey patch panel functions so we can manage the blurred backgrounds when the panels are hidden/shown
       this._originalPanelEnable    = Panel.Panel.prototype.enable;
       this._originalPanelDisable   = Panel.Panel.prototype.disable;
@@ -3592,7 +3620,7 @@ class BlurPanels extends BlurBase {
       data.visibilityTimeoutId = Mainloop.timeout_add(delay, () => {
          data.visibilityTimeoutId = 0;
          if (panel.__blurredPanel !== data) return false;
-         if (visible && (panel._hidden || global.display.get_monitor_in_fullscreen(panel.monitorIndex)))
+         if (visible && (panel._hidden || panelHiddenByFullscreen(panel)))
             return false;
          if (visible) {
             data.background.show();
@@ -3618,7 +3646,7 @@ class BlurPanels extends BlurBase {
          if (panel && panel.__blurredPanel && panel.__blurredPanel.background && !panel._hidden) {
             background = panel.__blurredPanel.background;
             viewport = panel.__blurredPanel.viewport;
-            if (global.display.get_monitor_in_fullscreen(panel.monitorIndex)) {
+            if (panelHiddenByFullscreen(panel)) {
                background.hide();
                if (viewport) viewport.hide();
             } else {
@@ -3674,7 +3702,7 @@ class BlurPanels extends BlurBase {
          } else {
             this._applyBackgroundClip(background, viewport, 0, 0, 0, 0);
          }
-         if (panel._hidden || panel._disabled || global.display.get_monitor_in_fullscreen(panel.monitorIndex)) {
+         if (panel._hidden || panel._disabled || panelHiddenByFullscreen(panel)) {
             background.hide();
             if (viewport) viewport.hide();
          } else if (!background.is_visible()) {
@@ -4076,6 +4104,13 @@ class BlurPanels extends BlurBase {
       // Restore the original functions that we monkey patched
       Panel.Panel.prototype.enable     = this._originalPanelEnable;
       Panel.Panel.prototype.disable    = this._originalPanelDisable;
+      if (this._originalUpdateVisibility) {
+         // Delete our own-property wrapper so the instance falls back to Chrome.prototype._updateVisibility
+         delete this._chrome._updateVisibility;
+         if (this._chrome._updateVisibility !== this._originalUpdateVisibility)
+            this._chrome._updateVisibility = this._originalUpdateVisibility;
+         this._originalUpdateVisibility = null;
+      }
 
       if (this._cubeNotifier) {
          this._cubeNotifier.disconnect(this._cubeStartingId);
@@ -4303,7 +4338,7 @@ class BlurPanels extends BlurBase {
    // Functions that will be monkey patched over the Panel functions
    blurEnable(...params) {
       try {
-         if (this.__blurredPanel && this.__blurredPanel.background && !global.display.get_monitor_in_fullscreen(this.monitorIndex) && !this._hidden) {
+         if (this.__blurredPanel && this.__blurredPanel.background && !panelHiddenByFullscreen(this) && !this._hidden) {
             // Only show the blurred background after the panel animation is almost done
             blurPanelsThis._queuePanelVisibility(this, true, AUTOHIDE_ANIMATION_TIME * 1000 * .9);
          }
