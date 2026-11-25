@@ -922,6 +922,26 @@ function panelHiddenByFullscreen(panel) {
    return true;
 }
 
+// The panel's visible rect in its parent's coordinates, as [x, y, width, height]. Read from the allocation box,
+// not x/y/get_width()/get_height(): while a relayout is pending those return the fixed position/size the panel
+// code set, which still includes CSS margins (e.g. "margin-left: 100px" to shrink the panel), so the blur would
+// extend past the panel's ends. A relayout that leaves the allocation unchanged emits no notify::allocation,
+// so that wrong clip would stick until something else re-clipped. The allocation box is the last real layout:
+// if the pending relayout changes it, notify::allocation follows and re-clips (see connectDeferredClip()).
+// get_allocation_box() is untransformed, which matches the old x/y/width/height semantics (Centered Cinnamon
+// Dock's scale-to-zero is handled by _syncPanelOpacity(), not the clip). get_width()/get_height() in the
+// fallback: Cinnamon 6.8's Panel overrides the height property (deprecated, and it returns the applet zone size).
+function getPanelRect(actor) {
+   if (actor.has_allocation() || actor.get_allocation_box().get_width() > 0) {
+      let box = actor.get_allocation_box();
+      return [box.x1, box.y1, box.x2 - box.x1, box.y2 - box.y1];
+   }
+   // Never allocated yet: take the requested geometry minus the theme margins; notify::allocation corrects it
+   let left = actor.margin_left || 0, right = actor.margin_right || 0;
+   let top = actor.margin_top || 0, bottom = actor.margin_bottom || 0;
+   return [actor.x + left, actor.y + top, actor.get_width() - (left + right), actor.get_height() - (top + bottom)];
+}
+
 function connectDeferredClip(signalManager, actor, fn) {
    let laterId = 0;
    const queue = () => {
@@ -3696,9 +3716,7 @@ class BlurPanels extends BlurBase {
          let background = panel.__blurredPanel.background;
          let viewport = panel.__blurredPanel.viewport;
          if (actor.is_visible()) {
-            // get_width()/get_height(): Cinnamon 6.8's Panel overrides the height property (deprecated, and it
-            // returns the applet zone size rather than the actor's height)
-            this._applyBackgroundClip(background, viewport, actor.x, actor.y, actor.get_width(), actor.get_height());
+            this._applyBackgroundClip(background, viewport, ...getPanelRect(actor));
          } else {
             this._applyBackgroundClip(background, viewport, 0, 0, 0, 0);
          }
