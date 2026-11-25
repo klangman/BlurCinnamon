@@ -38,7 +38,7 @@
       "generic-effect-settings" : {
          "type" : "section",
          "title" : "Generic effect settings",
-         "keys" : ["opacity", "blendColor", "blurType", "show-blur-info", "radius", "saturation", "grain", "dual-kawase-mode"]
+         "keys" : ["opacity", "blendColor", "blurType", "show-blur-info", "radius", "saturation", "grain"]
       },
 
       "effect-specific-settings" : {
@@ -46,6 +46,7 @@
          "title" : "Additional effect specific settings",
          "keys" : ["effect-specific-type", "monte-carlo-iterations", "monte-carlo-use-base-pixel", "monte-carlo-prefer-closer-pixels",
                    "liquid-glass-strength", "liquid-glass-edge-size", "liquid-glass-rim-width", "liquid-glass-falloff", "liquid-glass-gloss", "liquid-glass-backdrop-zoom", "liquid-glass-shadow", "liquid-glass-rgb-fringing", "liquid-glass-texture-repeat",
+                   "dual-kawase-mode",
                    "additional-settings-label"]
       },
 
@@ -78,18 +79,6 @@
          "title" : "About Blur Cinnamon",
          "keys" : ["about-text"]
       }
-   },
-
-   "dual-kawase-mode": {
-      "type": "combobox",
-      "default": "auto",
-      "options": {
-         "Automatic (pyramid where validated)": "auto",
-         "Pyramid (where supported)": "pyramid",
-         "Stable (legacy full-resolution)": "stable"
-      },
-      "description": "Dual Kawase implementation",
-      "tooltip": "Select the Dual Kawase backend used by Dual Kawase and Liquid Glass blur. Automatic uses the lower-resolution pyramid on validated Cinnamon versions and surfaces, falling back to the stable full-resolution filter where unsupported or if framebuffer allocation fails."
    },
 
    "appswitcher-warning": {
@@ -571,7 +560,8 @@
         "default": 0,
         "options": {
             "Monte Carlo": 0,
-            "Liquid Glass": 1
+            "Liquid Glass": 1,
+            "Dual Kawase": 2
         },
         "description": "Additional settings for",
         "tooltip": "Choose which effect's additional settings to show and edit."
@@ -728,6 +718,19 @@
         "description": "Edge behavior",
         "dependency" : "effect-specific-type=1",
         "tooltip": "How texture coordinates outside the actor are sampled."
+    },
+
+    "dual-kawase-mode": {
+        "type": "combobox",
+        "default": "auto",
+        "options": {
+            "Automatic (optimized pyramid where supported)": "auto",
+            "Optimized pyramid (where supported)": "pyramid",
+            "Legacy (full resolution)": "stable"
+        },
+        "description": "Dual Kawase implementation",
+        "dependency" : "effect-specific-type=2",
+        "tooltip": "Choose which Dual Kawase implementation is used by Dual Kawase and Liquid Glass blur. The optimized pyramid blurs at lower resolutions for better GPU performance with similar visual quality. Automatic uses it on Cinnamon versions where it is supported and falls back to the legacy full-resolution filter otherwise. Choose Legacy if you prefer the original behavior or notice visual issues."
     },
 
     "overview-opacity": {
@@ -1165,7 +1168,7 @@
         "default": 2,
         "dependency" : "enable-desktop-effects & component-selector=2 & desktop-blurType>1 & enable-desktop-override"
     },
-    
+
     "notification-opacity" : {
         "type" : "custom",
         "file" : "CustomWidgets.py",
