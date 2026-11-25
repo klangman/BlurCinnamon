@@ -191,22 +191,243 @@ const Level = GObject.registerClass({GTypeName: 'KawaseLevel' + tag}, class exte
 const pools = new Map([[Down, []], [Up, []], [Composite, []]]);
 const templates = new Map();
 const attachedEffects = new Set();
-const DROPPED_VRAM_GC_BYTES = 4 * 1024 * 1024;
+const activeExplicits = new Set();
+const scratchLayers = [];
+const retainedPool = [];
+const pendingScratchReads = new Set();
+const MAX_SCRATCH_SLOTS = 3;
+const MAX_RETAINED_POOL = 4;
+const HIDDEN_RELEASE_MS = 2000;
+const SCRATCH_TRIM_MS = 2500;
+const DROPPED_VRAM_GC_BYTES = 8 * 1024 * 1024;
+const URGENT_GC_DELAY_MS = 100;
+let paintNestDepth = 0;
+let scratchTrimId = 0;
+let afterPaintClearId = 0;
 let pendingDroppedBytes = 0;
 let urgentGcId = 0;
 
-function noteDroppedBuffer(buffer) {
-    if (!buffer) return;
-    pendingDroppedBytes += (buffer.capW || buffer.w) * (buffer.capH || buffer.h) * 4;
+function flushCogl() {
+    Cogl.flush();
+    pendingScratchReads.clear();
+}
+
+function markScratchRead(buf) {
+    pendingScratchReads.add(buf);
+    if (!afterPaintClearId) {
+        // Cogl submits all queued frame journals by after-paint, so previous-frame
+        // scratch reads are already complete and need no extra Cogl.flush() next frame.
+        afterPaintClearId = global.stage.connect('after-paint', () => {
+            pendingScratchReads.clear();
+            global.stage.disconnect(afterPaintClearId);
+            afterPaintClearId = 0;
+        });
+    }
+}
+
+function disconnectAfterPaintClear() {
+    if (afterPaintClearId) {
+        global.stage.disconnect(afterPaintClearId);
+        afterPaintClearId = 0;
+    }
+    pendingScratchReads.clear();
+}
+
+function releaseTextureRefs(texture) {
+    if (!texture) return;
+    for (const effect of activeExplicits) {
+        if (!effect.draws) continue;
+        for (const draw of effect.draws) {
+            if (draw.boundTexture === texture) {
+                try { draw.pipeline.set_layer_null_texture(0); } catch (_) {}
+                draw.boundTexture = null;
+            }
+        }
+    }
+}
+
+function dropScratchBuffer(buf) {
+    if (!buf) return;
+    pendingScratchReads.delete(buf);
+    releaseTextureRefs(buf.texture);
+    noteDroppedBuffer(buf);
+}
+
+function ensureScratch(depth, level, w, h) {
+    if (!scratchLayers[depth]) scratchLayers[depth] = [];
+    if (!scratchLayers[depth][level]) scratchLayers[depth][level] = [];
+    const slots = scratchLayers[depth][level];
+
+    // Pick the smallest existing slot that fits (w, h) without huge area waste.
+    let bestFit = null;
+    let bestArea = Infinity;
+    for (const slot of slots) {
+        const area = slot.capW * slot.capH;
+        if (w <= slot.capW && h <= slot.capH && area < bestArea) {
+            bestFit = slot;
+            bestArea = area;
+        }
+    }
+    if (bestFit && (bestArea <= w * h * 4 || slots.length >= MAX_SCRATCH_SLOTS))
+        return bestFit;
+
+    // Pick the slot whose grown union wastes the least area; keep a separate slot
+    // instead of merging incompatible aspect ratios (e.g. a wide panel + tall window).
+    let growIdx = -1;
+    let growArea = Infinity;
+    for (let i = 0; i < slots.length; i++) {
+        const s = slots[i];
+        const area = Math.max(w, s.capW) * Math.max(h, s.capH);
+        if (area < growArea) {
+            growArea = area;
+            growIdx = i;
+        }
+    }
+    if (growIdx === -1 || (slots.length < MAX_SCRATCH_SLOTS &&
+        growArea > slots[growIdx].capW * slots[growIdx].capH + w * h)) {
+        const buf = target(w, h, w, h);
+        buf.scratch = true;
+        slots.push(buf);
+        return buf;
+    }
+
+    const old = slots[growIdx];
+    const needW = Math.max(w, old.capW);
+    const needH = Math.max(h, old.capH);
+    const capW = resizeCapacity(needW, level, w > old.capW ? old.capW : 0);
+    const capH = resizeCapacity(needH, level, h > old.capH ? old.capH : 0);
+    const buf = target(w, h, capW, capH);
+    buf.scratch = true;
+    dropScratchBuffer(old);
+    slots[growIdx] = buf;
+    return buf;
+}
+
+function takeRetained(w, h) {
+    let bestIdx = -1;
+    let bestArea = Infinity;
+    for (let i = 0; i < retainedPool.length; i++) {
+        const b = retainedPool[i];
+        const area = b.capW * b.capH;
+        if (w <= b.capW && h <= b.capH && w * h * 3 >= area && area < bestArea) {
+            bestIdx = i;
+            bestArea = area;
+        }
+    }
+    if (bestIdx === -1) return null;
+    const buf = retainedPool.splice(bestIdx, 1)[0];
+    buf.w = w;
+    buf.h = h;
+    buf.fb.set_viewport(0, 0, w, h);
+    return buf;
+}
+
+function recycleRetained(buf) {
+    if (!buf) return;
+    if (retainedPool.length >= MAX_RETAINED_POOL)
+        noteDroppedBuffer(retainedPool.shift());
+    retainedPool.push(buf);
+    scheduleScratchTrim();
+}
+
+function scheduleScratchTrim() {
+    if (scratchTrimId)
+        GLib.source_remove(scratchTrimId);
+    scratchTrimId = GLib.timeout_add(GLib.PRIORITY_LOW, SCRATCH_TRIM_MS, () => {
+        scratchTrimId = 0;
+        trimIdleBuffers();
+        return GLib.SOURCE_REMOVE;
+    });
+}
+
+function dropScratchRow(row) {
+    if (!row) return;
+    for (let i = 0; i < row.length; i++) {
+        const slots = row[i];
+        if (!slots) continue;
+        for (const buf of slots) dropScratchBuffer(buf);
+        slots.length = 0;
+    }
+}
+
+function trimIdleBuffers() {
+    while (retainedPool.length)
+        noteDroppedBuffer(retainedPool.pop());
+
+    for (let d = 1; d < scratchLayers.length; d++)
+        dropScratchRow(scratchLayers[d]);
+    scratchLayers.length = Math.min(scratchLayers.length, 1);
+
+    const row0 = scratchLayers[0];
+    if (!row0) return;
+    const neededByLevel = [];
+    for (const effect of activeExplicits) {
+        const sizes = effect.buffers;
+        if (!sizes) continue;
+        for (let i = 0; i < sizes.length; i++) {
+            if (i === effect._retainedIndex) continue;
+            if (!neededByLevel[i]) neededByLevel[i] = [];
+            neededByLevel[i].push(sizes[i]);
+        }
+    }
+    for (let i = 0; i < row0.length; i++) {
+        const slots = row0[i];
+        if (!slots?.length) continue;
+        const needed = neededByLevel[i];
+        if (!needed?.length) {
+            for (const buf of slots) dropScratchBuffer(buf);
+            slots.length = 0;
+            continue;
+        }
+        // Keep only slots that are the tightest fit for at least one active surface
+        // without exceeding 3x that surface's area.
+        const keep = new Set();
+        for (const {w, h} of needed) {
+            let best = null, bestArea = Infinity;
+            for (const buf of slots) {
+                const area = buf.capW * buf.capH;
+                if (w <= buf.capW && h <= buf.capH && area < bestArea) {
+                    best = buf;
+                    bestArea = area;
+                }
+            }
+            if (best && w * h * 3 >= bestArea) keep.add(best);
+        }
+        for (let j = slots.length - 1; j >= 0; j--) {
+            if (!keep.has(slots[j])) {
+                dropScratchBuffer(slots[j]);
+                slots.splice(j, 1);
+            }
+        }
+    }
+}
+
+function dropAllDirectBuffers() {
+    while (retainedPool.length)
+        noteDroppedBuffer(retainedPool.pop());
+    for (const row of scratchLayers)
+        dropScratchRow(row);
+    scratchLayers.length = 0;
+    disconnectAfterPaintClear();
+}
+
+function noteDroppedBytes(bytes) {
+    if (!(bytes > 0)) return;
+    pendingDroppedBytes += bytes;
     Utils.scheduleFramebufferGC();
     if (pendingDroppedBytes >= DROPPED_VRAM_GC_BYTES && !urgentGcId) {
-        urgentGcId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 60, () => {
+        urgentGcId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, URGENT_GC_DELAY_MS, () => {
             urgentGcId = 0;
             pendingDroppedBytes = 0;
             imports.system.gc();
             return GLib.SOURCE_REMOVE;
         });
     }
+}
+
+function noteDroppedBuffer(buffer) {
+    if (!buffer) return;
+    noteDroppedBytes((buffer.capW || buffer.w) * (buffer.capH || buffer.h) * 4);
 }
 
 function take(Type) { return pools.get(Type).pop() || new Type(); }
@@ -216,17 +437,27 @@ function release(effect) {
     Base.releaseToPool(pools.get(effect.constructor), effect, 8);
 }
 function drainIdlePools() {
+    if (scratchTrimId) {
+        GLib.source_remove(scratchTrimId);
+        scratchTrimId = 0;
+    }
     for (const pool of pools.values()) Base.drainPool(pool);
+    dropAllDirectBuffers();
 }
 function drainPools() {
+    // A shell-owned background can outlive extension disable (e.g. Expo).
+    for (const effect of attachedEffects) effect.get_actor()?.remove_effect(effect);
+    drainIdlePools();
+    if (scratchTrimId) {
+        GLib.source_remove(scratchTrimId);
+        scratchTrimId = 0;
+    }
     if (urgentGcId) {
         GLib.source_remove(urgentGcId);
         urgentGcId = 0;
     }
     pendingDroppedBytes = 0;
-    // A shell-owned background can outlive extension disable (e.g. Expo).
-    for (const effect of attachedEffects) effect.get_actor()?.remove_effect(effect);
-    drainIdlePools();
+    activeExplicits.clear();
     templates.clear();
 }
 
@@ -281,19 +512,35 @@ function hasOuterOffscreen(actor, self) {
 }
 
 const Explicit = GObject.registerClass({GTypeName: 'KawaseExplicit' + tag}, class extends Clutter.Effect {
-    _dropBuffers() {
-        const oldBuffers = this.buffers;
+    _dropBuffers(recycle = false) {
+        const oldRetained = this._retained;
         const oldDraws = this.draws;
+        this._retained = null;
+        this._retainedIndex = -1;
+        if (this._lastOffscreenW > 0 && this._lastOffscreenH > 0) {
+            noteDroppedBytes(this._lastOffscreenW * this._lastOffscreenH * 4);
+            this._lastOffscreenW = 0;
+            this._lastOffscreenH = 0;
+        }
         this.buffers = this.draws = null;
         this._intermediatesValid = false;
+        activeExplicits.delete(this);
         if (oldDraws) {
             for (const draw of oldDraws) {
                 try { draw.pipeline.set_layer_null_texture(0); } catch (_) {}
+                draw.boundTexture = null;
             }
         }
-        if (oldBuffers) {
-            for (const buffer of oldBuffers) noteDroppedBuffer(buffer);
+        if (oldRetained) {
+            if (recycle) recycleRetained(oldRetained);
+            else noteDroppedBuffer(oldRetained);
+            if (activeExplicits.size === 0) dropAllDirectBuffers();
+            else scheduleScratchTrim();
             return true;
+        }
+        if (oldDraws) {
+            if (activeExplicits.size === 0) dropAllDirectBuffers();
+            else scheduleScratchTrim();
         }
         return false;
     }
@@ -307,8 +554,8 @@ const Explicit = GObject.registerClass({GTypeName: 'KawaseExplicit' + tag}, clas
             fallback?.get_actor()?.remove_effect(fallback);
     }
 
-    clear(destroying = false) {
-        if (this._dropBuffers())
+    clear(destroying = false, recycle = false) {
+        if (this._dropBuffers(recycle) && !recycle)
             Utils.scheduleFramebufferGC();
         this._removeFallback(destroying);
         this._failedSizes = null;
@@ -324,7 +571,7 @@ const Explicit = GObject.registerClass({GTypeName: 'KawaseExplicit' + tag}, clas
             try {
                 this._configure(layout, width, height, brightness, grain, glass);
             } catch (error) {
-                this._dropBuffers();
+                this._dropBuffers(false);
                 this._failedSizes = layout.sizes;
                 // Even the first configuration can leave partially allocated
                 // targets held by JS wrappers until the scheduled collection.
@@ -358,26 +605,44 @@ const Explicit = GObject.registerClass({GTypeName: 'KawaseExplicit' + tag}, clas
 
     _configure(layout, width, height, brightness, grain, glass) {
         this._intermediatesValid = false;
-        const oldBuffers = this.buffers;
-        const buffers = layout.sizes.map(([w, h], i) => {
-            const old = oldBuffers?.[i];
-            if (old && w <= old.capW && h <= old.capH && w * h * 3 >= old.capW * old.capH) {
-                old.w = w;
-                old.h = h;
-                old.fb.set_viewport(0, 0, w, h);
-                return old;
+        const retainedIndex = layout.steps[layout.steps.length - 1].from;
+        const oldRetained = this._retained;
+
+        // Pre-ensure depth-0 shared scratch levels and the single per-effect retained
+        // buffer before mutating state, so allocation failure falls back cleanly.
+        const levelBufs = new Array(layout.sizes.length);
+        for (let i = 0; i < layout.sizes.length; i++) {
+            const [w, h] = layout.sizes[i];
+            if (i === retainedIndex) {
+                if (oldRetained && w <= oldRetained.capW && h <= oldRetained.capH &&
+                    w * h * 3 >= oldRetained.capW * oldRetained.capH) {
+                    oldRetained.w = w;
+                    oldRetained.h = h;
+                    oldRetained.fb.set_viewport(0, 0, w, h);
+                    levelBufs[i] = oldRetained;
+                } else {
+                    const pooled = takeRetained(w, h);
+                    if (pooled) {
+                        levelBufs[i] = pooled;
+                    } else {
+                        // Initial allocation uses exact target dimensions; active resize growth
+                        // rounds up in coarse steps to avoid per-frame texture churn.
+                        const growing = !!oldRetained && (w > oldRetained.capW || h > oldRetained.capH);
+                        const capW = growing ? resizeCapacity(w, i, w > oldRetained.capW ? oldRetained.capW : 0) : w;
+                        const capH = growing ? resizeCapacity(h, i, h > oldRetained.capH ? oldRetained.capH : 0) : h;
+                        levelBufs[i] = target(w, h, capW, capH);
+                    }
+                }
+            } else {
+                levelBufs[i] = ensureScratch(0, i, w, h);
             }
-            // Initial allocation uses exact target dimensions; active resize growth
-            // rounds up in coarse steps to avoid per-frame texture churn.
-            const growing = !!old && (w > old.capW || h > old.capH);
-            const capW = growing ? resizeCapacity(w, i, w > old.capW ? old.capW : 0) : w;
-            const capH = growing ? resizeCapacity(h, i, h > old.capH ? old.capH : 0) : h;
-            return target(w, h, capW, capH);
-        });
-        buffers[0].fb.orthographic(0, 0, width, height, -1, 1);
+        }
+
+        const retained = levelBufs[retainedIndex];
         const draws = layout.steps.map((step, i, steps) => {
-            const src = buffers[step.from], last = i === steps.length - 1;
-            const dst = last ? null : buffers[step.to];
+            const src = levelBufs[step.from], last = i === steps.length - 1;
+            const [srcW, srcH] = layout.sizes[step.from];
+            const [dstW, dstH] = layout.sizes[step.to];
             const old = this.draws?.[i];
             const pipeline = old?.down === step.down ? old.pipeline : makePipeline(step.down);
             // Inner quads cover their entire target. Store straight shader output
@@ -391,34 +656,52 @@ const Explicit = GObject.registerClass({GTypeName: 'KawaseExplicit' + tag}, clas
                 phase_x: 1, phase_y: 1,
                 width: src.capW, height: src.capH,
                 first_x: 0, first_y: 0,
-                last_x: src.w - 1, last_y: src.h - 1,
+                last_x: srcW - 1, last_y: srcH - 1,
             });
             for (const [name, value] of Object.entries(values)) {
                 const key = name === 'is_last_pass' || name === 'dither_pattern' ? '_u_' + name : name;
                 pipeline.set_uniform_1f(pipeline.get_uniform_location(key), value);
             }
-            const [w, h] = layout.sizes[step.to];
-            if (dst) {
-                dst.fb.set_viewport(0, 0, w, h);
-                dst.fb.orthographic(0, 0, w, h, -1, 1);
-            }
-            return {down: step.down, pipeline, fb: dst?.fb, w: last ? width : w, h: last ? height : h,
-                u: w / (step.gridX * src.capW), v: h / (step.gridY * src.capH),
-                beforeReuse: step.down && !steps[i + 1]?.down && steps[i + 1]?.to > 0 && steps[i + 1]?.to === step.from};
+            return {
+                down: step.down,
+                pipeline,
+                isLast: last,
+                srcLevel: step.from,
+                dstLevel: step.to,
+                dstW, dstH,
+                gridX: step.gridX,
+                gridY: step.gridY,
+                locWidth: pipeline.get_uniform_location('width'),
+                locHeight: pipeline.get_uniform_location('height'),
+                boundTexture: src.texture,
+                boundCapW: src.capW,
+                boundCapH: src.capH,
+                w: last ? width : dstW,
+                h: last ? height : dstH,
+                u: dstW / (step.gridX * src.capW),
+                v: dstH / (step.gridY * src.capH),
+                beforeReuse: step.down && !steps[i + 1]?.down && steps[i + 1]?.to > 0 && steps[i + 1]?.to === step.from,
+            };
         });
         if (this.draws) {
             for (let i = draws.length; i < this.draws.length; i++) {
                 try { this.draws[i].pipeline.set_layer_null_texture(0); } catch (_) {}
+                this.draws[i].boundTexture = null;
             }
         }
-        if (oldBuffers) {
-            for (let i = 0; i < oldBuffers.length; i++) {
-                if (oldBuffers[i] !== buffers[i])
-                    noteDroppedBuffer(oldBuffers[i]);
-            }
+        if (oldRetained && oldRetained !== retained) {
+            if (oldRetained.capW * oldRetained.capH > retained.capW * retained.capH * 3)
+                noteDroppedBuffer(oldRetained);
+            else
+                recycleRetained(oldRetained);
         }
-        this.buffers = buffers;
+        this._retained = retained;
+        this._retainedIndex = retainedIndex;
+        this._logicalW = width;
+        this._logicalH = height;
+        this.buffers = layout.sizes.map(([w, h]) => ({w, h}));
         this.draws = draws;
+        activeExplicits.add(this);
         this.queue_repaint();
     }
 
@@ -431,8 +714,14 @@ const Explicit = GObject.registerClass({GTypeName: 'KawaseExplicit' + tag}, clas
         }
         if (!this._intermediatesValid || (flags & Clutter.EffectPaintFlags.ACTOR_DIRTY)) {
             this._intermediatesValid = false;
-            this._paintIntermediates(context, actor);
-            this._intermediatesValid = true;
+            try {
+                this._paintIntermediates(context, actor);
+                this._intermediatesValid = true;
+            } catch (error) {
+                global.logWarning(`BlurCinnamon: Kawase paint failed: ${error.message}`);
+                actor.continue_paint(context);
+                return;
+            }
         }
 
         // The final pass draws into the current destination and applies paint
@@ -440,27 +729,79 @@ const Explicit = GObject.registerClass({GTypeName: 'KawaseExplicit' + tag}, clas
         const {pipeline, w, h, u, v} = this.draws[this.draws.length - 1];
         const opacity = actor.get_paint_opacity();
         pipeline.set_color4ub(opacity, opacity, opacity, opacity);
-        context.get_framebuffer().draw_textured_rectangle(pipeline, 0, 0, w, h, 0, 0, u, v);
+        const targetFb = context.get_framebuffer();
+        // get_framebuffer() creates a JS wrapper that pins an enclosing offscreen
+        // effect's FBO (e.g. CornerEffect) until GC. Track size transitions so
+        // replaced offscreen FBOs do not pile up during animations or window resize.
+        if (targetFb instanceof Cogl.Offscreen) {
+            const fw = targetFb.get_width(), fh = targetFb.get_height();
+            if (this._lastOffscreenW && (this._lastOffscreenW !== fw || this._lastOffscreenH !== fh))
+                noteDroppedBytes(this._lastOffscreenW * this._lastOffscreenH * 4);
+            this._lastOffscreenW = fw;
+            this._lastOffscreenH = fh;
+        }
+        targetFb.draw_textured_rectangle(pipeline, 0, 0, w, h, 0, 0, u, v);
     }
 
     _paintIntermediates(context, actor) {
-        const capture = this.buffers[0].fb;
-        const previous = actor.get_opacity_override();
-        capture.clear4f(Cogl.BufferBit.COLOR | Cogl.BufferBit.DEPTH, 0, 0, 0, 0);
-        context.push_framebuffer(capture);
-        actor.set_opacity_override(255);
+        const depth = paintNestDepth++;
+        const sizes = this.buffers;
+        const retIdx = this._retainedIndex;
+        const scratches = [];
         try {
-            actor.continue_paint(context);
+            for (let i = 0; i < sizes.length; i++) {
+                if (i !== retIdx)
+                    scratches[i] = ensureScratch(depth, i, sizes[i].w, sizes[i].h);
+            }
+            const capture = retIdx === 0 ? this._retained : scratches[0];
+            if (capture.scratch && pendingScratchReads.has(capture))
+                flushCogl();
+            capture.w = sizes[0].w;
+            capture.h = sizes[0].h;
+            capture.fb.set_viewport(0, 0, capture.w, capture.h);
+            capture.fb.orthographic(0, 0, this._logicalW, this._logicalH, -1, 1);
+            // Blur inputs are flat 2D clones/wallpapers: clear color only so Cogl
+            // does not allocate an unused depth/stencil renderbuffer on capture FBOs.
+            capture.fb.clear4f(Cogl.BufferBit.COLOR, 0, 0, 0, 0);
+            const previous = actor.get_opacity_override();
+            context.push_framebuffer(capture.fb);
+            actor.set_opacity_override(255);
+            try {
+                actor.continue_paint(context);
+            } finally {
+                actor.set_opacity_override(previous);
+                context.pop_framebuffer();
+            }
+            for (const draw of this.draws) {
+                if (draw.isLast) break;
+                const src = draw.srcLevel === retIdx ? this._retained : scratches[draw.srcLevel];
+                const dst = draw.dstLevel === retIdx ? this._retained : scratches[draw.dstLevel];
+                if (dst.scratch && pendingScratchReads.has(dst))
+                    flushCogl();
+                if (draw.boundTexture !== src.texture) {
+                    draw.pipeline.set_layer_texture(0, src.texture);
+                    draw.boundTexture = src.texture;
+                }
+                if (draw.boundCapW !== src.capW || draw.boundCapH !== src.capH) {
+                    draw.boundCapW = src.capW;
+                    draw.boundCapH = src.capH;
+                    draw.pipeline.set_uniform_1f(draw.locWidth, src.capW);
+                    draw.pipeline.set_uniform_1f(draw.locHeight, src.capH);
+                    draw.u = draw.dstW / (draw.gridX * src.capW);
+                    draw.v = draw.dstH / (draw.gridY * src.capH);
+                }
+                dst.w = draw.dstW;
+                dst.h = draw.dstH;
+                dst.fb.set_viewport(0, 0, draw.dstW, draw.dstH);
+                dst.fb.orthographic(0, 0, draw.dstW, draw.dstH, -1, 1);
+                dst.fb.draw_textured_rectangle(draw.pipeline, 0, 0, draw.dstW, draw.dstH, 0, 0, draw.u, draw.v);
+                if (src.scratch) markScratchRead(src);
+                // Submit the down chain before overwriting a level it sampled.
+                // Muffin journals track framebuffer dependencies in both directions.
+                if (draw.beforeReuse) flushCogl();
+            }
         } finally {
-            actor.set_opacity_override(previous);
-            context.pop_framebuffer();
-        }
-        for (const draw of this.draws) {
-            if (!draw.fb) break;
-            draw.fb.draw_textured_rectangle(draw.pipeline, 0, 0, draw.w, draw.h, 0, 0, draw.u, draw.v);
-            // Submit the down chain before overwriting a level it sampled.
-            // Muffin journals track framebuffer dependencies in both directions.
-            if (draw.beforeReuse) Cogl.flush();
+            paintNestDepth--;
         }
     }
 });
@@ -668,6 +1009,46 @@ var PyramidEffect = GObject.registerClass({GTypeName: 'BlurCinnamonPyramidEffect
                 St.ThemeContext.get_for_stage(global.stage).scale_factor, this.fallbackReach);
         }
 
+        _cancelHideRelease() {
+            if (this._hideTimerId) {
+                GLib.source_remove(this._hideTimerId);
+                this._hideTimerId = 0;
+            }
+        }
+
+        _scheduleHideRelease() {
+            if (!direct || this._hideTimerId || (!this.buffers && !this._retained))
+                return;
+            this._hideTimerId = GLib.timeout_add(GLib.PRIORITY_LOW, HIDDEN_RELEASE_MS, () => {
+                this._hideTimerId = 0;
+                if (this._target && !this._target.is_mapped()) {
+                    // Already idle for HIDDEN_RELEASE_MS: release directly instead of
+                    // parking in retainedPool for another full trim cycle.
+                    this._dropBuffers(false);
+                    this._deferred = true;
+                    trimIdleBuffers();
+                }
+                return GLib.SOURCE_REMOVE;
+            });
+        }
+
+        _onVisibilityChanged() {
+            if (this._target?.visible && this._deferred)
+                this._sync();
+        }
+
+        _onMappedChanged() {
+            const actor = this._target;
+            if (!actor) return;
+            if (actor.is_mapped()) {
+                this._cancelHideRelease();
+                if (!this.buffers && this._radius > 0 && !this._fallback && actor.width > 0 && actor.height > 0)
+                    this._sync();
+            } else {
+                this._scheduleHideRelease();
+            }
+        }
+
         _sync() {
             const actor = this._target;
             if (!actor) return;
@@ -685,9 +1066,20 @@ var PyramidEffect = GObject.registerClass({GTypeName: 'BlurCinnamonPyramidEffect
                     this._theme.scale_factor, this._brightness !== 1 || this._grain > 0);
                 this._reach = layout.reach;
                 if (layout.steps.length) {
+                    if (!actor.visible && !this.buffers) {
+                        this._deferred = true;
+                        return;
+                    }
+                    this._deferred = false;
                     this.configure(layout, width, height, this._radius, this._brightness, this._grain, this._glass);
+                    if (actor.is_mapped())
+                        this._cancelHideRelease();
+                    else
+                        this._scheduleHideRelease();
                 } else {
-                    this.clear();
+                    this._deferred = false;
+                    this._cancelHideRelease();
+                    this.clear(false, true);
                     this.queue_repaint();
                 }
             }
@@ -696,13 +1088,19 @@ var PyramidEffect = GObject.registerClass({GTypeName: 'BlurCinnamonPyramidEffect
         _detach(destroying) {
             const actor = this._target;
             if (!actor) return;
+            this._cancelHideRelease();
+            this._deferred = false;
             attachedEffects.delete(this);
             this._target = null;
             if (!destroying) {
                 actor.disconnect(this._sizeId);
                 actor.disconnect(this._destroyId);
                 if (this._scaleId) actor.disconnect(this._scaleId);
+                if (this._visibleId) actor.disconnect(this._visibleId);
+                if (this._mappedId) actor.disconnect(this._mappedId);
             }
+            this._visibleId = 0;
+            this._mappedId = 0;
             if (this._theme) {
                 this._theme.disconnect(this._themeId);
                 this._theme = null;
@@ -717,7 +1115,7 @@ var PyramidEffect = GObject.registerClass({GTypeName: 'BlurCinnamonPyramidEffect
                 }
                 this._pyramid = null;
             }
-            this.clear(destroying);
+            this.clear(destroying, !destroying);
             this._reach = 0;
         }
 
@@ -726,6 +1124,24 @@ var PyramidEffect = GObject.registerClass({GTypeName: 'BlurCinnamonPyramidEffect
                 const want = hasOuterOffscreen(this._target, this);
                 if (want !== this._pyramid.store_final_alpha)
                     this._pyramid.store_final_alpha = want;
+            } else if (direct && !this.buffers && this._deferred && this._radius > 0 && !this._fallback && !this._failedSizes) {
+                // Safety net if an unmapped/hidden actor is painted through a Clutter.Clone.
+                this._deferred = false;
+                const actor = this._target;
+                if (actor && actor.width > 0 && actor.height > 0) {
+                    const layout = logicalPlan(actor.width, actor.height, this._radius, backingScale(actor),
+                        this._theme.scale_factor, this._brightness !== 1 || this._grain > 0);
+                    if (layout.steps.length) {
+                        try {
+                            this._configure(layout, actor.width, actor.height, this._brightness, this._grain, this._glass);
+                            if (!actor.is_mapped())
+                                this._scheduleHideRelease();
+                        } catch (error) {
+                            this._dropBuffers(false);
+                            this._failedSizes = layout.sizes;
+                        }
+                    }
+                }
             }
             super.vfunc_paint(context, flags);
         }
@@ -742,6 +1158,8 @@ var PyramidEffect = GObject.registerClass({GTypeName: 'BlurCinnamonPyramidEffect
                 this._theme = St.ThemeContext.get_for_stage(global.stage);
                 this._themeId = this._theme.connect('notify::scale-factor', () => this._sync());
                 this._scaleId = actor.connect(scaleSignal, () => this._sync());
+                this._visibleId = actor.connect('notify::visible', () => this._onVisibilityChanged());
+                this._mappedId = actor.connect('notify::mapped', () => this._onMappedChanged());
             } else {
                 const scene = actor._blurCinnamonSceneClone;
                 this._pyramid = new KawasePyramid({radius: this._radius, brightness: this._brightness, grain: this._grain});
