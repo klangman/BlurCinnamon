@@ -115,6 +115,8 @@ const BLUR_EFFECT_NAME = "blur";
 const DESAT_EFFECT_NAME = "desat";
 const CORNER_EFFECT_NAME = "corner";
 const NOCULL_EFFECT_NAME = "blurcinnamon-nocull";
+// Popup menu accent actors that are only accented when the theme itself paints a background on them
+const THEME_CHECKED_ACCENT_CLASSES = ["menu-favorites-box", "appmenu-sidebar"];
 
 // An effect that does nothing at all. Muffin's window culling (meta-cullable.c) skips any window actor
 // that has an enabled effect: such a window is not treated as hiding the windows underneath it, so
@@ -4350,6 +4352,10 @@ class BlurPopupMenus extends BlurBase {
       this._accentColor = this._getColor( blendColor, accentOpacity );
 
       this._changeCount = 0;
+
+      // A theme change can change whether a theme paints the menu sidebars, so those accent decisions must be redone
+      this._themeContext = St.ThemeContext.get_for_stage(global.stage);
+      this._themeChangedId = this._themeContext.connect("changed", () => this._onThemeChanged());
       debugMsg( "BlurPopupMenus initilized, actor hidden" );
    }
 
@@ -4677,6 +4683,48 @@ class BlurPopupMenus extends BlurBase {
       menu._blurCinnamonAccentLaterId = laterId;
    }
 
+   // Forget the theme-dependent accent decisions so the sidebars are checked again against the new theme
+   _onThemeChanged() {
+      for (const menu of this._menus) {
+         if (menu._blurCinnamonAccentActors) {
+            menu._blurCinnamonAccentActors = menu._blurCinnamonAccentActors.filter( (child) => {
+               if (!THEME_CHECKED_ACCENT_CLASSES.includes(child.get_style_class_name()))
+                  return true;
+               if (child._blurCinnamonData)
+                  this._restoreActorStyle(child); // Leaves _blurCinnamonData undefined
+               return false;
+            });
+         }
+         this._clearThemeSkipMarkers(menu.actor);
+         // An open menu won't be rescanned until something changes in it, so rescan it now
+         if (menu === this._currentMenu && menu.isOpen)
+            this._queueAccentActorsScan(menu);
+      }
+   }
+
+   _clearThemeSkipMarkers(actor) {
+      for (const child of actor.get_children()) {
+         if (child._blurCinnamonData === null && child instanceof St.BoxLayout &&
+             THEME_CHECKED_ACCENT_CLASSES.includes(child.get_style_class_name()))
+            delete child._blurCinnamonData;
+         this._clearThemeSkipMarkers(child);
+      }
+   }
+
+   // Does the current theme paint a background (color, gradient or image) on this actor?
+   // Returns null when the actor is not on the stage yet, since its theme node can't be read then.
+   _themeFillsBackground(actor) {
+      if (!actor.get_stage())
+         return null;
+      const node = actor.get_theme_node();
+      if (node.get_background_color().alpha > 0)
+         return true;
+      const [gradientType] = node.get_background_gradient();
+      if (gradientType !== St.GradientType.NONE)
+         return true;
+      return node.get_background_image() !== null;
+   }
+
    // Look for Popup menu accent actors
    _findAccentActors(menu, actor) {
       if (!menu._blurCinnamonAccentActors)
@@ -4691,10 +4739,18 @@ class BlurPopupMenus extends BlurBase {
                menu._blurCinnamonAccentActors.push(child);
             } else if (child instanceof St.BoxLayout) {
                let styleClassName = child.get_style_class_name();
-               if (styleClassName && (styleClassName == "menu-favorites-box" || styleClassName == "appmenu-sidebar")) {
-                  debugMsg( `found new menu accent actor: ${styleClassName}` );
-                  this._applyActorStyle(child, this._accentColor);
-                  menu._blurCinnamonAccentActors.push(child);
+               if (styleClassName && THEME_CHECKED_ACCENT_CLASSES.includes(styleClassName)) {
+                  // Only accent the sidebar if the theme itself paints it (e.g. Soul-Dark leaves it transparent).
+                  // This must be checked before our inline style is applied, since the theme node includes it.
+                  const themeFilled = this._themeFillsBackground(child);
+                  if (themeFilled) {
+                     debugMsg( `found new menu accent actor: ${styleClassName}` );
+                     this._applyActorStyle(child, this._accentColor);
+                     menu._blurCinnamonAccentActors.push(child);
+                  } else if (themeFilled === false) {
+                     debugMsg( `theme does not paint ${styleClassName}, skipping accent` );
+                     child._blurCinnamonData = null; // Not interesting for future calls to this function
+                  } // else: not on the stage yet, leave it undefined so a later scan checks it again
                }
             } else if (child instanceof St.Table) {
                let name = child.get_name();
@@ -4805,6 +4861,10 @@ class BlurPopupMenus extends BlurBase {
       this._currentMenu = null;
       // Restore monkey patched PopupMenu open & close functions
       debugMsg( "Destroying Popup Menu object" );
+      if (this._themeChangedId) {
+         this._themeContext.disconnect(this._themeChangedId);
+         this._themeChangedId = 0;
+      }
       for (const menu of this._menus)
          this._cancelAccentActorsScan(menu);
       PopupMenu.PopupMenu.prototype.open = this.original_popupmenu_open;
