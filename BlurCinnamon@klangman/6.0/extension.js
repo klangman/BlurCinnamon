@@ -4434,7 +4434,13 @@ class BlurPopupMenus extends BlurBase {
       super();
       debugMsg( "Constructing popup menu object" );
       this._menus = [];
-      this._reclipLaterId = 0;
+      this._reclipStageId = 0;
+      this._reclipWakeId = 0;
+      this._pendingShow = false;
+      this._pendingDynamicBlur = false;
+      this._lastClipRect = null;
+      this._appliedCornerRadius = null;
+      this._themeVersion = 0;
       blurPopupMenusThis = this; // Make "this" available to monkey patched functions
       this.original_popupmenu_open = PopupMenu.PopupMenu.prototype.open;
       PopupMenu.PopupMenu.prototype.open = this._popupMenuOpen;
@@ -4459,6 +4465,8 @@ class BlurPopupMenus extends BlurBase {
       // A theme change can change whether a theme paints the menu sidebars, so those accent decisions must be redone
       this._themeContext = St.ThemeContext.get_for_stage(global.stage);
       this._themeChangedId = this._themeContext.connect("changed", () => this._onThemeChanged());
+      this._scaleChangedId = global.connect("scale-changed", () => this._onScaleChanged());
+      this._monitorsChangedId = Main.layoutManager.connect("monitors-changed", () => { this._lastClipRect = null; });
       debugMsg( "BlurPopupMenus initilized, actor hidden" );
    }
 
@@ -4493,88 +4501,189 @@ class BlurPopupMenus extends BlurBase {
    }
 
    _cancelMenuReclip() {
-      if (this._reclipLaterId) {
-         Meta.later_remove(this._reclipLaterId);
-         this._reclipLaterId = 0;
+      if (this._reclipStageId) {
+         global.stage.disconnect(this._reclipStageId);
+         this._reclipStageId = 0;
+      }
+      if (this._reclipWakeId) {
+         Meta.later_remove(this._reclipWakeId);
+         this._reclipWakeId = 0;
       }
    }
 
-   _queueMenuReclip(menu) {
-      if (menu !== this._currentMenu || this._reclipLaterId)
+   _syncMenuOpacity(menu) {
+      if (menu !== this._currentMenu || !this._background)
+         return;
+      const opacity = menu.actor.visible ? menu.actor.opacity : 0;
+      if (this._viewport) {
+         // Keep the underlying expanded background transparent; only the viewport paints visibly.
+         this._viewport.opacity = opacity;
+         this._background.opacity = 0;
+      } else {
+         this._background.opacity = opacity;
+      }
+   }
+
+   _updateMenuCornerRadius(menu) {
+      let cornerRadius;
+      const scale = global.ui_scale;
+      if (menu._blurCinnamonCornerThemeVersion === this._themeVersion &&
+          menu._blurCinnamonCornerScale === scale &&
+          menu._blurCinnamonCornerRadius !== undefined) {
+         cornerRadius = menu._blurCinnamonCornerRadius;
+      } else {
+         // The menu's rounded corners could be applied to the box or the menu's actor, so check both.
+         // A non-zero radius on menu.actor takes precedence over menu.box.
+         cornerRadius = 0;
+         let actorNode = menu.actor.get_theme_node();
+         let actorRadius = actorNode ? actorNode.get_border_radius(St.Corner.TOPLEFT) : 0;
+         if (actorRadius != 0) {
+            cornerRadius = actorRadius / scale;
+         } else {
+            let boxNode = menu.box.get_theme_node();
+            if (boxNode)
+               cornerRadius = boxNode.get_border_radius(St.Corner.TOPLEFT) / scale;
+         }
+         if (menu.actor.get_stage()) {
+            menu._blurCinnamonCornerRadius = cornerRadius;
+            menu._blurCinnamonCornerThemeVersion = this._themeVersion;
+            menu._blurCinnamonCornerScale = scale;
+         }
+      }
+      if (this._appliedCornerRadius !== cornerRadius) {
+         this._appliedCornerRadius = cornerRadius;
+         this._updateViewportCornerRadius(this._background, this._viewport, cornerRadius, true, true);
+         // A newly created or updated corner effect needs its clip rect refreshed in _setClip().
+         this._lastClipRect = null;
+      }
+   }
+
+   _queueMenuReclip(menu, wakeStage = false) {
+      if (menu !== this._currentMenu)
          return;
 
-      let laterId = 0;
-      const isCurrent = () => this._currentMenu === menu && this._reclipLaterId === laterId;
-      laterId = Meta.later_add(Meta.LaterType.BEFORE_REDRAW, () => {
-         if (!isCurrent()) return false;
-         try {
-            const actor = menu.actor;
-            if (!actor.visible) {
-               this._applyBackgroundClip(this._background, this._viewport, 0, 0, 0, 0);
-               if (isCurrent()) this._reclipLaterId = 0;
-               return false;
+      if (!this._reclipStageId) {
+         let stageId = 0;
+         const isCurrent = () => this._currentMenu === menu && this._reclipStageId === stageId;
+         // Run on stage "before-update" (after timelines and BEFORE_REDRAW repositioning, and before
+         // Clutter's stage relayout/paint) so slide-in/out and submenu/layout changes land in the
+         // same frame without mutating geometry during allocation or paint.
+         stageId = global.stage.connect("before-update", () => {
+            if (!isCurrent()) return;
+            if (this._reclipWakeId) {
+               Meta.later_remove(this._reclipWakeId);
+               this._reclipWakeId = 0;
             }
-            if (!actor.get_stage() || !actor.is_mapped())
-               return true;
+            try {
+               const actor = menu.actor;
+               if (!actor.visible) {
+                  this._pendingShow = false;
+                  this._background.hide();
+                  if (this._viewport) this._viewport.hide();
+                  if (isCurrent()) {
+                     global.stage.disconnect(stageId);
+                     this._reclipStageId = 0;
+                  }
+                  return;
+               }
+               if (!actor.get_stage() || !actor.is_mapped())
+                  return;
 
-            const ready = this._setClip(menu);
-            if (!isCurrent()) return false;
-            if (!ready) return true;
+               const ready = this._setClip(menu);
+               if (!isCurrent()) return;
+               if (!ready) return;
 
-            // The initial clip is empty, so addBackground() cannot populate window clones yet.
-            // Populate them before this frame is painted instead of waiting for an idle.
-            // Pending work also includes window changes unrelated to the menu's geometry.
-            const background = this._background;
-            if (cloneManager && background._blurCinnamonWinClones && background._blurCinnamonRecloneId) {
-               Mainloop.source_remove(background._blurCinnamonRecloneId);
-               background._blurCinnamonRecloneId = 0;
-               cloneManager.backgroundClipChangedNow(background);
+               if (this._pendingShow) {
+                  this._pendingShow = false;
+                  this._syncMenuOpacity(menu);
+                  const alreadyDynamic = this._isDynamicEffectActive(this._background);
+                  if (!this._background.mapped && alreadyDynamic && this._background._blurCinnamonRecloneId) {
+                     Mainloop.source_remove(this._background._blurCinnamonRecloneId);
+                     this._background._blurCinnamonRecloneId = 0;
+                  }
+                  this._background.show();
+                  if (this._viewport) this._viewport.show();
+                  debugMsg( "Blurred actor is now visible" );
+                  if (this._pendingDynamicBlur && !alreadyDynamic) {
+                     this._createDynamicEffect(this._background);
+                  }
+               }
+
+               // Flush any pending window clone update before this frame paints instead of waiting for an idle.
+               const background = this._background;
+               if (cloneManager && background._blurCinnamonWinClones && background._blurCinnamonRecloneId) {
+                  Mainloop.source_remove(background._blurCinnamonRecloneId);
+                  background._blurCinnamonRecloneId = 0;
+                  cloneManager.backgroundClipChangedNow(background);
+               }
+               if (!isCurrent()) return;
+               global.stage.disconnect(stageId);
+               this._reclipStageId = 0;
+            } catch (error) {
+               if (isCurrent()) {
+                  global.stage.disconnect(stageId);
+                  this._reclipStageId = 0;
+                  this._pendingShow = false;
+                  this._lastClipRect = null;
+                  this._background.hide();
+                  if (this._viewport) this._viewport.hide();
+               }
+               global.logError(error);
             }
-            if (!isCurrent()) return false;
-            this._reclipLaterId = 0;
+         });
+         this._reclipStageId = stageId;
+      }
+
+      // Connecting "before-update" does not schedule a frame by itself; wake the frame clock
+      // when opening or refreshing a menu whose allocation may not change.
+      if (wakeStage && !this._reclipWakeId) {
+         this._reclipWakeId = Meta.later_add(Meta.LaterType.BEFORE_REDRAW, () => {
+            this._reclipWakeId = 0;
             return false;
-         } catch (error) {
-            if (isCurrent()) {
-               this._reclipLaterId = 0;
-               this._applyBackgroundClip(this._background, this._viewport, 0, 0, 0, 0);
-            }
-            global.logError(error);
-            return false;
-         }
-      });
-      this._reclipLaterId = laterId;
+         });
+      }
    }
 
    // Set the visible section of the background based on the size of the popup menu
    _setClip(menu){
-      const reclipLaterId = this._reclipLaterId;
+      const reclipStageId = this._reclipStageId;
       if (menu && this._currentMenu && menu === this._currentMenu) {
          let actor = menu.actor;
          if (actor.visible) {
-            let themeNode = menu.actor.get_theme_node();
+            let themeNode = actor.get_theme_node();
             let pLeft = themeNode.get_padding(St.Side.LEFT);
             let pRight = themeNode.get_padding(St.Side.RIGHT);
             let pTop = themeNode.get_padding(St.Side.TOP);
             let pBottom = themeNode.get_padding(St.Side.BOTTOM);
             let bm = menu.box.get_margin();
-            // Read allocated bounds only after layout. The width/height properties
-            // may include CSS margins while a relayout is pending.
-            // BEFORE_REDRAW can run before Clutter's normal relayout. This helper completes
-            // pending layout here. Waiting for has_allocation() can stall throughout an animation.
-            // _setClip() runs from the scheduled callback, never directly inside allocation handlers.
-            const box = Cinnamon.util_get_transformed_allocation(actor);
+            // Completing pending layout can trigger PopupMenu._allocationChanged(), which calls
+            // set_position() and invalidates the allocation again. Loop briefly so the repositioned
+            // box settles before we clip and before Clutter paints this frame.
+            let box = null;
+            for (let pass = 0; pass < 3; pass++) {
+               box = Cinnamon.util_get_transformed_allocation(actor);
+               // Completing layout can emit signals that close, reopen or replace this menu.
+               if (menu !== this._currentMenu || reclipStageId !== this._reclipStageId || !actor.visible)
+                  return false;
+               if (actor.has_allocation())
+                  break;
+            }
             const width = box.x2 - box.x1;
             const height = box.y2 - box.y1;
             if (![box.x1, box.y1, width, height].every(Number.isFinite) || width <= 0 || height <= 0)
                return false;
-            // Completing layout can emit signals that close, reopen or replace this menu.
-            if (menu !== this._currentMenu || reclipLaterId !== this._reclipLaterId)
-               return false;
-            this._applyBackgroundClip(this._background, this._viewport,
-               box.x1+bm.left+pLeft, box.y1+bm.top+pTop,
-               width-(bm.left+bm.right+pLeft+pRight), height-(bm.top+bm.bottom+pTop+pBottom));
+            const x = box.x1 + bm.left + pLeft;
+            const y = box.y1 + bm.top + pTop;
+            const w = width - (bm.left + bm.right + pLeft + pRight);
+            const h = height - (bm.top + bm.bottom + pTop + pBottom);
+            const prev = this._lastClipRect;
+            if (prev && prev[0] === x && prev[1] === y && prev[2] === w && prev[3] === h)
+               return true;
+            this._lastClipRect = [x, y, w, h];
+            this._applyBackgroundClip(this._background, this._viewport, x, y, w, h);
          } else {
-            this._applyBackgroundClip(this._background, this._viewport, 0, 0, 0, 0);
+            this._background.hide();
+            if (this._viewport) this._viewport.hide();
          }
          return true;
       }
@@ -4608,19 +4717,7 @@ class BlurPopupMenus extends BlurBase {
                this._applyActorStyle(menu.box, this._boxColor);
             }
 
-            // The menu's rounded corners could be applied to the box or the menus actor, so we have to check both
-            // We are assuming that all corners have the same radius, hope that is true.
-            let themeNode = menu.box.get_theme_node();
-            if (themeNode) {
-               let radius = themeNode.get_border_radius(St.Corner.TOPLEFT);
-               this._updateViewportCornerRadius( this._background, this._viewport, radius/global.ui_scale, true, true );
-            }
-            themeNode = menu.actor.get_theme_node();
-            if (themeNode) {
-               let radius = themeNode.get_border_radius(St.Corner.TOPLEFT);
-               if (radius != 0)
-                  this._updateViewportCornerRadius( this._background, this._viewport, radius/global.ui_scale, true, true );
-            }
+            this._updateMenuCornerRadius(menu);
 
             // PopupMenu.open() calls setMaxHeight() just before emitting 'open-state-changed', which replaces
             // menu.actor's inline style with "max-height: Npx; max-width: Npx;". We must append to that style
@@ -4637,23 +4734,25 @@ class BlurPopupMenus extends BlurBase {
          }
 
          this._cancelMenuReclip();
-         this._currentMenu = menu;
-         // Make the background visible but zero size initially, let the paint signal re-clip the background as needed
-         this._applyBackgroundClip(this._background, this._viewport, 0, 0, 0, 0);
-         // Use the exact same clip-rect formula _setClip() uses for every later notify::allocation update
-         // Schedule every open, even if the final allocation is unchanged and emits no notification.
-         this._queueMenuReclip(menu);
-         this._background.show();
-         if (this._viewport) this._viewport.show();
-         debugMsg( "Blurred actor is now visible" );
-
-         // If Dynamic Blurring is enabled, create window clones and add them to the background
-         if (isDynamicBlurType(blurType)) {
-            this._createDynamicEffect(this._background);
+         if (this._currentMenu && this._currentMenu !== menu) {
+            if (this._background.visible) this._background.hide();
+            if (this._viewport && this._viewport.visible) this._viewport.hide();
          }
+         this._currentMenu = menu;
+         this._pendingShow = true;
+         this._pendingDynamicBlur = isDynamicBlurType(blurType);
+         // Keep the background/viewport hidden until before-update computes the real clip rect
+         // (avoiding a 0x0 resize that drops retained blur FBOs on reopen).
+         // Schedule every open, even if the final allocation is unchanged and emits no notification.
+         this._queueMenuReclip(menu, true);
 
-         // Now that the menu is open we need to know if new actors are added so we can check for accent elements
-         menu.blurCinnamonSignalManager.connect(menu.actor, 'queue-relayout', () => this._queueAccentActorsScan(menu) );
+         // Track layout changes while the menu is open for frame-accurate reclipping and accent discovery.
+         // Disconnect first in case a menu reopens before its animated close finished.
+         menu.blurCinnamonSignalManager.disconnect("queue-relayout", menu.actor);
+         menu.blurCinnamonSignalManager.connect(menu.actor, 'queue-relayout', () => {
+            this._queueMenuReclip(menu);
+            this._queueAccentActorsScan(menu);
+         });
       } else {
          this._cancelAccentActorsScan(menu);
       }
@@ -4669,6 +4768,7 @@ class BlurPopupMenus extends BlurBase {
       this._cancelAccentActorsScan(menu);
       if (this._currentMenu === menu) {
          this._cancelMenuReclip();
+         this._pendingShow = false;
          if (this._background.is_visible()) {
             // In some cases the Tween for the popupMenu close animation will not call its onComplete function
             // and therefore no "menu-animated-closed" signal which would call _onClosed().
@@ -4708,12 +4808,25 @@ class BlurPopupMenus extends BlurBase {
    }
 
    _reapplyAccentActorsStyle(menu) {
-      menu._blurCinnamonAccentActors.forEach( (child) => this._applyActorStyle(child, this._accentColor) );
+      if (!menu._blurCinnamonAccentActors) return;
+      let writeIdx = 0;
+      for (let i = 0; i < menu._blurCinnamonAccentActors.length; i++) {
+         let child = menu._blurCinnamonAccentActors[i];
+         if (child.is_finalized && child.is_finalized()) continue;
+         menu._blurCinnamonAccentActors[writeIdx++] = child;
+         this._applyActorStyle(child, this._accentColor);
+      }
+      menu._blurCinnamonAccentActors.length = writeIdx;
    }
 
    _applyActorStyle(actor, color) {
-      let radius = 0;
       let style = actor.get_style();
+      let rgba = `rgba(${color.red}, ${color.green}, ${color.blue}, ${color.alpha/255.0})`;
+      if (actor._blurCinnamonData &&
+          style === actor._blurCinnamonData.applied_entry_style &&
+          actor._blurCinnamonData.applied_rgba === rgba) {
+         return;
+      }
       if (!actor._blurCinnamonData || style !== actor._blurCinnamonData.applied_entry_style) {
          actor._blurCinnamonData = {original_entry_color: actor.get_background_color(), original_entry_style: style,
                                     original_entry_class: actor.get_style_class_name(), original_entry_pseudo_class: actor.get_style_pseudo_class()};
@@ -4723,10 +4836,10 @@ class BlurPopupMenus extends BlurBase {
       let originalStyle = actor._blurCinnamonData.original_entry_style ?? "";
       if (originalStyle.length > 0 && !originalStyle.trimEnd().endsWith(";"))
          originalStyle += ";";
-      let rgba = `rgba(${color.red}, ${color.green}, ${color.blue}, ${color.alpha/255.0})`
       let appliedStyle = originalStyle + (originalStyle.length > 0 ? " " : "") + `background-gradient-direction: vertical; background-gradient-start: ${rgba}; background-gradient-end: ${rgba};`;
       // Identify CSS exactly so reapplication never rebases it
       actor._blurCinnamonData.applied_entry_style = appliedStyle;
+      actor._blurCinnamonData.applied_rgba = rgba;
       actor.set_style(appliedStyle);
       return;
    }
@@ -4788,9 +4901,14 @@ class BlurPopupMenus extends BlurBase {
 
    // Forget the theme-dependent accent decisions so the sidebars are checked again against the new theme
    _onThemeChanged() {
+      this._themeVersion++;
+      this._appliedCornerRadius = null;
+      this._lastClipRect = null;
       for (const menu of this._menus) {
          if (menu._blurCinnamonAccentActors) {
             menu._blurCinnamonAccentActors = menu._blurCinnamonAccentActors.filter( (child) => {
+               if (child.is_finalized && child.is_finalized())
+                  return false;
                if (!THEME_CHECKED_ACCENT_CLASSES.includes(child.get_style_class_name()))
                   return true;
                if (child._blurCinnamonData)
@@ -4800,8 +4918,22 @@ class BlurPopupMenus extends BlurBase {
          }
          this._clearThemeSkipMarkers(menu.actor);
          // An open menu won't be rescanned until something changes in it, so rescan it now
-         if (menu === this._currentMenu && menu.isOpen)
+         if (menu === this._currentMenu && menu.isOpen) {
+            if (settings.allowTransparentColorPopup)
+               this._updateMenuCornerRadius(menu);
             this._queueAccentActorsScan(menu);
+            this._queueMenuReclip(menu, true);
+         }
+      }
+   }
+
+   _onScaleChanged() {
+      this._appliedCornerRadius = null;
+      this._lastClipRect = null;
+      if (this._currentMenu && this._currentMenu.isOpen) {
+         if (settings.allowTransparentColorPopup)
+            this._updateMenuCornerRadius(this._currentMenu);
+         this._queueMenuReclip(this._currentMenu, true);
       }
    }
 
@@ -4886,6 +5018,9 @@ class BlurPopupMenus extends BlurBase {
          menu.blurCinnamonSignalManager.connect(menu.actor, "notify::allocation", queueReclip);
          menu.blurCinnamonSignalManager.connect(menu.actor, "notify::size", queueReclip);
          menu.blurCinnamonSignalManager.connect(menu.actor, "notify::position", queueReclip);
+         menu.blurCinnamonSignalManager.connect(menu.actor, "notify::x", queueReclip);
+         menu.blurCinnamonSignalManager.connect(menu.actor, "notify::y", queueReclip);
+         menu.blurCinnamonSignalManager.connect(menu.actor, "notify::opacity", () => this._syncMenuOpacity(menu));
          this._menus.push(menu);
       }
       debugMsg( "attach complete" );
@@ -4895,6 +5030,7 @@ class BlurPopupMenus extends BlurBase {
       this._cancelAccentActorsScan(menu);
       if (this._currentMenu === menu) {
          this._cancelMenuReclip();
+         this._pendingShow = false;
          this._background.hide();
          if (this._viewport) this._viewport.hide();
          debugMsg( "blur actor hidden" );
@@ -4909,6 +5045,9 @@ class BlurPopupMenus extends BlurBase {
    updateEffects() {
       this._cancelAccentActorsScan(this._currentMenu);
       this._cancelMenuReclip();
+      this._pendingShow = false;
+      this._lastClipRect = null;
+      this._appliedCornerRadius = null;
       debugMsg("updateEffects for popup menus" );
       this._changeCount++;
 
@@ -4961,12 +5100,23 @@ class BlurPopupMenus extends BlurBase {
 
    destroy() {
       this._cancelMenuReclip();
+      this._pendingShow = false;
+      this._lastClipRect = null;
+      this._appliedCornerRadius = null;
       this._currentMenu = null;
       // Restore monkey patched PopupMenu open & close functions
       debugMsg( "Destroying Popup Menu object" );
       if (this._themeChangedId) {
          this._themeContext.disconnect(this._themeChangedId);
          this._themeChangedId = 0;
+      }
+      if (this._scaleChangedId) {
+         global.disconnect(this._scaleChangedId);
+         this._scaleChangedId = 0;
+      }
+      if (this._monitorsChangedId) {
+         Main.layoutManager.disconnect(this._monitorsChangedId);
+         this._monitorsChangedId = 0;
       }
       for (const menu of this._menus)
          this._cancelAccentActorsScan(menu);
@@ -4983,6 +5133,9 @@ class BlurPopupMenus extends BlurBase {
             if (menus[i].box._blurCinnamonData) {
                this._restoreMenuStyle(menus[i]);
             }
+            delete menus[i]._blurCinnamonCornerRadius;
+            delete menus[i]._blurCinnamonCornerThemeVersion;
+            delete menus[i]._blurCinnamonCornerScale;
          }
       }
    }
