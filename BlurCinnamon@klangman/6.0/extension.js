@@ -283,8 +283,12 @@ function getLiquidGlassParams(radius) {
       blur_radius: liquidGlassBlurRadius(radius),
       edge_size: settings.liquidGlassEdgeSize,
       rim_width: settings.liquidGlassRimWidth,
+      reach: settings.liquidGlassReach,
       falloff: settings.liquidGlassFalloff,
       gloss: settings.liquidGlassGloss,
+      specular_strength: settings.liquidGlassSpecularStrength,
+      edge_shadow: settings.liquidGlassEdgeShadow,
+      edge_glow: settings.liquidGlassEdgeGlow,
       tint: 0,   // The generic Tint strength and Tint color settings provide the tinting
       backdrop_zoom: settings.liquidGlassBackdropZoom,
       shadow: settings.liquidGlassShadow,
@@ -342,7 +346,7 @@ function printStackTrace(header) {
    log( "Stack:\n"+err.stack );
 }
 
-// Shell-owned backgrounds use Gaussian for the Liquid Glass setting because
+// Shell-owned backgrounds use Dual Kawase for the Liquid Glass setting because
 // neither Overview, Expo nor the 3D switcher has a glass shape to refract.
 function addShellBackgroundEffects(actor, blurType, radius, grain, saturation) {
    const effects = [];
@@ -351,7 +355,7 @@ function addShellBackgroundEffects(actor, blurType, radius, grain, saturation) {
       let effect;
       if (blurType === BlurType.Simple)
          effect = new Clutter.BlurEffect();
-      else if (blurType === BlurType.Gaussian || blurType === BlurType.DynamicBlur || isLiquidGlassBlurType(blurType))
+      else if (blurType === BlurType.Gaussian || blurType === BlurType.DynamicBlur)
          effect = new GaussianBlur.GaussianBlurEffect(params);
       else if (blurType === BlurType.MonteCarlo || blurType === BlurType.DynamicMC)
          effect = new MonteCarloBlur.MonteCarloBlurEffect({...params, iterations: settings.montecarloIterations,
@@ -372,7 +376,8 @@ function addShellBackgroundEffects(actor, blurType, radius, grain, saturation) {
 function shellBackgroundTargets(background, blurType) {
    // The 6.8 shell groups separate wallpaper actors for each monitor.
    // Process them independently so the blur can't sample the next monitor.
-   if (dualKawaseKind() === Kawase.PyramidEffect && staticBlurType(blurType) === BlurType.DualKawase &&
+   if (dualKawaseKind() === Kawase.PyramidEffect &&
+       (staticBlurType(blurType) === BlurType.DualKawase || isLiquidGlassBlurType(blurType)) &&
        typeof Main.createFullScreenBackground === "function")
       return background.get_children();
    return [background];
@@ -2574,14 +2579,21 @@ class BlurBase {
    }
 
    // The Liquid Glass effect draws its own rounded shape (used for the refraction, rim lighting and to
-   // clip its output), so its corner radius must match the corner effect of the same actor. It only
-   // has a single radius for all 4 corners, so if just the top or just the bottom corners are rounded
-   // then use 0 and let the corner effect do the rounding. Does nothing for other blur effects.
+   // clip its output), so its corner radius and top/bottom flags must match the corner effect of the
+   // same actor. Does nothing for other blur effects.
    _syncLiquidGlassCornerRadius(actor) {
       let blurEffect = this._getBlurEffect(actor);
       if (blurEffect instanceof Refraction.RefractionEffect) {
          let cornerEffect = this._getCornerEffect(actor);
-         blurEffect.corner_radius = (cornerEffect && cornerEffect.corners_top && cornerEffect.corners_bottom) ? cornerEffect.radius : 0;
+         if (cornerEffect) {
+            blurEffect.corner_radius = cornerEffect.radius;
+            blurEffect.corners_top = cornerEffect.corners_top;
+            blurEffect.corners_bottom = cornerEffect.corners_bottom;
+         } else {
+            blurEffect.corner_radius = 0;
+            blurEffect.corners_top = true;
+            blurEffect.corners_bottom = true;
+         }
          // A Liquid Glass effect newly added to a viewport picks up the last visible rect
          if (actor._blurCinnamonGlassRect)
             blurEffect.glass_rect = actor._blurCinnamonGlassRect;
@@ -2693,6 +2705,8 @@ class BlurBase {
       let ce = background.get_effect(CORNER_EFFECT_NAME);
       if (ce) {
          ce.radius = radius;
+         ce.corners_top = top;
+         ce.corners_bottom = bottom;
       } else {
          if (radius>0) {
             // Create the effect
@@ -3130,24 +3144,20 @@ class BlurOSD extends BlurBase {
    _syncActorStyle(actor, transparent) {
       if (!actor) return;
       if (transparent && settings.allowTransparentColorOSD && !actor._blurCinnamonData) {
-         actor._blurCinnamonData = {
-            original_color: actor.get_background_color(),
-            original_style: actor.get_style(),
-            original_class: actor.get_style_class_name(),
-            original_pseudo_class: actor.get_style_pseudo_class()
-         };
+         const originalStyle = actor.get_style();
+         actor._blurCinnamonData = { original_style: originalStyle };
 
-         actor.set_style(
+         let base = originalStyle ? originalStyle.trim() : "";
+         if (base.length > 0 && !base.endsWith(";"))
+            base += ";";
+         const transparentStyle =
             "background-gradient-direction: vertical; " +
             "background-gradient-start: transparent; " +
             "background-gradient-end: transparent; " +
-            "background: transparent;"
-         );
+            "background: transparent;";
+         actor.set_style(base.length > 0 ? `${base} ${transparentStyle}` : transparentStyle);
       } else if ((!transparent || !settings.allowTransparentColorOSD) && actor._blurCinnamonData) {
-         actor.set_background_color(actor._blurCinnamonData.original_color);
          actor.set_style(actor._blurCinnamonData.original_style);
-         actor.set_style_class_name(actor._blurCinnamonData.original_class);
-         actor.set_style_pseudo_class(actor._blurCinnamonData.original_pseudo_class);
          delete actor._blurCinnamonData;
       }
    }
@@ -3157,9 +3167,23 @@ class BlurOSD extends BlurBase {
       target.set_opacity(state.osdActor.get_paint_opacity());
    }
 
-   _scheduleReclip(state, showBackground = false) {
+   _getSettingsKey(values) {
+      const [, , blurType, radius] = values;
+      const parts = [...values, settings.allowTransparentColorOSD, settings.dualKawaseMode];
+      if (isLiquidGlassBlurType(blurType))
+         parts.push(...Object.values(getLiquidGlassParams(radius)));
+      else if (staticBlurType(blurType) === BlurType.MonteCarlo)
+         parts.push(settings.montecarloIterations, settings.montecarloUseBasePixel, settings.montecarloPerferCloserPixels);
+      return parts.join("|");
+   }
+
+   _scheduleReclip(state, showBackground = false, forceCloneRefresh = false) {
       if (!this._isCurrentState(state))
          return;
+      // Preserve a pending workspace clone refresh if a layout/style signal
+      // replaces this callback before BEFORE_REDRAW runs.
+      if (forceCloneRefresh)
+         state.pendingCloneRefresh = true;
       this._cancelReclip(state);
 
       // Keep the callback registered until preparation succeeds
@@ -3174,7 +3198,8 @@ class BlurOSD extends BlurBase {
             return false;
          }
 
-         if (!state.clipActor.is_mapped() || !this._setClip(state))
+         const clipStatus = state.clipActor.is_mapped() ? this._setClip(state) : 0;
+         if (!clipStatus)
             return true;
 
          // A forced layout can emit allocation notifications and replace this
@@ -3183,13 +3208,21 @@ class BlurOSD extends BlurBase {
             return false;
          state.laterId = 0;
 
+         const clipChanged = clipStatus === 2;
+         const needsCloneRefresh = state.pendingCloneRefresh;
+         state.pendingCloneRefresh = false;
+
          if (showBackground) {
+            const wasVisible = state.background.visible;
             this._syncBackgroundOpacity(state);
-            state.background.show();
-            if (state.viewport) state.viewport.show();
-            if (isDynamicBlurType(state.blurType))
+            if (!wasVisible) {
+               state.background.show();
+               if (state.viewport) state.viewport.show();
+            }
+            if (isDynamicBlurType(state.blurType) && (!wasVisible || clipChanged || needsCloneRefresh))
                cloneWindowsForBackgroundNow(state.background, state.background._blurCinnamonDesktopOnly);
-            this._syncActorStyle(state.actor, true);
+            if (!wasVisible)
+               this._syncActorStyle(state.actor, true);
          }
          return false;
       });
@@ -3207,6 +3240,7 @@ class BlurOSD extends BlurBase {
 
       const values = this._getSettings(settings.osdOverride);
       const [opacity, blendColor, blurType, radius, saturation, grain] = values;
+      const settingsKey = this._getSettingsKey(values);
       const useViewport = this._wantsViewport(blurType);
       let state = this._states.get(osd);
       if (state && (state.actor !== actor || state.clipActor !== clipActor || this._needsBackgroundRebuild(state.background, blurType, useViewport))) {
@@ -3216,15 +3250,28 @@ class BlurOSD extends BlurBase {
 
       if (state) {
          this.parent = state.background.get_parent() || getBackgroundParent();
-         if (state.viewport)
-            this._updateViewportEffects(state.background, state.viewport, ...values);
-         else
-            this._updateEffects(state.background, opacity, blendColor, blurType, radius, saturation);
-         state.blurType = blurType;
+         const settingsChanged = state.settingsKey !== settingsKey;
+         if (settingsChanged) {
+            if (state.viewport)
+               this._updateViewportEffects(state.background, state.viewport, ...values);
+            else
+               this._updateEffects(state.background, opacity, blendColor, blurType, radius, saturation);
+            state.blurType = blurType;
+            state.settingsKey = settingsKey;
+            // Margin or theme transparency may have changed; force the next _setClip() to apply.
+            state.lastClip = null;
+            this._syncActorStyle(state.actor, state.background.visible);
+         }
 
-         // Workspace OSD needs an explicit refresh because its visual
-         // source changes when switching workspaces
-         this._scheduleReclip(state, true);
+         // Repeated slider updates (e.g. holding volume/brightness) reuse the active
+         // background as-is; allocation/style signals handle any actual size change.
+         // Workspace OSD still refreshes because the windows behind it change.
+         if (!isWorkspaceOsd && !settingsChanged && state.background.visible && !state.laterId) {
+            this._syncBackgroundOpacity(state);
+            return;
+         }
+
+         this._scheduleReclip(state, true, isWorkspaceOsd);
          return;
       }
 
@@ -3238,6 +3285,7 @@ class BlurOSD extends BlurBase {
       if (viewport) viewport._blurCinnamonName = "OsdWindow";
       state = {
          osd, actor, clipActor, osdActor, background, viewport, blurType,
+         settingsKey, lastClip: null, pendingCloneRefresh: false,
          signalManager: new SignalManager.SignalManager(null), laterId: 0
       };
       this._states.set(osd, state);
@@ -3306,10 +3354,11 @@ class BlurOSD extends BlurBase {
          delete osd._blurCinnamonBackground;
    }
 
+   // Returns 0 if bounds are not ready yet, 1 if unchanged, or 2 if clip/corners were updated.
    _setClip(state) {
       const actor = state.clipActor;
       if (!this._isCurrentState(state) || !actor.get_stage())
-         return false;
+         return 0;
 
       // Use the allocated bounds: width/height may return the preferred
       // size, including theme margins, while a relayout is pending
@@ -3318,21 +3367,35 @@ class BlurOSD extends BlurBase {
       const height = box.y2 - box.y1;
       if (![box.x1, box.y1, width, height].every(Number.isFinite) ||
           width <= 0 || height <= 0)
-         return false;
+         return 0;
 
       // Use the actor that represents the complete popup for
       // both clipping geometry and corner radius
       const themeNode = actor.get_theme_node();
+      let cornerRadius = null;
       if (themeNode) {
-         let cornerRadius = themeNode.get_border_radius(St.Corner.TOPLEFT);
+         cornerRadius = themeNode.get_border_radius(St.Corner.TOPLEFT);
          if (cornerRadius === 9999)
             cornerRadius = Math.min(width, height) / 2;
-         this._updateViewportCornerRadius(state.background, state.viewport, cornerRadius / global.ui_scale, true, true);
+         cornerRadius /= global.ui_scale;
       }
+
+      // Avoid re-applying clip and re-cloning when a signal (such as style-changed
+      // from our own transparent style override) fires with identical geometry.
+      const prev = state.lastClip;
+      if (prev &&
+          prev[0] === box.x1 && prev[1] === box.y1 &&
+          prev[2] === width && prev[3] === height &&
+          prev[4] === cornerRadius)
+         return 1;
+
+      if (cornerRadius !== null)
+         this._updateViewportCornerRadius(state.background, state.viewport, cornerRadius, true, true);
       if (!this._isCurrentState(state))
-         return false;
+         return 0;
       this._applyBackgroundClip(state.background, state.viewport, box.x1, box.y1, width, height);
-      return true;
+      state.lastClip = [box.x1, box.y1, width, height, cornerRadius];
+      return 2;
    }
 
    destroy() {
@@ -5233,7 +5296,7 @@ class BlurDesktop extends BlurBase {
    _getGenericSettings() {
       let genericSettings = super._getGenericSettings();
       if (isLiquidGlassBlurType(genericSettings[2]))
-         genericSettings[2] = BlurType.Gaussian;
+         genericSettings[2] = BlurType.DualKawase;
       return genericSettings;
    }
 
@@ -7784,8 +7847,12 @@ class BlurSettings {
       this.bind('liquid-glass-strength', 'liquidGlassStrength', blurChanged);
       this.bind('liquid-glass-edge-size', 'liquidGlassEdgeSize', blurChanged);
       this.bind('liquid-glass-rim-width', 'liquidGlassRimWidth', blurChanged);
+      this.bind('liquid-glass-reach', 'liquidGlassReach', blurChanged);
       this.bind('liquid-glass-falloff', 'liquidGlassFalloff', blurChanged);
       this.bind('liquid-glass-gloss', 'liquidGlassGloss', blurChanged);
+      this.bind('liquid-glass-specular-strength', 'liquidGlassSpecularStrength', blurChanged);
+      this.bind('liquid-glass-edge-shadow', 'liquidGlassEdgeShadow', blurChanged);
+      this.bind('liquid-glass-edge-glow', 'liquidGlassEdgeGlow', blurChanged);
       this.bind('liquid-glass-backdrop-zoom', 'liquidGlassBackdropZoom', blurChanged);
       this.bind('liquid-glass-shadow', 'liquidGlassShadow', blurChanged);
       this.bind('liquid-glass-rgb-fringing', 'liquidGlassRgbFringing', blurChanged);

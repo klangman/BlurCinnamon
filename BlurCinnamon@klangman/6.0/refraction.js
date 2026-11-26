@@ -26,20 +26,30 @@ const CLIP_STABILIZE_EPSILON = 1.0;
 var MAX_BLUR_RADIUS = 48.0;
 
 const DEFAULT_PARAMS = {
-    strength: 0.42,
+    strength: 1.0,
     blur_radius: 10,
-    edge_size: 22,
-    falloff: 2.4,
-    corner_radius: 22,
+    edge_size: 32,
+    falloff: 1.50,
+    refraction_style: 0.0,
+    corner_radius: 0,
+    corners_top: true,
+    corners_bottom: true,
     rim_width: 4.8,
-    rgb_fringing: 0.08,
-    gloss: 0.55,
+    reach: 0,
+    rgb_fringing: 0.15,
+    gloss: 1.0,
+    fresnel_angle: 0.0,
+    fresnel_width: 1.5,
+    fresnel_two_sided: true,
+    specular_strength: 0.10,
+    edge_shadow: 0.70,
+    edge_glow: 0.50,
     webcam_gloss: false,
     webcam_device: '',
-    tint: 0.18,
-    tint_color: [1.0, 1.0, 1.0, 1.0],
+    tint: 0.10,
+    tint_color: [0.71373, 0.71373, 0.71373, 1.0],
     backdrop_zoom: 1.0,
-    shadow: 0.28,
+    shadow: 0.30,
     texture_repeat: 0,
     blur_direction: 0,
     private_pass: 0,
@@ -58,24 +68,15 @@ const INTEGRAL_UNIFORMS = new Set([
     'dir',
     'downsampling_mode',
     'factor',
+    'fresnel_two_sided',
     'iterations',
     'mode',
     'operation',
     'prefer_closer_pixels',
     'straight_corners',
+    'texture_repeat',
     'use_base_pixel',
 ]);
-
-function set_uniform(effect, name, value) {
-    if (!effect._bms_uniforms)
-        effect._bms_uniforms = new Map();
-
-    effect._bms_uniforms.set(name, value);
-    effect._bms_uniforms_dirty = true;
-    try {
-        effect.queue_repaint();
-    } catch (e) { }
-}
 
 // Position of an actor on the stage from its own and its ancestors' positions. Unlike
 // get_transformed_position(), it is current as soon as a position is set, before the next allocation.
@@ -86,24 +87,6 @@ function stage_position(actor) {
         y += a.y;
     }
     return [x, y];
-}
-
-function upload_uniforms(effect) {
-    if (!effect._bms_uniforms_dirty || !effect._bms_uniforms || !effect.get_actor?.())
-        return;
-
-    for (const [name, value] of effect._bms_uniforms) {
-        try {
-            effect.set_uniform_value(name, get_shader_value(name, value));
-        } catch (e) {
-            if (!effect._bms_uniform_warning_shown) {
-                effect._bms_uniform_warning_shown = true;
-                console.warn(`[Blur my Shell] shader uniform upload failed for ${effect.constructor.name}`, e);
-            }
-        }
-    }
-
-    effect._bms_uniforms_dirty = false;
 }
 
 function get_shader_value(name, value) {
@@ -129,15 +112,15 @@ var RefractionEffect = new GObject.registerClass({
                 `Refraction strength`,
                 GObject.ParamFlags.READWRITE,
                 0.0, 1.0,
-                0.42,
+                DEFAULT_PARAMS.strength,
             ),
             'edge_size': GObject.ParamSpec.double(
                 `edge_size`,
                 `Edge Size`,
                 `Refraction edge size`,
                 GObject.ParamFlags.READWRITE,
-                1.0, 200.0,
-                22.0,
+                1.0, 500.0,
+                DEFAULT_PARAMS.edge_size,
             ),
             'blur_radius': GObject.ParamSpec.double(
                 `blur_radius`,
@@ -145,15 +128,23 @@ var RefractionEffect = new GObject.registerClass({
                 `Internal glass blur radius`,
                 GObject.ParamFlags.READWRITE,
                 0.0, MAX_BLUR_RADIUS,
-                10.0,
+                DEFAULT_PARAMS.blur_radius,
             ),
             'falloff': GObject.ParamSpec.double(
                 `falloff`,
                 `Falloff`,
                 `Refraction falloff`,
                 GObject.ParamFlags.READWRITE,
-                0.25, 8.0,
-                2.4,
+                0.25, 20.0,
+                DEFAULT_PARAMS.falloff,
+            ),
+            'refraction_style': GObject.ParamSpec.double(
+                `refraction_style`,
+                `Refraction Style`,
+                `0 is quartz 0.1.1b profile; higher blends toward the legacy Snell S-curve`,
+                GObject.ParamFlags.READWRITE,
+                0.0, 1.0,
+                DEFAULT_PARAMS.refraction_style,
             ),
             'corner_radius': GObject.ParamSpec.double(
                 `corner_radius`,
@@ -161,7 +152,21 @@ var RefractionEffect = new GObject.registerClass({
                 `Refraction corner radius`,
                 GObject.ParamFlags.READWRITE,
                 0.0, 200.0,
-                22.0,
+                DEFAULT_PARAMS.corner_radius,
+            ),
+            'corners_top': GObject.ParamSpec.boolean(
+                `corners_top`,
+                `Corners Top`,
+                `Round top corners`,
+                GObject.ParamFlags.READWRITE,
+                DEFAULT_PARAMS.corners_top,
+            ),
+            'corners_bottom': GObject.ParamSpec.boolean(
+                `corners_bottom`,
+                `Corners Bottom`,
+                `Round bottom corners`,
+                GObject.ParamFlags.READWRITE,
+                DEFAULT_PARAMS.corners_bottom,
             ),
             'rim_width': GObject.ParamSpec.double(
                 `rim_width`,
@@ -169,7 +174,15 @@ var RefractionEffect = new GObject.registerClass({
                 `Refraction rim width`,
                 GObject.ParamFlags.READWRITE,
                 1.0, 6.5,
-                4.8,
+                DEFAULT_PARAMS.rim_width,
+            ),
+            'reach': GObject.ParamSpec.double(
+                `reach`,
+                `Reach`,
+                `How far the refraction reaches inward past the corner radius`,
+                GObject.ParamFlags.READWRITE,
+                0.0, 500.0,
+                DEFAULT_PARAMS.reach,
             ),
             'rgb_fringing': GObject.ParamSpec.double(
                 `rgb_fringing`,
@@ -177,15 +190,62 @@ var RefractionEffect = new GObject.registerClass({
                 `Chromatic offset strength`,
                 GObject.ParamFlags.READWRITE,
                 0.0, 1.0,
-                0.08,
+                DEFAULT_PARAMS.rgb_fringing,
             ),
             'gloss': GObject.ParamSpec.double(
                 `gloss`,
                 `Gloss`,
-                `Specular highlight strength`,
+                `Fresnel glare strength`,
                 GObject.ParamFlags.READWRITE,
                 0.0, 1.0,
-                0.55,
+                DEFAULT_PARAMS.gloss,
+            ),
+            'fresnel_angle': GObject.ParamSpec.double(
+                `fresnel_angle`,
+                `Fresnel Angle`,
+                `Direction or axis of the fresnel glare, in degrees`,
+                GObject.ParamFlags.READWRITE,
+                -180.0, 180.0,
+                DEFAULT_PARAMS.fresnel_angle,
+            ),
+            'fresnel_width': GObject.ParamSpec.double(
+                `fresnel_width`,
+                `Fresnel Width`,
+                `Thickness multiplier of the fresnel glare ring`,
+                GObject.ParamFlags.READWRITE,
+                0.5, 6.0,
+                DEFAULT_PARAMS.fresnel_width,
+            ),
+            'fresnel_two_sided': GObject.ParamSpec.boolean(
+                `fresnel_two_sided`,
+                `Two-sided Fresnel Glare`,
+                `Light opposite edge pairs symmetrically`,
+                GObject.ParamFlags.READWRITE,
+                DEFAULT_PARAMS.fresnel_two_sided,
+            ),
+            'specular_strength': GObject.ParamSpec.double(
+                `specular_strength`,
+                `Specular Glare Strength`,
+                `Strength of the white specular glare on the glass edge`,
+                GObject.ParamFlags.READWRITE,
+                0.0, 1.0,
+                DEFAULT_PARAMS.specular_strength,
+            ),
+            'edge_shadow': GObject.ParamSpec.double(
+                `edge_shadow`,
+                `Edge Border`,
+                `Strength of the thin dark line along the glass side edges`,
+                GObject.ParamFlags.READWRITE,
+                0.0, 1.0,
+                DEFAULT_PARAMS.edge_shadow,
+            ),
+            'edge_glow': GObject.ParamSpec.double(
+                `edge_glow`,
+                `Edge Glow`,
+                `Strength of the colored light picked up by the glass edge`,
+                GObject.ParamFlags.READWRITE,
+                0.0, 1.0,
+                DEFAULT_PARAMS.edge_glow,
             ),
             'webcam_gloss': GObject.ParamSpec.boolean(
                 `webcam_gloss`,
@@ -207,7 +267,7 @@ var RefractionEffect = new GObject.registerClass({
                 `Glass tint strength`,
                 GObject.ParamFlags.READWRITE,
                 0.0, 1.0,
-                0.18,
+                DEFAULT_PARAMS.tint,
             ),
             'tint_red': GObject.ParamSpec.double(
                 `tint_red`,
@@ -215,7 +275,7 @@ var RefractionEffect = new GObject.registerClass({
                 `Glass tint color red`,
                 GObject.ParamFlags.READWRITE,
                 0.0, 1.0,
-                1.0,
+                DEFAULT_PARAMS.tint_color[0],
             ),
             'tint_green': GObject.ParamSpec.double(
                 `tint_green`,
@@ -223,7 +283,7 @@ var RefractionEffect = new GObject.registerClass({
                 `Glass tint color green`,
                 GObject.ParamFlags.READWRITE,
                 0.0, 1.0,
-                1.0,
+                DEFAULT_PARAMS.tint_color[1],
             ),
             'tint_blue': GObject.ParamSpec.double(
                 `tint_blue`,
@@ -231,7 +291,7 @@ var RefractionEffect = new GObject.registerClass({
                 `Glass tint color blue`,
                 GObject.ParamFlags.READWRITE,
                 0.0, 1.0,
-                1.0,
+                DEFAULT_PARAMS.tint_color[2],
             ),
             'tint_alpha': GObject.ParamSpec.double(
                 `tint_alpha`,
@@ -239,7 +299,7 @@ var RefractionEffect = new GObject.registerClass({
                 `Glass tint color alpha`,
                 GObject.ParamFlags.READWRITE,
                 0.0, 1.0,
-                1.0,
+                DEFAULT_PARAMS.tint_color[3],
             ),
             'backdrop_zoom': GObject.ParamSpec.double(
                 `backdrop_zoom`,
@@ -247,7 +307,7 @@ var RefractionEffect = new GObject.registerClass({
                 `Zoom level of the refracted backdrop`,
                 GObject.ParamFlags.READWRITE,
                 0.1, 4.0,
-                1.0,
+                DEFAULT_PARAMS.backdrop_zoom,
             ),
             'shadow': GObject.ParamSpec.double(
                 `shadow`,
@@ -255,7 +315,7 @@ var RefractionEffect = new GObject.registerClass({
                 `Inner shadow strength`,
                 GObject.ParamFlags.READWRITE,
                 0.0, 1.0,
-                0.28,
+                DEFAULT_PARAMS.shadow,
             ),
             'texture_repeat': GObject.ParamSpec.int(
                 `texture_repeat`,
@@ -263,12 +323,12 @@ var RefractionEffect = new GObject.registerClass({
                 `Texture repeat behavior`,
                 GObject.ParamFlags.READWRITE,
                 0, 1,
-                0,
+                DEFAULT_PARAMS.texture_repeat,
             ),
             'blur_direction': GObject.ParamSpec.int(
                 `blur_direction`,
                 `Blur Direction`,
-                `Private Gaussian blur direction`,
+                `Deprecated compatibility property`,
                 GObject.ParamFlags.READWRITE,
                 0, 1,
                 0,
@@ -276,7 +336,7 @@ var RefractionEffect = new GObject.registerClass({
             'private_pass': GObject.ParamSpec.int(
                 `private_pass`,
                 `Private Pass`,
-                `Private Gaussian blur pass`,
+                `Deprecated compatibility property`,
                 GObject.ParamFlags.READWRITE,
                 0, 1,
                 0,
@@ -342,7 +402,6 @@ var RefractionEffect = new GObject.registerClass({
                 ...parent_params
             } = params;
             super({ ...parent_params });
-            //utils.initialize_shader_effect(this, SHADER_SOURCE);
 
             this._clip_x0 = null;
             this._clip_y0 = null;
@@ -385,6 +444,10 @@ var RefractionEffect = new GObject.registerClass({
             return 0;
         }
 
+        _set_uniform(name, value) {
+            this.set_uniform_value(name, get_shader_value(name, value));
+        }
+
         get grain() {
             return this._grain;
         }
@@ -405,11 +468,10 @@ var RefractionEffect = new GObject.registerClass({
         }
 
         set strength(value) {
-            if (this._strength !== value) {
-                this._strength = value;
-
-                this.set_uniform_value('strength', get_shader_value('strength', this._strength));
-                this.set_enabled(this.private_pass !== 1 || this.blur_radius > 0.01);
+            const strength = Math.max(0.0, Math.min(1.0, value));
+            if (this._strength !== strength) {
+                this._strength = strength;
+                this._set_uniform('strength', this._strength);
             }
         }
 
@@ -418,9 +480,9 @@ var RefractionEffect = new GObject.registerClass({
         }
 
         set edge_size(value) {
-            if (this._edge_size !== value) {
-                this._edge_size = value;
-
+            const edge_size = Math.max(1.0, Math.min(500.0, value));
+            if (this._edge_size !== edge_size) {
+                this._edge_size = edge_size;
                 this.update_scaled_uniforms();
             }
         }
@@ -430,45 +492,77 @@ var RefractionEffect = new GObject.registerClass({
         }
 
         get_sampling_margin(width, height, resourceScale) {
-            return this._samplingReach(this.chained_effect?.get_sampling_margin?.(width, height, resourceScale));
+            return this._samplingReach(
+                this.chained_effect?.get_sampling_margin?.(width, height, resourceScale),
+                width,
+                height
+            );
         }
 
-        _samplingReach(blur_reach = this.chained_effect?.sample_reach ?? 0) {
+        _samplingReach(blur_reach = this.chained_effect?.sample_reach ?? 0, rect_width = 0, rect_height = 0) {
             const scale_factor = St.ThemeContext.get_for_stage(global.stage).scale_factor;
-        
-            const bezel = Math.max(1, this.edge_size * scale_factor);
-            const band = Math.max(1, bezel * 0.35 * Math.max(1, this.rim_width));
-        
-            const strength = Math.max(0, Math.min(1, this.strength));
-            const dispersion = Math.max(0, Math.min(20, this.rgb_fringing * 20));
-        
-            const channel_scale = 1 + 0.02 * dispersion;
-            const lens_reach = band * strength * channel_scale;
-            const zoom = Math.max(0.01, this.backdrop_zoom - 1e-6);
-        
+
             const actor = this.get_actor();
             const visible = actor?._blurCinnamonSamplingRect ?? actor?._blurCinnamonVisibleRect;
-        
+            const visible_w = rect_width > 0 ? rect_width : (visible?.[2] ?? 0);
+            const visible_h = rect_height > 0 ? rect_height : (visible?.[3] ?? 0);
+            const has_visible_rect = visible_w > 0 && visible_h > 0;
+            const has_clip = this._clip_width >= 0 && this._clip_height >= 0;
+
+            // Match refraction.glsl: bezel, rim band and lens band are all capped to half the
+            // shortest visible side, so small surfaces (OSDs, panels, tooltips) do not reserve
+            // a sampling margin larger than the surface itself.
+            const eff_w = has_visible_rect ? visible_w : (has_clip ? this._clip_width : 0);
+            const eff_h = has_visible_rect ? visible_h : (has_clip ? this._clip_height : 0);
+            const shortest = (eff_w > 0 && eff_h > 0) ? Math.min(eff_w, eff_h) : 0;
+            const half_short = shortest * 0.5;
+
+            const raw_edge = Math.max(1, (this.edge_size ?? DEFAULT_PARAMS.edge_size) * scale_factor);
+            const bezel = shortest > 0 ? Math.max(1, Math.min(raw_edge, half_short)) : raw_edge;
+            let rim_band = Math.max(1, bezel * 0.35 * Math.max(1, this.rim_width));
+            if (shortest > 0)
+                rim_band = Math.min(rim_band, half_short);
+            const raw_reach = Math.max(0, this.reach ?? 0) * scale_factor;
+            const lens_band = Math.max(rim_band, shortest > 0 ? Math.min(raw_reach, half_short) : raw_reach);
+
+            const strength = Math.max(0, Math.min(1, this.strength));
+            const dispersion = Math.max(0, Math.min(1, this.rgb_fringing)) * 0.9;
+
+            // Matches BEND_SCALE (1.4), DISPERSION_RATIO (0.9) and edgeGlowColor's inward samples
+            // (up to max(1.5, 0.6 * band) + 1.8 * band from the edge) in refraction.glsl.
+            const lens_disp = lens_band * strength * 1.4 * (1 + dispersion);
+            const glow_reach = (this.edge_glow > 0.001)
+                ? Math.max(1.5, rim_band * 0.6) + rim_band * 1.8
+                : 0;
+            const zoom = Math.max(0.01, this.backdrop_zoom - 1e-6);
+
             const shape_span = Math.max(
                 0,
-                visible?.[2] ?? 0,
-                visible?.[3] ?? 0,
+                visible_w,
+                visible_h,
                 this._clip_width ?? 0,
                 this._clip_height ?? 0,
                 this._stable_clip_width ?? 0,
                 this._stable_clip_height ?? 0
             );
-        
+
             const inverse_zoom_delta = 1 / zoom - 1;
-            const has_clip = this._clip_width >= 0 && this._clip_height >= 0;
-            const has_visible_rect = visible && visible[2] > 0 && visible[3] > 0;
             // The viewport asks for its margin before updating glass_rect. Detect a
-            // pending resize as well as a clip that is already being stabilized
-            const resize_pending = has_clip && has_visible_rect && (
-                Math.abs(visible[2] - this._clip_width) > CLIP_STABILIZE_EPSILON ||
-                Math.abs(visible[3] - this._clip_height) > CLIP_STABILIZE_EPSILON
+            // pending on-screen resize as well as a clip that is already being stabilized
+            const resize_pending = has_clip && has_visible_rect && this._clip_on_screen && !!actor?.is_mapped() && (
+                Math.abs(visible_w - this._clip_width) > CLIP_STABILIZE_EPSILON ||
+                Math.abs(visible_h - this._clip_height) > CLIP_STABILIZE_EPSILON
             );
             const needs_conservative_reach = this._stabilize_clip_x || this._stabilize_clip_y || resize_pending || (!has_clip && !has_visible_rect);
+
+            // Both refraction (-lensDir) and edge glow (-dir) sample inward from the glass edge,
+            // so on a settled rect they can only leave the visible bounds by overshooting the
+            // opposite side (distance > shortest). Keep the full reach during resize stabilization
+            // or when the visible size is unknown.
+            const lens_reach = (!needs_conservative_reach && shortest > 0)
+                ? Math.max(0, lens_disp - shortest, glow_reach - shortest)
+                : Math.max(lens_disp, glow_reach);
+
             // A stabilized clip can have its centre outside the current visible
             // rect. Preserve the existing bound until that resize settles
             const zoom_reach = needs_conservative_reach
@@ -530,10 +624,9 @@ var RefractionEffect = new GObject.registerClass({
         }
 
         set blur_radius(value) {
-            if (this._blur_radius !== value) {
-                this._blur_radius = Math.max(0, Math.min(value, MAX_BLUR_RADIUS));
-
-                this.update_scaled_uniforms();
+            const blur_radius = Math.max(0, Math.min(value, MAX_BLUR_RADIUS));
+            if (this._blur_radius !== blur_radius) {
+                this._blur_radius = blur_radius;
 
                 if (this.chained_effect)
                     this.chained_effect.radius = this.dual_kawase_radius;
@@ -545,10 +638,22 @@ var RefractionEffect = new GObject.registerClass({
         }
 
         set falloff(value) {
-            if (this._falloff !== value) {
-                this._falloff = value;
+            const falloff = Math.max(0.25, Math.min(20.0, value));
+            if (this._falloff !== falloff) {
+                this._falloff = falloff;
+                this._set_uniform('falloff', this._falloff);
+            }
+        }
 
-                this.set_uniform_value('falloff', parseFloat(this._falloff - 1e-6));
+        get refraction_style() {
+            return this._refraction_style;
+        }
+
+        set refraction_style(value) {
+            const style = Math.max(0.0, Math.min(1.0, value));
+            if (this._refraction_style !== style) {
+                this._refraction_style = style;
+                this._set_uniform('refraction_style', this._refraction_style);
             }
         }
 
@@ -557,10 +662,34 @@ var RefractionEffect = new GObject.registerClass({
         }
 
         set corner_radius(value) {
-            if (this._corner_radius !== value) {
-                this._corner_radius = value;
-
+            const corner_radius = Math.max(0.0, Math.min(200.0, value));
+            if (this._corner_radius !== corner_radius) {
+                this._corner_radius = corner_radius;
                 this.update_scaled_uniforms();
+            }
+        }
+
+        get corners_top() {
+            return this._corners_top;
+        }
+
+        set corners_top(value) {
+            const top = Boolean(value);
+            if (this._corners_top !== top) {
+                this._corners_top = top;
+                this._set_uniform('corners_top', this._corners_top ? 1 : 0);
+            }
+        }
+
+        get corners_bottom() {
+            return this._corners_bottom;
+        }
+
+        set corners_bottom(value) {
+            const bottom = Boolean(value);
+            if (this._corners_bottom !== bottom) {
+                this._corners_bottom = bottom;
+                this._set_uniform('corners_bottom', this._corners_bottom ? 1 : 0);
             }
         }
 
@@ -572,8 +701,19 @@ var RefractionEffect = new GObject.registerClass({
             const rim_width = Math.max(1.0, Math.min(value, 6.5));
             if (this._rim_width !== rim_width) {
                 this._rim_width = rim_width;
+                this._set_uniform('rim_width', this._rim_width);
+            }
+        }
 
-                this.set_uniform_value('rim_width', parseFloat(this._rim_width - 1e-6));
+        get reach() {
+            return this._reach;
+        }
+
+        set reach(value) {
+            const reach = Math.max(0.0, Math.min(500.0, value));
+            if (this._reach !== reach) {
+                this._reach = reach;
+                this.update_scaled_uniforms();
             }
         }
 
@@ -582,10 +722,10 @@ var RefractionEffect = new GObject.registerClass({
         }
 
         set rgb_fringing(value) {
-            if (this._rgb_fringing !== value) {
-                this._rgb_fringing = value;
-
-                this.set_uniform_value('rgb_fringing', parseFloat(this._rgb_fringing - 1e-6));
+            const rgb_fringing = Math.max(0.0, Math.min(1.0, value));
+            if (this._rgb_fringing !== rgb_fringing) {
+                this._rgb_fringing = rgb_fringing;
+                this._set_uniform('rgb_fringing', this._rgb_fringing);
             }
         }
 
@@ -594,10 +734,82 @@ var RefractionEffect = new GObject.registerClass({
         }
 
         set gloss(value) {
-            if (this._gloss !== value) {
-                this._gloss = value;
+            const gloss = Math.max(0.0, Math.min(1.0, value));
+            if (this._gloss !== gloss) {
+                this._gloss = gloss;
+                this._set_uniform('gloss', this._gloss);
+            }
+        }
 
-                this.set_uniform_value('gloss', parseFloat(this._gloss - 1e-6));
+        get fresnel_angle() {
+            return this._fresnel_angle;
+        }
+
+        set fresnel_angle(value) {
+            const angle = Math.max(-180.0, Math.min(180.0, value));
+            if (this._fresnel_angle !== angle) {
+                this._fresnel_angle = angle;
+                this._set_uniform('fresnel_angle', (this._fresnel_angle + 90.0) * Math.PI / 180.0);
+            }
+        }
+
+        get fresnel_width() {
+            return this._fresnel_width;
+        }
+
+        set fresnel_width(value) {
+            const fresnel_width = Math.max(0.5, Math.min(6.0, value));
+            if (this._fresnel_width !== fresnel_width) {
+                this._fresnel_width = fresnel_width;
+                this._set_uniform('fresnel_width', this._fresnel_width);
+            }
+        }
+
+        get fresnel_two_sided() {
+            return this._fresnel_two_sided;
+        }
+
+        set fresnel_two_sided(value) {
+            const two_sided = Boolean(value);
+            if (this._fresnel_two_sided !== two_sided) {
+                this._fresnel_two_sided = two_sided;
+                this._set_uniform('fresnel_two_sided', this._fresnel_two_sided ? 1 : 0);
+            }
+        }
+
+        get specular_strength() {
+            return this._specular_strength;
+        }
+
+        set specular_strength(value) {
+            const specular_strength = Math.max(0.0, Math.min(1.0, value));
+            if (this._specular_strength !== specular_strength) {
+                this._specular_strength = specular_strength;
+                this._set_uniform('specular_strength', this._specular_strength);
+            }
+        }
+
+        get edge_shadow() {
+            return this._edge_shadow;
+        }
+
+        set edge_shadow(value) {
+            const edge_shadow = Math.max(0.0, Math.min(1.0, value));
+            if (this._edge_shadow !== edge_shadow) {
+                this._edge_shadow = edge_shadow;
+                this._set_uniform('edge_shadow', this._edge_shadow);
+            }
+        }
+
+        get edge_glow() {
+            return this._edge_glow;
+        }
+
+        set edge_glow(value) {
+            const edge_glow = Math.max(0.0, Math.min(1.0, value));
+            if (this._edge_glow !== edge_glow) {
+                this._edge_glow = edge_glow;
+                this._set_uniform('edge_glow', this._edge_glow);
             }
         }
 
@@ -623,10 +835,10 @@ var RefractionEffect = new GObject.registerClass({
         }
 
         set tint(value) {
-            if (this._tint !== value) {
-                this._tint = value;
-
-                this.set_uniform_value('tint', parseFloat(this._tint - 1e-6));
+            const tint = Math.max(0.0, Math.min(1.0, value));
+            if (this._tint !== tint) {
+                this._tint = tint;
+                this._set_uniform('tint', this._tint);
             }
         }
 
@@ -635,10 +847,10 @@ var RefractionEffect = new GObject.registerClass({
         }
 
         set tint_red(value) {
-            if (this._tint_red !== value) {
-                this._tint_red = value;
-
-                this.set_uniform_value('tint_r', parseFloat(this._tint_red - 1e-6));
+            const red = Math.max(0.0, Math.min(1.0, value));
+            if (this._tint_red !== red) {
+                this._tint_red = red;
+                this._set_uniform('tint_r', this._tint_red);
             }
         }
 
@@ -647,10 +859,10 @@ var RefractionEffect = new GObject.registerClass({
         }
 
         set tint_green(value) {
-            if (this._tint_green !== value) {
-                this._tint_green = value;
-
-                this.set_uniform_value('tint_g', parseFloat(this._tint_green - 1e-6));
+            const green = Math.max(0.0, Math.min(1.0, value));
+            if (this._tint_green !== green) {
+                this._tint_green = green;
+                this._set_uniform('tint_g', this._tint_green);
             }
         }
 
@@ -659,10 +871,10 @@ var RefractionEffect = new GObject.registerClass({
         }
 
         set tint_blue(value) {
-            if (this._tint_blue !== value) {
-                this._tint_blue = value;
-
-                this.set_uniform_value('tint_b', parseFloat(this._tint_blue - 1e-6));
+            const blue = Math.max(0.0, Math.min(1.0, value));
+            if (this._tint_blue !== blue) {
+                this._tint_blue = blue;
+                this._set_uniform('tint_b', this._tint_blue);
             }
         }
 
@@ -671,10 +883,10 @@ var RefractionEffect = new GObject.registerClass({
         }
 
         set tint_alpha(value) {
-            if (this._tint_alpha !== value) {
-                this._tint_alpha = value;
-
-                this.set_uniform_value('tint_a', parseFloat(this._tint_alpha - 1e-6));
+            const alpha = Math.max(0.0, Math.min(1.0, value));
+            if (this._tint_alpha !== alpha) {
+                this._tint_alpha = alpha;
+                this._set_uniform('tint_a', this._tint_alpha);
             }
         }
 
@@ -683,7 +895,7 @@ var RefractionEffect = new GObject.registerClass({
         }
 
         set tint_color(rgba) {
-            const [r, g, b, a] = rgba;
+            const [r, g, b, a] = Array.isArray(rgba) ? rgba : DEFAULT_PARAMS.tint_color;
             this.tint_red = r;
             this.tint_green = g;
             this.tint_blue = b;
@@ -695,10 +907,10 @@ var RefractionEffect = new GObject.registerClass({
         }
 
         set backdrop_zoom(value) {
-            if (this._backdrop_zoom !== value) {
-                this._backdrop_zoom = value;
-
-                this.set_uniform_value('backdrop_zoom', parseFloat(this._backdrop_zoom - 1e-6));
+            const zoom = Math.max(0.1, Math.min(4.0, value));
+            if (this._backdrop_zoom !== zoom) {
+                this._backdrop_zoom = zoom;
+                this._set_uniform('backdrop_zoom', this._backdrop_zoom);
             }
         }
 
@@ -707,10 +919,10 @@ var RefractionEffect = new GObject.registerClass({
         }
 
         set shadow(value) {
-            if (this._shadow !== value) {
-                this._shadow = value;
-
-                this.set_uniform_value('shadow', parseFloat(this._shadow - 1e-6));
+            const shadow = Math.max(0.0, Math.min(1.0, value));
+            if (this._shadow !== shadow) {
+                this._shadow = shadow;
+                this._set_uniform('shadow', this._shadow);
             }
         }
 
@@ -719,10 +931,10 @@ var RefractionEffect = new GObject.registerClass({
         }
 
         set texture_repeat(value) {
-            if (this._texture_repeat !== value) {
-                this._texture_repeat = value;
-
-                this.set_uniform_value('texture_repeat', this._texture_repeat);
+            const repeat = value ? 1 : 0;
+            if (this._texture_repeat !== repeat) {
+                this._texture_repeat = repeat;
+                this._set_uniform('texture_repeat', this._texture_repeat);
             }
         }
 
@@ -731,11 +943,7 @@ var RefractionEffect = new GObject.registerClass({
         }
 
         set blur_direction(value) {
-            if (this._blur_direction !== value) {
-                this._blur_direction = value;
-
-                this.set_uniform_value('blur_direction', this._blur_direction);
-            }
+            this._blur_direction = value ? 1 : 0;
         }
 
         get private_pass() {
@@ -743,13 +951,7 @@ var RefractionEffect = new GObject.registerClass({
         }
 
         set private_pass(value) {
-            if (this._private_pass !== value) {
-                this._private_pass = value;
-
-                this.set_uniform_value('private_pass', this._private_pass);
-                if (this._private_pass === 1)
-                    this.set_enabled(this.blur_radius > 0.01);
-            }
+            this._private_pass = value ? 1 : 0;
         }
 
         get chained_effect() {
@@ -776,7 +978,7 @@ var RefractionEffect = new GObject.registerClass({
             if (this._width !== value) {
                 this._width = value;
 
-                this.set_uniform_value('width', parseFloat(this._width + 3.0 - 1e-6));
+                this._set_uniform('width', this._width + 3.0);
                 this.update_scaled_uniforms();
 
                 if (this.chained_effect)
@@ -792,7 +994,7 @@ var RefractionEffect = new GObject.registerClass({
             if (this._height !== value) {
                 this._height = value;
 
-                this.set_uniform_value('height', parseFloat(this._height + 3.0 - 1e-6));
+                this._set_uniform('height', this._height + 3.0);
                 this.update_scaled_uniforms();
 
                 if (this.chained_effect)
@@ -829,10 +1031,20 @@ var RefractionEffect = new GObject.registerClass({
             }
             let shader_clip = this._stabilized_clip(previous_on_screen && this._clip_on_screen ? previous_clip : null);
 
-            this.set_uniform_value('clip_x0', parseFloat(shader_clip[0] - 1e-6));
-            this.set_uniform_value('clip_y0', parseFloat(shader_clip[1] - 1e-6));
-            this.set_uniform_value('clip_width', parseFloat(shader_clip[2] + 3.0 - 1e-6));
-            this.set_uniform_value('clip_height', parseFloat(shader_clip[3] + 3.0 - 1e-6));
+            // Match corner.js's set_viewport_clip(): Muffin pads the offscreen FBO by 2 px before
+            // the actor origin and 1 px after the far edge (width + 3, height + 3), so an actor-local
+            // visible rect [x0, y0, w, h] lies at [x0 + 2, y0 + 2, w, h] in FBO pixel coordinates.
+            if (shader_clip[2] >= 0 && shader_clip[3] >= 0) {
+                this._set_uniform('clip_x0', shader_clip[0] + 2.0);
+                this._set_uniform('clip_y0', shader_clip[1] + 2.0);
+                this._set_uniform('clip_width', shader_clip[2]);
+                this._set_uniform('clip_height', shader_clip[3]);
+            } else {
+                this._set_uniform('clip_x0', shader_clip[0]);
+                this._set_uniform('clip_y0', shader_clip[1]);
+                this._set_uniform('clip_width', shader_clip[2]);
+                this._set_uniform('clip_height', shader_clip[3]);
+            }
             this.update_scaled_uniforms();
         }
 
@@ -873,11 +1085,10 @@ var RefractionEffect = new GObject.registerClass({
         }
 
         set opacity_factor(value) {
-            if (this._opacity_factor !== value) {
-                this._opacity_factor = value;
-
-                set_uniform(this, 'opacity_factor', parseFloat(this._opacity_factor));
-                this.set_uniform_value('opacity_factor', parseFloat(this._opacity_factor));
+            const opacity_factor = Math.max(0.0, Math.min(1.0, value));
+            if (this._opacity_factor !== opacity_factor) {
+                this._opacity_factor = opacity_factor;
+                this._set_uniform('opacity_factor', this._opacity_factor);
             }
         }
 
@@ -992,17 +1203,14 @@ var RefractionEffect = new GObject.registerClass({
             const rect_height =
                 this._stable_clip_height ?? (this._clip_height >= 0 ? this._clip_height : this.height);
             const max_edge = Math.max(1, Math.min(rect_width, rect_height) / 2);
-            const edge_size = Math.min(this.edge_size * scale_factor, max_edge);
-            const corner_radius = Math.min(this.corner_radius * scale_factor, max_edge);
+            const edge_size = Math.min((this.edge_size ?? DEFAULT_PARAMS.edge_size) * scale_factor, max_edge);
+            const corner_radius = Math.min((this.corner_radius ?? DEFAULT_PARAMS.corner_radius) * scale_factor, max_edge);
+            const reach = Math.min((this.reach ?? DEFAULT_PARAMS.reach) * scale_factor, max_edge);
 
-            this.set_uniform_value('edge_size', parseFloat(edge_size - 1e-6));
-            this.set_uniform_value('corner_radius', parseFloat(corner_radius - 1e-6));
-            const blur_radius = Math.min(this.blur_radius, MAX_BLUR_RADIUS) * scale_factor;
-            // The backdrop is already blurred by Dual Kawase, bypass the
-            // Gaussian loop in sampleGlassBackdrop() in refraction.glsl
-            this.set_uniform_value('blur_radius', get_shader_value('blur_radius', 0.0));
-            if (this.private_pass === 1)
-                this.set_enabled(blur_radius > 0.01);
+            this._set_uniform('edge_size', edge_size);
+            this._set_uniform('corner_radius', corner_radius);
+            this._set_uniform('reach', reach);
+            this._set_uniform('scale_factor', scale_factor);
         }
 
         _disconnect_theme_signal() {
@@ -1075,13 +1283,5 @@ var RefractionEffect = new GObject.registerClass({
                 // after RefractionEffect so glass samples the blurred backdrop.
                 actor.add_effect(this.chained_effect);
             }
-        }
-
-        vfunc_paint_target(paint_context) {
-            upload_uniforms(this);
-            this.set_uniform_value('blur_direction', this.blur_direction);
-            this.set_uniform_value('private_pass', this.private_pass);
-
-            super.vfunc_paint_target(paint_context);
         }
     });
