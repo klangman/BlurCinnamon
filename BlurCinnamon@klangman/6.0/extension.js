@@ -4486,6 +4486,12 @@ class BlurPopupMenus extends BlurBase {
       {
          debugMsg( "Attaching to a new popup menu, _popupMenuOpen()" );
          blurPopupMenusThis._blurPopupMenu(this);
+         if (settings.allowTransparentColorPopup && !this.isOpen &&
+             this.actor && !(this.actor.is_finalized && this.actor.is_finalized()) &&
+             this.actor.get_stage())
+         {
+            blurPopupMenusThis._prepareMenuStyle(this);
+         }
       } else {
          // If we applied effects to this menu in the past, remove the effects now
          let idx = blurPopupMenusThis._menus.indexOf(this);
@@ -4493,7 +4499,7 @@ class BlurPopupMenus extends BlurBase {
             blurPopupMenusThis._cancelAccentActorsScan(this);
             this.blurCinnamonSignalManager.disconnectAllSignals();
             delete this.blurCinnamonSignalManager;
-            blurPopupMenusThis._restoreMenuStyle(this);
+            blurPopupMenusThis._clearMenuAccentState(this);
             blurPopupMenusThis._menus.splice( idx, 1 );
          }
       }
@@ -4690,6 +4696,26 @@ class BlurPopupMenus extends BlurBase {
       return false;
    }
 
+   // Pre-apply accent and box styles before PopupMenu.open() maps the actor so StWidget does not
+   // animate theme transition-duration from the opaque theme background on the first open.
+   // Leave _foundAccentActors unset until _onOpenStateChanged() so lazily built children are still found.
+   _prepareMenuStyle(menu) {
+      if (menu._blurCinnamonChangeCount != this._changeCount) {
+         debugMsg( "Applying new settings to menu" );
+         this._reapplyMenuStyle(menu, this._boxColor);
+      }
+      menu._blurCinnamonChangeCount = this._changeCount;
+
+      if (!menu._foundAccentActors) {
+         this._findAccentActors(menu, menu.actor);
+      }
+      this._reapplyAccentActorsStyle(menu);
+
+      if (!menu.box._blurCinnamonData) {
+         this._applyActorStyle(menu.box, this._boxColor);
+      }
+   }
+
    _onOpenStateChanged(menu, open) {
       if (open) {
          this._cancelAccentActorsScan(this._currentMenu);
@@ -4707,10 +4733,9 @@ class BlurPopupMenus extends BlurBase {
             // Find all the accent actors and adjust their transparency and background color
             if (!menu._foundAccentActors) {
                this._findAccentActors(menu, menu.actor);
-               menu._foundAccentActors=true;
-            } else {
-               this._reapplyAccentActorsStyle(menu);
+               menu._foundAccentActors = true;
             }
+            this._reapplyAccentActorsStyle(menu);
 
             // Adjust the menu transparency and color for the menu box if required
             if (!menu.box._blurCinnamonData) {
@@ -4844,11 +4869,16 @@ class BlurPopupMenus extends BlurBase {
       return;
    }
 
-   _restoreMenuStyle(menu) {
-      if (menu.box._blurCinnamonData) {
+   _clearMenuAccentState(menu) {
+      if (menu.box && menu.box._blurCinnamonData) {
          this._restoreActorStyle(menu.box);
+      }
+      if (menu.actor && !(menu.actor.is_finalized && menu.actor.is_finalized())) {
          this._restoreActorChildrenStyle(menu.actor);
       }
+      delete menu._foundAccentActors;
+      delete menu._blurCinnamonAccentActors;
+      delete menu._blurCinnamonChangeCount;
    }
 
    _restoreActorChildrenStyle(actor) {
@@ -4856,6 +4886,8 @@ class BlurPopupMenus extends BlurBase {
       for (let i=0 ; i < children.length ; i++ ) {
          if (children[i]._blurCinnamonData) {
             this._restoreActorStyle(children[i]);
+         } else if (children[i]._blurCinnamonData === null) {
+            delete children[i]._blurCinnamonData;
          }
          this._restoreActorChildrenStyle(children[i]);
       }
@@ -4891,6 +4923,7 @@ class BlurPopupMenus extends BlurBase {
             return false;
          try {
             this._findAccentActors(menu, menu.actor);
+            menu._foundAccentActors = true;
          } catch (error) {
             global.logError(error);
          }
@@ -4916,7 +4949,9 @@ class BlurPopupMenus extends BlurBase {
                return false;
             });
          }
-         this._clearThemeSkipMarkers(menu.actor);
+         if (menu.actor && !(menu.actor.is_finalized && menu.actor.is_finalized()))
+            this._clearThemeSkipMarkers(menu.actor);
+         menu._foundAccentActors = false;
          // An open menu won't be rescanned until something changes in it, so rescan it now
          if (menu === this._currentMenu && menu.isOpen) {
             if (settings.allowTransparentColorPopup)
@@ -4951,6 +4986,18 @@ class BlurPopupMenus extends BlurBase {
    _themeFillsBackground(actor) {
       if (!actor.get_stage())
          return null;
+      // St defers style_changed propagation on unmapped subtrees, so an actor inside a
+      // closed menu can still hold a stale cached St.ThemeNode after a theme switch.
+      // Clear cached theme nodes top-down across unmapped ancestors before reading.
+      if (!actor.is_mapped()) {
+         const unmapped = [];
+         for (let a = actor; a && !a.is_mapped(); a = a.get_parent()) {
+            if (a instanceof St.Widget && a.peek_theme_node())
+               unmapped.push(a);
+         }
+         for (let i = unmapped.length - 1; i >= 0; i--)
+            unmapped[i].style_changed();
+      }
       const node = actor.get_theme_node();
       if (node.get_background_color().alpha > 0)
          return true;
@@ -5090,9 +5137,7 @@ class BlurPopupMenus extends BlurBase {
          let menus = this._menus;
          if (menus) {
             for (let i=0 ; i < menus.length ; i++) {
-               if (menus[i].box._blurCinnamonData) {
-                  this._restoreMenuStyle(menus[i]);
-               }
+               this._clearMenuAccentState(menus[i]);
             }
          }
       }
@@ -5130,9 +5175,7 @@ class BlurPopupMenus extends BlurBase {
                menus[i].blurCinnamonSignalManager.disconnectAllSignals();
                delete menus[i].blurCinnamonSignalManager;
             }
-            if (menus[i].box._blurCinnamonData) {
-               this._restoreMenuStyle(menus[i]);
-            }
+            this._clearMenuAccentState(menus[i]);
             delete menus[i]._blurCinnamonCornerRadius;
             delete menus[i]._blurCinnamonCornerThemeVersion;
             delete menus[i]._blurCinnamonCornerScale;
@@ -5398,19 +5441,31 @@ class BlurDesktop extends BlurBase {
    }
 }
 
+// Inline style appended to notification actors so the theme background doesn't hide the blurred background
+const NOTIFICATION_TRANSPARENT_STYLE = "background-gradient-direction: vertical; background-gradient-start: transparent; " +
+                                       "background-gradient-end: transparent; background: transparent;";
+
 class BlurNotifications extends BlurBase {
    constructor() {
       super();
       this._signalManager = new SignalManager.SignalManager(null);
-      this.animation_time = 0.08; // seconds
+      this._reclipStageId = 0;
+      this._reclipWakeId = 0;
+      this._pendingShow = false;
+      this._lastClipRect = null;
+      this._appliedCornerRadius = null;
+      this._cachedCornerRadius = undefined;
+      this._cachedCornerKey = null;
+      this._themeVersion = 0;
+
       blurNotificationsThis = this; // Make "this" available to monkey patched functions
-      // Monkey patch the Notification show and hide functions
+      // Monkey patch Notification show and hide-complete so blur follows the entire fade-in/out animation
       this.original_showNotification = MessageTray.MessageTray.prototype._showNotification;
       MessageTray.MessageTray.prototype._showNotification = this._showNotification;
-      this.original_hideNotification = MessageTray.MessageTray.prototype._hideNotification
-      MessageTray.MessageTray.prototype._hideNotification = this._hideNotification;
+      this.original_hideNotificationCompleted = MessageTray.MessageTray.prototype._hideNotificationCompleted;
+      MessageTray.MessageTray.prototype._hideNotificationCompleted = this._hideNotificationCompleted;
 
-      // Create the effects and the background actor to apply to effects to
+      // Create the effects and the background actor to apply the effects to (starts hidden)
       let [opacity, blendColor, blurType, radius, saturation, grain] = this._getSettings(settings.notificationOverride);
       this._blurType = blurType;
       let useViewport = this._wantsViewport(blurType);
@@ -5420,7 +5475,11 @@ class BlurNotifications extends BlurBase {
       if (this._viewport) this._viewport._blurCinnamonName = "Notifications";
 
       this._activeNotificationData = null;
-      this.updateEffects();
+
+      this._themeContext = St.ThemeContext.get_for_stage(global.stage);
+      this._themeChangedId = this._themeContext.connect("changed", () => this._onThemeChanged());
+      this._scaleChangedId = global.connect("scale-changed", () => this._onScaleChanged());
+      this._monitorsChangedId = Main.layoutManager.connect("monitors-changed", () => this._onMonitorsChanged());
    }
 
    _supportsDynamicBlur() {
@@ -5431,8 +5490,255 @@ class BlurNotifications extends BlurBase {
       return [settings.notificationOpacity, settings.notificationBlendColor, settings.notificationBlurType, settings.notificationRadius, settings.notificationSaturation, settings.notificationGrain];
    }
 
+   _isActorAlive(actor) {
+      return !!actor && !(actor.is_finalized && actor.is_finalized());
+   }
+
+   _cancelNotificationReclip() {
+      if (this._reclipStageId) {
+         global.stage.disconnect(this._reclipStageId);
+         this._reclipStageId = 0;
+      }
+      if (this._reclipWakeId) {
+         Meta.later_remove(this._reclipWakeId);
+         this._reclipWakeId = 0;
+      }
+   }
+
+   _isHiddenByFullscreen(data) {
+      if (!data || data.showFullscreenNotifications)
+         return false;
+      let idx = data.monitorIndex;
+      if (typeof idx !== "number" || idx < 0 || idx >= Main.layoutManager.monitors.length) {
+         const monitor = this._isActorAlive(data.actor) ? Main.layoutManager.findMonitorForActor(data.actor) : null;
+         idx = monitor ? monitor.index : Main.layoutManager.primaryIndex;
+      }
+      if (idx < 0 || idx >= Main.layoutManager.monitors.length)
+         return false;
+      return global.display.get_monitor_in_fullscreen(idx);
+   }
+
+   _syncNotificationOpacity() {
+      const data = this._activeNotificationData;
+      if (!data || !this._background || !this._isActorAlive(data.actor))
+         return;
+      const opacity = (data.actor.visible && !this._isHiddenByFullscreen(data)) ? data.actor.opacity : 0;
+      if (this._viewport) {
+         // Keep the underlying expanded background transparent; only the viewport paints visibly.
+         this._viewport.opacity = opacity;
+         this._background.opacity = 0;
+      } else {
+         this._background.opacity = opacity;
+      }
+   }
+
+   _applyTransparentStyle(actor, originalStyle) {
+      if (!this._isActorAlive(actor))
+         return;
+      let base = originalStyle ?? "";
+      if (base.includes(NOTIFICATION_TRANSPARENT_STYLE)) {
+         if (actor.get_style() !== base)
+            actor.set_style(base);
+         return;
+      }
+      if (base.length > 0 && !base.trimEnd().endsWith(";"))
+         base += ";";
+      const applied = (base.length > 0 ? base + " " : "") + NOTIFICATION_TRANSPARENT_STYLE;
+      if (actor.get_style() !== applied)
+         actor.set_style(applied);
+   }
+
+   _applyNotificationStyles(data) {
+      if (!data) return;
+      if (settings.allowTransparentColorNotifications) {
+         this._applyTransparentStyle(data.actor, data.original_actor_style);
+         this._applyTransparentStyle(data.button, data.original_button_style);
+         this._applyTransparentStyle(data.table, data.original_table_style);
+      } else {
+         this._restoreNotificationStyle();
+      }
+   }
+
+   _updateNotificationCornerRadius(table) {
+      if (!this._isActorAlive(table))
+         return;
+      const scale = global.ui_scale;
+      const cacheKey = `${this._themeVersion}:${scale}:${table.get_name() || ""}:${table.get_style_class_name() || ""}`;
+      let cornerRadius;
+      if (this._cachedCornerKey === cacheKey && this._cachedCornerRadius !== undefined) {
+         cornerRadius = this._cachedCornerRadius;
+      } else {
+         cornerRadius = 0;
+         let themeNode = table.get_theme_node();
+         if (themeNode) {
+            // We are assuming that all corners have the same radius, hope that is true.
+            cornerRadius = themeNode.get_border_radius(St.Corner.TOPLEFT) / scale;
+         }
+         if (table.get_stage()) {
+            this._cachedCornerKey = cacheKey;
+            this._cachedCornerRadius = cornerRadius;
+         }
+      }
+      if (this._appliedCornerRadius !== cornerRadius) {
+         this._appliedCornerRadius = cornerRadius;
+         this._updateViewportCornerRadius(this._background, this._viewport, cornerRadius, true, true);
+         // A newly created or updated corner effect needs its clip rect refreshed in _setNotificationClip().
+         this._lastClipRect = null;
+      }
+   }
+
+   _setNotificationClip(data) {
+      const reclipStageId = this._reclipStageId;
+      if (!data || data !== this._activeNotificationData)
+         return false;
+      const {actor, table} = data;
+      if (!this._isActorAlive(actor) || !this._isActorAlive(table))
+         return false;
+      if (!actor.visible) {
+         this._background.hide();
+         if (this._viewport) this._viewport.hide();
+         return true;
+      }
+
+      // Completing pending layout can trigger MessageTray's bottomPositionSignal (queue-redraw)
+      // which updates _notificationBin.y and invalidates the allocation again. Loop briefly so
+      // the settled allocation is clipped in this same frame.
+      let box = null;
+      for (let pass = 0; pass < 3; pass++) {
+         box = Cinnamon.util_get_transformed_allocation(actor);
+         if (data !== this._activeNotificationData || reclipStageId !== this._reclipStageId ||
+             !this._isActorAlive(actor) || !this._isActorAlive(table) || !actor.visible)
+            return false;
+         if (actor.has_allocation())
+            break;
+      }
+      const width = box.x2 - box.x1;
+      const height = box.y2 - box.y1;
+      if (![box.x1, box.y1, width, height].every(Number.isFinite) || width <= 0 || height <= 0)
+         return false;
+
+      let left = 0, right = 0, top = 0, bottom = 0;
+      const themeNode = table.get_theme_node();
+      if (themeNode) {
+         left   = themeNode.get_margin(St.Side.LEFT);
+         right  = themeNode.get_margin(St.Side.RIGHT);
+         top    = themeNode.get_margin(St.Side.TOP);
+         bottom = themeNode.get_margin(St.Side.BOTTOM);
+      }
+      const x = box.x1 + left;
+      const y = box.y1 + top;
+      const w = width - (left + right);
+      const h = height - (top + bottom);
+      if (w <= 0 || h <= 0)
+         return false;
+
+      const prev = this._lastClipRect;
+      if (prev && prev[0] === x && prev[1] === y && prev[2] === w && prev[3] === h)
+         return true;
+      this._lastClipRect = [x, y, w, h];
+      this._applyBackgroundClip(this._background, this._viewport, x, y, w, h);
+      return true;
+   }
+
+   _queueNotificationReclip(wakeStage = false) {
+      const data = this._activeNotificationData;
+      if (!data)
+         return;
+
+      if (!this._reclipStageId) {
+         let stageId = 0;
+         const isCurrent = () => this._activeNotificationData === data && this._reclipStageId === stageId;
+         // Run on stage "before-update" (after timelines and before Clutter's stage relayout/paint)
+         // so initial positioning (including bottom-notifications), multi-line reflows, and hide
+         // slides stay frame-locked without mutating geometry during allocation or paint.
+         stageId = global.stage.connect("before-update", () => {
+            if (!isCurrent()) return;
+            if (this._reclipWakeId) {
+               Meta.later_remove(this._reclipWakeId);
+               this._reclipWakeId = 0;
+            }
+            try {
+               const actor = data.actor;
+               if (!this._isActorAlive(actor) || !this._isActorAlive(data.table)) {
+                  this._unblurNotification(true);
+                  return;
+               }
+               if (!actor.visible) {
+                  this._pendingShow = false;
+                  this._background.hide();
+                  if (this._viewport) this._viewport.hide();
+                  if (isCurrent()) {
+                     global.stage.disconnect(stageId);
+                     this._reclipStageId = 0;
+                  }
+                  return;
+               }
+               if (!actor.get_stage() || !actor.is_mapped())
+                  return;
+
+               const ready = this._setNotificationClip(data);
+               if (!isCurrent()) return;
+               if (!ready) return;
+
+               if (this._pendingShow) {
+                  this._pendingShow = false;
+                  if (!this._isHiddenByFullscreen(data)) {
+                     this._syncNotificationOpacity();
+                     const alreadyDynamic = this._isDynamicEffectActive(this._background);
+                     if (!this._background.mapped && alreadyDynamic && this._background._blurCinnamonRecloneId) {
+                        Mainloop.source_remove(this._background._blurCinnamonRecloneId);
+                        this._background._blurCinnamonRecloneId = 0;
+                     }
+                     this._background.show();
+                     if (this._viewport) this._viewport.show();
+                     if (isDynamicBlurType(this._blurType) && !alreadyDynamic) {
+                        this._createDynamicEffect(this._background);
+                     }
+                  } else {
+                     this._background.hide();
+                     if (this._viewport) this._viewport.hide();
+                  }
+               }
+
+               // Flush any pending clone update before this frame paints instead of waiting for an idle.
+               const background = this._background;
+               if (cloneManager && background._blurCinnamonWinClones && background._blurCinnamonRecloneId) {
+                  Mainloop.source_remove(background._blurCinnamonRecloneId);
+                  background._blurCinnamonRecloneId = 0;
+                  cloneManager.backgroundClipChangedNow(background);
+               }
+               if (!isCurrent()) return;
+               global.stage.disconnect(stageId);
+               this._reclipStageId = 0;
+            } catch (error) {
+               if (isCurrent()) {
+                  global.stage.disconnect(stageId);
+                  this._reclipStageId = 0;
+                  this._pendingShow = false;
+                  this._lastClipRect = null;
+                  this._background.hide();
+                  if (this._viewport) this._viewport.hide();
+               }
+               global.logError(error);
+            }
+         });
+         this._reclipStageId = stageId;
+      }
+
+      if (wakeStage && !this._reclipWakeId) {
+         this._reclipWakeId = Meta.later_add(Meta.LaterType.BEFORE_REDRAW, () => {
+            this._reclipWakeId = 0;
+            return false;
+         });
+      }
+   }
+
    updateEffects() {
-      this._cancelShowTimeout()
+      this._cancelNotificationReclip();
+      this._lastClipRect = null;
+      this._appliedCornerRadius = null;
+      this._cachedCornerRadius = undefined;
+      this._cachedCornerKey = null;
 
       let [opacity, blendColor, blurType, radius, saturation, grain] = this._getSettings(settings.notificationOverride);
 
@@ -5455,182 +5761,219 @@ class BlurNotifications extends BlurBase {
          this._updateViewportEffects(this._background, this._viewport, opacity, blendColor, blurType, radius, saturation, grain);
       } else {
          this._background = this._updateEffects(this._background, opacity, blendColor, blurType, radius, saturation);
+         this._background._blurCinnamonName = "Notifications";
       }
 
-      if (this._activeNotificationData) {
-        let {actor, button, table} = this._activeNotificationData;
-
-         let themeNode = table.get_theme_node();
-         if (themeNode) {
-            // We are assuming that all corners have the same radius, hope that is true.
-            let radius = themeNode.get_border_radius(St.Corner.TOPLEFT);
-            this._updateViewportCornerRadius(this._background, this._viewport, (radius/*+6*/)/global.ui_scale, true, true);
-         }
-         if (settings.allowTransparentColorNotifications) {
-            actor.set_style( /*"border-radius: 0px;*/ "background-gradient-direction: vertical; background-gradient-start: transparent; " +
-                             "background-gradient-end: transparent; background: transparent;" );
-            button.set_style( /*"border-radius: 0px;*/ "background-gradient-direction: vertical; background-gradient-start: transparent; " +
-                             "background-gradient-end: transparent; background: transparent;" );
-            table.set_style( /*"border-radius: 0px;*/ "background-gradient-direction: vertical; background-gradient-start: transparent; " +
-                             "background-gradient-end: transparent; background: transparent;" );
-         } else {
-            actor.set_style( this._activeNotificationData.original_actor_style );
-            button.set_style( this._activeNotificationData.original_button_style );
-            table.set_style( this._activeNotificationData.original_table_style );
-         }
-         this._setClip(actor, this._background, table, this._viewport);
-         this._fullscreen_changed()
-         if ((isDynamicBlurType(this._blurType)) && !this._isDynamicEffectActive(this._background)) {
-            this._createDynamicEffect(this._background);
-         }
+      const data = this._activeNotificationData;
+      if (data && this._isActorAlive(data.actor) && this._isActorAlive(data.table)) {
+         this._updateNotificationCornerRadius(data.table);
+         this._applyNotificationStyles(data);
+         this._pendingShow = true;
+         this._queueNotificationReclip(true);
       } else {
-         this._background.hide()
+         if (data)
+            this._unblurNotification(true);
+         this._pendingShow = false;
+         this._background.hide();
          if (this._viewport) this._viewport.hide();
       }
    }
 
    _showNotification() {
-      // Call the original function then call the function to setup the effect
+      // Call the original function then setup the blur effect on _notificationBin
       blurNotificationsThis.original_showNotification.call(this);
-      const allowFullscreen = this._showFullscreenNotifications || this._notification?.urgency === MessageTray.Urgency.CRITICAL;
-      blurNotificationsThis._blurNotification.call(blurNotificationsThis, this._notificationBin, allowFullscreen);
+      const allowFullscreen = Boolean(this._showFullscreenNotifications) ||
+         this._notification?.urgency === MessageTray.Urgency.CRITICAL;
+      const monitorIndex = (this._monitor && typeof this._monitor.index === "number") ? this._monitor.index : -1;
+      blurNotificationsThis._blurNotification.call(blurNotificationsThis, this._notificationBin, allowFullscreen, monitorIndex);
    }
 
-   _restoreNotificationStyle() {
+   _hideNotificationCompleted() {
+      // Restore notification styles before Cinnamon hands the actor to the notifications applet or destroys it.
+      blurNotificationsThis._unblurNotification(false);
+      blurNotificationsThis.original_hideNotificationCompleted.call(this);
+   }
+
+   _restoreNotificationStyle(skipChildActors = false) {
       const data = this._activeNotificationData;
       if (!data) return;
-      data.actor.set_style(data.original_actor_style);
-      data.button.set_style(data.original_button_style);
-      data.table.set_style(data.original_table_style);
+      if (this._isActorAlive(data.actor))
+         data.actor.set_style(data.original_actor_style);
+      if (!skipChildActors) {
+         if (this._isActorAlive(data.button))
+            data.button.set_style(data.original_button_style);
+         if (this._isActorAlive(data.table))
+            data.table.set_style(data.original_table_style);
+      }
    }
 
-   _blurNotification(actor, showFullscreenNotifications) {
-      this._cancelShowTimeout();
+   _unblurNotification(skipChildActors = false) {
+      this._cancelNotificationReclip();
+      this._pendingShow = false;
+      this._destroyDynamicEffect(this._background);
+      this._restoreNotificationStyle(skipChildActors);
+      this._activeNotificationData = null;
       this._signalManager.disconnectAllSignals();
-      let blendColor = (settings.notificationOverride) ? settings.notificationBlendColor : settings.blendColor;
-      let opacity = (settings.notificationOverride) ? settings.notificationOpacity : settings.opacity;
+      this._background.hide();
+      if (this._viewport) this._viewport.hide();
+   }
 
-      let button = actor.get_child();
-      let table = button.get_child();
-      //log( `Bluring the notification bin actor: ${actor}` );
-      //log( `   button ${actor.get_child()}` );
-      //log( `   table  ${actor.get_child().get_child()}` );
-      //this._printActor(actor);
-      //this._printActor(button);
-      //this._printActor(table);
+   _blurNotification(actor, showFullscreenNotifications, monitorIndex = -1) {
+      this._cancelNotificationReclip();
+      this._signalManager.disconnectAllSignals();
 
+      const button = this._isActorAlive(actor) ? actor.get_child() : null;
+      const table = this._isActorAlive(button) ? button.get_child() : null;
+      if (!button || !table) {
+         this._unblurNotification(true);
+         return;
+      }
+
+      // Save the current settings so we can restore them cleanly when the notification closes
+      const prevData = this._activeNotificationData;
+      if (!prevData || prevData.actor !== actor || prevData.button !== button || prevData.table !== table) {
+         this._restoreNotificationStyle();
+         this._activeNotificationData = {
+            actor, button, table, showFullscreenNotifications, monitorIndex,
+            original_actor_style: actor.get_style(),
+            original_button_style: button.get_style(),
+            original_table_style: table.get_style()
+         };
+      } else {
+         prevData.showFullscreenNotifications = showFullscreenNotifications;
+         prevData.monitorIndex = monitorIndex;
+      }
 
       if (actor.visible) {
-         let themeNode = table.get_theme_node();
-         if (themeNode) {
-            // We are assuming that all corners have the same radius, hope that is true.
-            let radius = themeNode.get_border_radius(St.Corner.TOPLEFT);
-            this._updateViewportCornerRadius(this._background, this._viewport, (radius/*+6*/)/global.ui_scale, true, true);
-         }
-
-         // Save the current settings so we can restore it if need be
-         const data = this._activeNotificationData;
-         if (!data || data.actor !== actor || data.button !== button || data.table !== table) {
-            this._restoreNotificationStyle();
-            this._activeNotificationData = {
-               actor, button, table, showFullscreenNotifications,
-               original_actor_style: actor.get_style(),
-               original_button_style: button.get_style(),
-               original_table_style: table.get_style()
-            };
-         }
-         this._activeNotificationData.showFullscreenNotifications = showFullscreenNotifications;
-
-         if (settings.allowTransparentColorNotifications) {
-            actor.set_style( /*"border-radius: 0px;*/ "background-gradient-direction: vertical; background-gradient-start: transparent; " +
-                             "background-gradient-end: transparent; background: transparent;" );
-            button.set_style( /*"border-radius: 0px;*/ "background-gradient-direction: vertical; background-gradient-start: transparent; " +
-                             "background-gradient-end: transparent; background: transparent;" );
-            table.set_style( /*"border-radius: 0px;*/ "background-gradient-direction: vertical; background-gradient-start: transparent; " +
-                             "background-gradient-end: transparent; background: transparent;" );
-         }
+         this._updateNotificationCornerRadius(table);
+         this._applyNotificationStyles(this._activeNotificationData);
       }
-      // Resize the background to match the size of the notification window
-      this._setClip(actor, this._background, table, this._viewport);
-      // If Dynamic Blurring is enabled, create a workspace clone and add the clone to the background
-      if (isDynamicBlurType(this._blurType)) {
-         this._createDynamicEffect(this._background);
-      }
-      // The notification window size can change after being shown, so we need to adjust the background when that happens
-      connectDeferredClip(this._signalManager, actor, () => this._setClip(actor, this._background, table, this._viewport) );
+
+      // Keep background/viewport hidden until before-update computes the settled clip rect
+      // (avoiding wrong pre-layout bottom-notification geometry and duplicate dynamic cloning).
+      if (this._background.visible) this._background.hide();
+      if (this._viewport && this._viewport.visible) this._viewport.hide();
+      this._pendingShow = true;
+
+      const queueReclip = () => this._queueNotificationReclip();
+      this._signalManager.connect(actor, "notify::allocation", queueReclip);
+      this._signalManager.connect(actor, "notify::size", queueReclip);
+      this._signalManager.connect(actor, "notify::position", queueReclip);
+      this._signalManager.connect(actor, "notify::x", queueReclip);
+      this._signalManager.connect(actor, "notify::y", queueReclip);
+      this._signalManager.connect(actor, "queue-relayout", queueReclip);
+      this._signalManager.connect(actor, "notify::opacity", () => this._syncNotificationOpacity());
+      this._signalManager.connect(actor, "notify::visible", () => {
+         if (!actor.visible) {
+            this._pendingShow = false;
+            this._background.hide();
+            if (this._viewport) this._viewport.hide();
+         } else {
+            this._syncNotificationOpacity();
+            this._queueNotificationReclip(true);
+         }
+      });
+      // Clicking or dismissing a notification destroys button immediately while _notificationBin
+      // finishes an empty hide tween; tear down the blur right away so no ghost blur lingers.
+      this._signalManager.connect(button, "destroy", () => {
+         if (this._activeNotificationData && this._activeNotificationData.button === button)
+            this._unblurNotification(true);
+      });
       if (!showFullscreenNotifications) {
          this._signalManager.connect(global.display, "in-fullscreen-changed", this._fullscreen_changed, this);
       }
-      let monitor = Main.layoutManager.findMonitorForActor(this._background);
-      let idx = Main.layoutManager.monitors.indexOf(monitor);
-      if (showFullscreenNotifications || !global.display.get_monitor_in_fullscreen(idx)) {
-         // Delay showing the blurred background until the notification tween is well underway
-         const background = this._background;
-         const activeData = this._activeNotificationData;
-         this._showTimeoutId = Mainloop.timeout_add(this.animation_time * 1000, () => {
-            this._showTimeoutId = 0;
-            if (!activeData || this._activeNotificationData !== activeData ||
-                this._background !== background || !actor.visible)
-               return false;
-            const monitor = Main.layoutManager.findMonitorForActor(background);
-            const idx = Main.layoutManager.monitors.indexOf(monitor);
-            if (showFullscreenNotifications || !global.display.get_monitor_in_fullscreen(idx)) {
-               background.show();
-               if (this._viewport) this._viewport.show();
-            }
-            return false;
-         });
-      }
+
+      this._queueNotificationReclip(true);
    }
 
    _fullscreen_changed() {
       const data = this._activeNotificationData;
-      let shouldShow = false;
-      if (data && data.actor.visible) {
-         const monitor = Main.layoutManager.findMonitorForActor(this._background);
-         const idx = Main.layoutManager.monitors.indexOf(monitor);
-         shouldShow = data.showFullscreenNotifications ||
-            !global.display.get_monitor_in_fullscreen(idx);
+      if (!data || !this._isActorAlive(data.actor) || !data.actor.visible) {
+         this._background.hide();
+         if (this._viewport) this._viewport.hide();
+         return;
       }
-      if (shouldShow) {
+      if (this._pendingShow)
+         return;
+      if (!this._isHiddenByFullscreen(data)) {
+         this._syncNotificationOpacity();
+         const alreadyDynamic = this._isDynamicEffectActive(this._background);
+         if (!this._background.mapped && alreadyDynamic && this._background._blurCinnamonRecloneId) {
+            Mainloop.source_remove(this._background._blurCinnamonRecloneId);
+            this._background._blurCinnamonRecloneId = 0;
+         }
          this._background.show();
          if (this._viewport) this._viewport.show();
+         if (isDynamicBlurType(this._blurType) && !alreadyDynamic) {
+            this._createDynamicEffect(this._background);
+         }
       } else {
          this._background.hide();
          if (this._viewport) this._viewport.hide();
       }
    }
 
-   _hideNotification() {
-      blurNotificationsThis._destroyDynamicEffect(blurNotificationsThis._background);
-      blurNotificationsThis._cancelShowTimeout();
-      blurNotificationsThis._restoreNotificationStyle();
-      blurNotificationsThis._activeNotificationData = null;
-      blurNotificationsThis._signalManager.disconnectAllSignals();
-      blurNotificationsThis._background.hide();
-      if (blurNotificationsThis._viewport) blurNotificationsThis._viewport.hide();
-      blurNotificationsThis.original_hideNotification.call(this);
+   _onThemeChanged() {
+      this._themeVersion++;
+      this._appliedCornerRadius = null;
+      this._cachedCornerRadius = undefined;
+      this._cachedCornerKey = null;
+      this._lastClipRect = null;
+      const data = this._activeNotificationData;
+      if (data && this._isActorAlive(data.table) && this._isActorAlive(data.actor) && data.actor.visible) {
+         this._updateNotificationCornerRadius(data.table);
+         this._queueNotificationReclip(true);
+      }
    }
 
-   _cancelShowTimeout() {
-      if (this._showTimeoutId) {
-         Mainloop.source_remove(this._showTimeoutId);
-         this._showTimeoutId = 0;
+   _onScaleChanged() {
+      this._appliedCornerRadius = null;
+      this._cachedCornerRadius = undefined;
+      this._cachedCornerKey = null;
+      this._lastClipRect = null;
+      const data = this._activeNotificationData;
+      if (data && this._isActorAlive(data.table) && this._isActorAlive(data.actor) && data.actor.visible) {
+         this._updateNotificationCornerRadius(data.table);
+         this._queueNotificationReclip(true);
+      }
+   }
+
+   _onMonitorsChanged() {
+      this._lastClipRect = null;
+      const data = this._activeNotificationData;
+      if (data) {
+         data.monitorIndex = -1;
+         if (this._isActorAlive(data.actor) && data.actor.visible) {
+            this._fullscreen_changed();
+            this._queueNotificationReclip(true);
+         }
       }
    }
 
    destroy() {
-      // If there is an active notification, then restore it's original visual settings
-      this._cancelShowTimeout();
-      this._restoreNotificationStyle();
-      this._activeNotificationData = null;
-      this._signalManager.disconnectAllSignals();
-      this._background.hide();
-      if (this._viewport) this._viewport.hide();
+      // If there is an active notification, restore its original visual settings
+      this._unblurNotification(false);
+      this._lastClipRect = null;
+      this._appliedCornerRadius = null;
+      this._cachedCornerRadius = undefined;
+      this._cachedCornerKey = null;
+
+      if (this._themeChangedId) {
+         this._themeContext.disconnect(this._themeChangedId);
+         this._themeChangedId = 0;
+      }
+      if (this._scaleChangedId) {
+         global.disconnect(this._scaleChangedId);
+         this._scaleChangedId = 0;
+      }
+      if (this._monitorsChangedId) {
+         Main.layoutManager.disconnect(this._monitorsChangedId);
+         this._monitorsChangedId = 0;
+      }
 
       // Restore monkey patched functions and destroy the _background
       MessageTray.MessageTray.prototype._showNotification = this.original_showNotification;
-      MessageTray.MessageTray.prototype._hideNotification = this.original_hideNotification;
+      MessageTray.MessageTray.prototype._hideNotificationCompleted = this.original_hideNotificationCompleted;
       this._destroyBackgroundAndViewport(this._background, getBackgroundParent());
       if (blurNotificationsThis === this) blurNotificationsThis = null;
    }
