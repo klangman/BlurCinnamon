@@ -52,13 +52,14 @@ const SNIPPET_CODE = 'effect_base_main();\n' +
 // window, lets only part of the noise through, so it may need more than one level to still break up the
 // bands. A grain of 0 turns dithering off in every pass.
 //
-// The noise is interleaved gradient noise (Jimenez, 2014), which is cheap and has little low-frequency
-// content. It depends only on the pixel, so it doesn't change between frames. The inner passes of a blur
-// draw into textures that line up, and they all use the same pattern with alternating signs, so that
-// passes that barely blur (small radii) don't pile it up. The pass that writes the result uses the
-// pattern transposed, so that what is left of the inner noise doesn't add up with its own. In
-// simulations, a pattern shifted from one inner pass to the next left low-frequency artifacts instead.
-// Near 0 and alpha the noise is scaled down rather than clamped, so black stays black.
+// The noise is a procedural hash without interleaved gradient noise's correlated diagonal lattice
+// stripes. Inner passes use a fast two-tap triangular hash with alternating signs (dither_pattern
+// 0 and 1), since subsequent blur passes smooth their high-frequency content and alternating signs
+// prevent buildup at small radii. The final output pass (dither_pattern == 2) uses a transposed,
+// shifted coordinate with an isotropic 8-neighbor high-pass (blue-noise-like) kernel so energy sits
+// at high spatial frequencies with zero directional lines and minimal low-frequency mottling. It
+// depends only on the pixel, so it stays static across repaints. Near 0 and alpha the noise is
+// scaled down rather than clamped, so black stays black and premultiplied bounds stay exact.
 //
 // DITHER_SOURCE goes in front of every effect's source. Effect classes whose shader calls
 // blurcinnamon_dither() define passes_after (how many passes of the blur Clutter applies after this one,
@@ -68,19 +69,43 @@ const DITHER_SOURCE = `
 uniform float dither_amount;
 uniform int dither_pattern;
 
-vec4 blurcinnamon_dither(vec4 color) {
+float blurcinnamon_hash(vec2 p) {
+    vec3 p3 = fract(p.xyx * 0.1031);
+    p3 += dot(p3, p3.yzx + 33.33);
+    return fract((p3.x + p3.y) * p3.z);
+}
+
+vec4 blurcinnamon_dither_at(vec4 color, vec2 position) {
     if (dither_amount <= 0.0)
         return color;
-    vec2 p = floor(gl_FragCoord.xy);
-    if (dither_pattern == 2)
-        p = p.yx;
-    float u = fract(52.9829189 * fract(dot(p, vec2(0.06711056, 0.00583715))));
-    float noise = (u < 0.5) ? sqrt(2.0 * u) - 1.0 : 1.0 - sqrt(2.0 - 2.0 * u);
-    if (dither_pattern == 1)
-        noise = -noise;
+    vec2 p = mod(floor(position), 1024.0);
+    float noise;
+    if (dither_pattern == 2) {
+        p = p.yx + vec2(37.0, 17.0);
+        float c = blurcinnamon_hash(p);
+        float card = blurcinnamon_hash(p + vec2( 1.0,  0.0)) +
+                     blurcinnamon_hash(p + vec2(-1.0,  0.0)) +
+                     blurcinnamon_hash(p + vec2( 0.0,  1.0)) +
+                     blurcinnamon_hash(p + vec2( 0.0, -1.0));
+        float diag = blurcinnamon_hash(p + vec2( 1.0,  1.0)) +
+                     blurcinnamon_hash(p + vec2(-1.0,  1.0)) +
+                     blurcinnamon_hash(p + vec2( 1.0, -1.0)) +
+                     blurcinnamon_hash(p + vec2(-1.0, -1.0));
+        float v = c - (0.15 * card + 0.10 * diag);
+        // Shape the 8-neighbor high-pass bell to match TPDF density so 1-LSB dithering stays unbiased.
+        noise = clamp(v * (0.985 + 0.853 * abs(v)), -1.0, 1.0);
+    } else {
+        noise = blurcinnamon_hash(p) - blurcinnamon_hash(p + vec2(37.0, 17.0));
+        if (dither_pattern == 1)
+            noise = -noise;
+    }
     vec3 room = max(min(color.rgb, color.a - color.rgb), 0.0) * 255.0;
     color.rgb += noise * min(vec3(dither_amount), room) / 255.0;
     return color;
+}
+
+vec4 blurcinnamon_dither(vec4 color) {
+    return blurcinnamon_dither_at(color, gl_FragCoord.xy);
 }
 `;
 

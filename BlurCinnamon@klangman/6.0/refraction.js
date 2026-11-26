@@ -17,6 +17,7 @@ function importLocal(name) {
 
 const Utils = importLocal("utils");
 const DualKawaseBlur = importLocal("dual_kawase_blur");
+const Kawase = importLocal("kawase_pyramid");
 const EffectBase = importLocal("effect_base");
 
 const SHADER_FILENAME = 'refraction.glsl';
@@ -337,6 +338,7 @@ var RefractionEffect = new GObject.registerClass({
                 webcam_gloss: _webcam_gloss,
                 webcam_device: _webcam_device,
                 tint_color: _tint_color,
+                use_kawase_pyramid = false,
                 ...parent_params
             } = params;
             super({ ...parent_params });
@@ -361,7 +363,8 @@ var RefractionEffect = new GObject.registerClass({
 
             // Keep the public 0..48 blur-radius API used by extension.js, but
             // let Dual Kawase consume the original 0..100 intensity.
-            if (this.private_pass === 0)
+            this._use_kawase_pyramid = use_kawase_pyramid;
+            if (this.private_pass === 0 && !use_kawase_pyramid)
                 this._ensure_blur_effect();
 
             this._theme_context = St.ThemeContext.get_for_stage(global.stage);
@@ -423,9 +426,16 @@ var RefractionEffect = new GObject.registerClass({
         }
 
         get sample_reach() {
+            return this._samplingReach();
+        }
+
+        get_sampling_margin(width, height, resourceScale) {
+            return this._samplingReach(this.chained_effect?.get_sampling_margin?.(width, height, resourceScale));
+        }
+
+        _samplingReach(blur_reach = this.chained_effect?.sample_reach ?? 0) {
             const scale_factor = St.ThemeContext.get_for_stage(global.stage).scale_factor;
         
-            const blur_reach = this.chained_effect?.sample_reach ?? 0;
             const bezel = Math.max(1, this.edge_size * scale_factor);
             const band = Math.max(1, bezel * 0.35 * Math.max(1, this.rim_width));
         
@@ -474,11 +484,35 @@ var RefractionEffect = new GObject.registerClass({
             return Math.max(0, Math.min(100, this.blur_radius * 100 / MAX_BLUR_RADIUS));
         }
 
-        _ensure_blur_effect() {
+        get use_kawase_pyramid() {
+            return this._use_kawase_pyramid;
+        }
+
+        set use_kawase_pyramid(value) {
+            value = !!value;
+            if (this._use_kawase_pyramid === value)
+                return;
+            this._use_kawase_pyramid = value;
+            if (this.private_pass !== 0)
+                return;
+            const actor = this.get_actor();
+            if (actor) {
+                if (this.chained_effect)
+                    this.chained_effect.get_actor()?.remove_effect(this.chained_effect);
+                this._ensure_blur_effect(actor);
+                actor.add_effect(this.chained_effect);
+            } else {
+                this.chained_effect = null;
+            }
+        }
+
+        _ensure_blur_effect(actor) {
+            const Type = this._use_kawase_pyramid && actor && Kawase.supportsActor(actor) ?
+                Kawase.PyramidEffect : DualKawaseBlur.DualFilteringBlurEffect;
             // Replace a blur whose old actor was destroyed under it: reattaching it would log
             // criticals (see effect_base.js)
-            if (!this.chained_effect || EffectBase.shouldDiscard(this.chained_effect)) {
-                this.chained_effect = new DualKawaseBlur.DualFilteringBlurEffect({
+            if (!(this.chained_effect instanceof Type) || EffectBase.shouldDiscard(this.chained_effect)) {
+                this.chained_effect = new Type({
                     radius: this.dual_kawase_radius,
                     brightness: 1,
                     width: this.width,
@@ -1036,7 +1070,7 @@ var RefractionEffect = new GObject.registerClass({
             }
 
             if (actor && this.private_pass === 0) {
-                this._ensure_blur_effect();
+                this._ensure_blur_effect(actor);
                 // Offscreen effects wrap subsequent effects: add the blur
                 // after RefractionEffect so glass samples the blurred backdrop.
                 actor.add_effect(this.chained_effect);
