@@ -417,6 +417,16 @@ var RefractionEffect = new GObject.registerClass({
             this._clip_on_screen = false;
             this._clip_origin = null;
             this._glass_rect = null;
+            this._scaled_uniforms_dirty = false;
+            this.on_clip_settled = null;
+
+            this._theme_context = St.ThemeContext.get_for_stage(global.stage);
+            this._theme_connection_id = null;
+
+            this._set_uniform('mask_x0', 0.0);
+            this._set_uniform('mask_y0', 0.0);
+            this._set_uniform('mask_width', -1.0);
+            this._set_uniform('mask_height', -1.0);
 
             Utils.setup_params(this, params);
 
@@ -425,9 +435,6 @@ var RefractionEffect = new GObject.registerClass({
             this._use_kawase_pyramid = use_kawase_pyramid;
             if (this.private_pass === 0 && !use_kawase_pyramid)
                 this._ensure_blur_effect();
-
-            this._theme_context = St.ThemeContext.get_for_stage(global.stage);
-            this._theme_connection_id = null;
         }
 
         get_effect_source() {
@@ -446,6 +453,24 @@ var RefractionEffect = new GObject.registerClass({
 
         _set_uniform(name, value) {
             this.set_uniform_value(name, get_shader_value(name, value));
+        }
+
+        _set_uniform_for_paint(name, value) {
+            if (EffectBase.USE_GLSL_EFFECT)
+                this.set_uniform_value_no_repaint(name, value);
+            else
+                this._set_uniform(name, value);
+        }
+
+        _mark_scaled_uniforms_dirty(queueRepaint = true) {
+            if (EffectBase.USE_GLSL_EFFECT) {
+                const wasDirty = this._scaled_uniforms_dirty;
+                this._scaled_uniforms_dirty = true;
+                if (queueRepaint && !wasDirty)
+                    this.queue_repaint();
+            } else {
+                this.update_scaled_uniforms(false);
+            }
         }
 
         get grain() {
@@ -483,7 +508,7 @@ var RefractionEffect = new GObject.registerClass({
             const edge_size = Math.max(1.0, Math.min(500.0, value));
             if (this._edge_size !== edge_size) {
                 this._edge_size = edge_size;
-                this.update_scaled_uniforms();
+                this._mark_scaled_uniforms_dirty();
             }
         }
 
@@ -500,7 +525,7 @@ var RefractionEffect = new GObject.registerClass({
         }
 
         _samplingReach(blur_reach = this.chained_effect?.sample_reach ?? 0, rect_width = 0, rect_height = 0) {
-            const scale_factor = St.ThemeContext.get_for_stage(global.stage).scale_factor;
+            const scale_factor = (this._theme_context ?? St.ThemeContext.get_for_stage(global.stage)).scale_factor;
 
             const actor = this.get_actor();
             const visible = actor?._blurCinnamonSamplingRect ?? actor?._blurCinnamonVisibleRect;
@@ -665,7 +690,7 @@ var RefractionEffect = new GObject.registerClass({
             const corner_radius = Math.max(0.0, Math.min(200.0, value));
             if (this._corner_radius !== corner_radius) {
                 this._corner_radius = corner_radius;
-                this.update_scaled_uniforms();
+                this._mark_scaled_uniforms_dirty();
             }
         }
 
@@ -713,7 +738,7 @@ var RefractionEffect = new GObject.registerClass({
             const reach = Math.max(0.0, Math.min(500.0, value));
             if (this._reach !== reach) {
                 this._reach = reach;
-                this.update_scaled_uniforms();
+                this._mark_scaled_uniforms_dirty();
             }
         }
 
@@ -749,7 +774,9 @@ var RefractionEffect = new GObject.registerClass({
             const angle = Math.max(-180.0, Math.min(180.0, value));
             if (this._fresnel_angle !== angle) {
                 this._fresnel_angle = angle;
-                this._set_uniform('fresnel_angle', (this._fresnel_angle + 90.0) * Math.PI / 180.0);
+                const rad = (this._fresnel_angle + 90.0) * Math.PI / 180.0;
+                this._set_uniform('fresnel_cos', Math.cos(rad));
+                this._set_uniform('fresnel_sin', Math.sin(rad));
             }
         }
 
@@ -979,7 +1006,7 @@ var RefractionEffect = new GObject.registerClass({
                 this._width = value;
 
                 this._set_uniform('width', this._width + 3.0);
-                this.update_scaled_uniforms();
+                this._mark_scaled_uniforms_dirty(false);
 
                 if (this.chained_effect)
                     this.chained_effect.width = value;
@@ -995,7 +1022,7 @@ var RefractionEffect = new GObject.registerClass({
                 this._height = value;
 
                 this._set_uniform('height', this._height + 3.0);
-                this.update_scaled_uniforms();
+                this._mark_scaled_uniforms_dirty(false);
 
                 if (this.chained_effect)
                     this.chained_effect.height = value;
@@ -1045,7 +1072,25 @@ var RefractionEffect = new GObject.registerClass({
                 this._set_uniform('clip_width', shader_clip[2]);
                 this._set_uniform('clip_height', shader_clip[3]);
             }
-            this.update_scaled_uniforms();
+
+            // While stabilizing a resize, pass the instantaneous visible rect so the shader clips
+            // shrinking surfaces directly without an extra outer CornerEffect offscreen pass.
+            const stabilizing = (this._stabilize_clip_x || this._stabilize_clip_y) &&
+                this._clip_width >= 0 && this._clip_height >= 0 &&
+                (shader_clip[0] !== this._clip_x0 || shader_clip[1] !== this._clip_y0 ||
+                 shader_clip[2] !== this._clip_width || shader_clip[3] !== this._clip_height);
+            if (stabilizing) {
+                this._set_uniform('mask_x0', this._clip_x0 + 2.0);
+                this._set_uniform('mask_y0', this._clip_y0 + 2.0);
+                this._set_uniform('mask_width', this._clip_width);
+                this._set_uniform('mask_height', this._clip_height);
+            } else {
+                this._set_uniform('mask_x0', 0.0);
+                this._set_uniform('mask_y0', 0.0);
+                this._set_uniform('mask_width', -1.0);
+                this._set_uniform('mask_height', -1.0);
+            }
+            this._mark_scaled_uniforms_dirty(false);
         }
 
         // Optional bounds for the glass shape (edges, rim, corners), in actor-local pixels, used instead
@@ -1158,6 +1203,10 @@ var RefractionEffect = new GObject.registerClass({
                 this._clip_settle_timeout_id = null;
                 this.clip = [this._clip_x0, this._clip_y0, this._clip_width, this._clip_height];
                 this.queue_repaint();
+                // Notify the owner so an expanded resize-stabilization viewport can shrink back
+                // to its settled sampling margin once stabilization completes.
+                if (this.on_clip_settled && this.get_actor())
+                    this.on_clip_settled(this);
                 return GLib.SOURCE_REMOVE;
             });
 
@@ -1196,8 +1245,9 @@ var RefractionEffect = new GObject.registerClass({
             return [resolved_start, resolved_end - resolved_start, true];
         }
 
-        update_scaled_uniforms() {
-            const scale_factor = St.ThemeContext.get_for_stage(global.stage).scale_factor;
+        update_scaled_uniforms(forPaint = false) {
+            this._scaled_uniforms_dirty = false;
+            const scale_factor = (this._theme_context ?? St.ThemeContext.get_for_stage(global.stage)).scale_factor;
             const rect_width =
                 this._stable_clip_width ?? (this._clip_width >= 0 ? this._clip_width : this.width);
             const rect_height =
@@ -1207,10 +1257,11 @@ var RefractionEffect = new GObject.registerClass({
             const corner_radius = Math.min((this.corner_radius ?? DEFAULT_PARAMS.corner_radius) * scale_factor, max_edge);
             const reach = Math.min((this.reach ?? DEFAULT_PARAMS.reach) * scale_factor, max_edge);
 
-            this._set_uniform('edge_size', edge_size);
-            this._set_uniform('corner_radius', corner_radius);
-            this._set_uniform('reach', reach);
-            this._set_uniform('scale_factor', scale_factor);
+            const write = forPaint ? this._set_uniform_for_paint : this._set_uniform;
+            write.call(this, 'edge_size', edge_size);
+            write.call(this, 'corner_radius', corner_radius);
+            write.call(this, 'reach', reach);
+            write.call(this, 'scale_factor', scale_factor);
         }
 
         _disconnect_theme_signal() {
@@ -1225,6 +1276,12 @@ var RefractionEffect = new GObject.registerClass({
                 return false;
             Utils.extendOffscreenViewport(paintContext, this.get_actor());
             return true;
+        }
+
+        vfunc_paint_target(...params) {
+            if (this._scaled_uniforms_dirty)
+                this.update_scaled_uniforms(true);
+            super.vfunc_paint_target(...params);
         }
 
         vfunc_set_actor(actor) {
@@ -1267,14 +1324,17 @@ var RefractionEffect = new GObject.registerClass({
                 this._stable_clip_height = null;
                 this._stabilize_clip_x = false;
                 this._stabilize_clip_y = false;
+                this._clip_on_screen = false;
+                this._clip_origin = null;
+                this.on_clip_settled = null;
             }
 
             super.vfunc_set_actor(actor);
 
             if (actor) {
-                this.update_scaled_uniforms();
                 this._theme_context = St.ThemeContext.get_for_stage(global.stage);
-                this._theme_connection_id = this._theme_context.connect('notify::scale-factor', () => this.update_scaled_uniforms());
+                this._mark_scaled_uniforms_dirty(false);
+                this._theme_connection_id = this._theme_context.connect('notify::scale-factor', () => this._mark_scaled_uniforms_dirty());
             }
 
             if (actor && this.private_pass === 0) {

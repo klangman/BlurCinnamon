@@ -26,7 +26,8 @@ uniform float rim_width;
 uniform float reach;
 uniform float rgb_fringing;
 uniform float gloss;
-uniform float fresnel_angle;
+uniform float fresnel_cos;
+uniform float fresnel_sin;
 uniform float fresnel_width;
 uniform int fresnel_two_sided;
 uniform float specular_strength;
@@ -45,6 +46,10 @@ uniform float clip_x0;
 uniform float clip_y0;
 uniform float clip_width;
 uniform float clip_height;
+uniform float mask_x0;
+uniform float mask_y0;
+uniform float mask_width;
+uniform float mask_height;
 uniform float scale_factor;
 
 // Overall bend multiplier and edge-profile curve (< 1 reaches further inward).
@@ -123,22 +128,6 @@ float quartzGlassRing(float distanceFromEdge,
     return outerCoverage * innerCoverage * (1.0 - radial);
 }
 
-// Fresnel glare lit as a fixed 180 degree apart pair of edges along the light
-// axis. taper (1 on the glare edges, 0 at the end of the tail) thins and
-// fades the line through the corner curves and a little down the sides.
-float quartzGlassHighlight(float distanceFromEdge,
-                           float bezelWidth,
-                           float taper,
-                           float strengthValue) {
-    float highlight = quartzGlassRing(distanceFromEdge, bezelWidth, taper) *
-                      sqrt(taper);
-
-    float oppositeAttenuation = 1.35;
-    highlight /= max(1.0 + (1.0 - highlight) * oppositeAttenuation,
-                     0.0001);
-    return highlight * max(strengthValue, 0.0);
-}
-
 float luminance(vec3 color) {
     return dot(color, vec3(0.2126, 0.7152, 0.0722));
 }
@@ -146,29 +135,19 @@ float luminance(vec3 color) {
 // Muffin pads offscreen FBOs by 2 px before the actor origin and 1 px after
 // the far edge (width = actor_w + 3, height = actor_h + 3). Clamp inside the
 // valid texel centres so refraction never samples the transparent FBO gutter.
-vec2 clampUV(vec2 uv) {
-    vec2 minPx = vec2(2.5 / width, 2.5 / height);
-    vec2 maxPx = vec2(1.0 - 1.5 / width, 1.0 - 1.5 / height);
-    return clamp(uv, minPx, max(minPx, maxPx));
-}
-
-vec2 resolveUV(vec2 uv) {
+vec2 resolveUV(vec2 uv, vec2 minUV, vec2 maxUV) {
     if (texture_repeat == 1) {
         vec2 mirrored = 1.0 - abs(fract(uv * 0.5) * 2.0 - 1.0);
-        return clampUV(mirrored);
+        return clamp(mirrored, minUV, maxUV);
     }
 
-    return clampUV(uv);
-}
-
-vec4 sampleBackdrop(vec2 uv) {
-    return texture2D(tex, resolveUV(uv));
+    return clamp(uv, minUV, maxUV);
 }
 
 // The glass is blurred by its chained Dual Kawase effect; un-premultiply so
 // blending, highlights and final premultiplication stay exact on partial alpha.
-vec4 sampleGlassBackdrop(vec2 uv) {
-    vec4 sampleColor = sampleBackdrop(uv);
+vec4 sampleGlassBackdrop(vec2 uv, vec2 minUV, vec2 maxUV) {
+    vec4 sampleColor = texture2D(tex, resolveUV(uv, minUV, maxUV));
     return vec4(sampleColor.a > 0.0001 ? sampleColor.rgb / sampleColor.a : vec3(0.0), sampleColor.a);
 }
 
@@ -266,51 +245,41 @@ vec3 bandEdge(vec2 glassPx, vec2 halfSize, float radius, float band,
     return vec3(max(edgeHit - r, 0.0), sign(p) * ray);
 }
 
-vec2 backdropSampleUV(vec2 sampleUV, vec2 displacementPx) {
-    vec2 displaced = sampleUV + displacementPx / vec2(width, height);
-    float zoom = max(backdrop_zoom, 0.01);
-
-    // Zoom around the visible glass centre, not the expanded sampling viewport.
-    vec2 centre;
-    if (clip_width >= 0.0 && clip_height >= 0.0) {
-        centre = (
-            vec2(clip_x0, clip_y0) +
-            0.5 * vec2(clip_width, clip_height)
-        ) / vec2(width, height);
-    } else {
-        centre = (
-            vec2(2.0, 2.0) +
-            0.5 * max(vec2(width, height) - vec2(3.0), vec2(1.0))
-        ) / vec2(width, height);
-    }
-
-    displaced = centre + (displaced - centre) / zoom;
+vec2 backdropSampleUV(vec2 sampleUV, vec2 displacementPx, vec2 invActorSize,
+                      vec2 zoomCentre, float invZoom, bool hasZoom) {
+    vec2 displaced = sampleUV + displacementPx * invActorSize;
+    if (hasZoom)
+        displaced = zoomCentre + (displaced - zoomCentre) * invZoom;
     return displaced;
 }
 
 vec4 sampleDispersed(vec2 sampleUV, vec2 dispPx, vec2 aberrationPx,
-                     float dispersion) {
-    vec2 greenUV = backdropSampleUV(sampleUV, dispPx);
-    vec4 greenSample = sampleGlassBackdrop(greenUV);
+                     float dispersion, vec2 invActorSize, vec2 zoomCentre,
+                     float invZoom, bool hasZoom, vec2 minUV, vec2 maxUV) {
+    vec2 greenUV = backdropSampleUV(sampleUV, dispPx, invActorSize, zoomCentre,
+                                    invZoom, hasZoom);
+    vec4 greenSample = sampleGlassBackdrop(greenUV, minUV, maxUV);
 
     vec4 fallback = greenSample;
     if (greenSample.a < 0.01) {
-        fallback = sampleGlassBackdrop(sampleUV);
+        fallback = sampleGlassBackdrop(sampleUV, minUV, maxUV);
         if (fallback.a < 0.01)
             return vec4(0.0);
         greenSample = fallback;
     }
 
     vec4 bg = greenSample;
-    if (dispersion > 0.001 && dot(dispPx, dispPx) > 0.0001) {
-        vec3 accumulated = vec3(0.0);
-        float accumulatedAlpha = 0.0;
+    // Skip the 6 extra chromatic taps when dispersion is negligible (< 0.1 px).
+    if (dispersion > 0.001 && dot(aberrationPx, aberrationPx) > 0.01) {
+        // Reuse greenSample for the i=0 (weight=0) tap of the second loop.
+        vec3 accumulated = vec3(0.0, greenSample.g, 0.0);
+        float accumulatedAlpha = greenSample.a;
 
         for (int i = 0; i < 3; i++) {
             float weight = 1.0 - float(i) / 3.0;
-            vec2 uv = backdropSampleUV(sampleUV,
-                                       dispPx + aberrationPx * weight);
-            vec4 sample = sampleGlassBackdrop(uv);
+            vec2 uv = backdropSampleUV(sampleUV, dispPx + aberrationPx * weight,
+                                       invActorSize, zoomCentre, invZoom, hasZoom);
+            vec4 sample = sampleGlassBackdrop(uv, minUV, maxUV);
             if (sample.a < 0.01)
                 sample = fallback;
             accumulated.r += sample.r * weight;
@@ -318,11 +287,11 @@ vec4 sampleDispersed(vec2 sampleUV, vec2 dispPx, vec2 aberrationPx,
             accumulatedAlpha += sample.a;
         }
 
-        for (int i = 0; i < 4; i++) {
+        for (int i = 1; i < 4; i++) {
             float weight = float(i) / 3.0;
-            vec2 uv = backdropSampleUV(sampleUV,
-                                       dispPx - aberrationPx * weight);
-            vec4 sample = sampleGlassBackdrop(uv);
+            vec2 uv = backdropSampleUV(sampleUV, dispPx - aberrationPx * weight,
+                                       invActorSize, zoomCentre, invZoom, hasZoom);
+            vec4 sample = sampleGlassBackdrop(uv, minUV, maxUV);
             if (sample.a < 0.01)
                 sample = fallback;
             accumulated.g += sample.g * (1.0 - weight);
@@ -339,11 +308,15 @@ vec4 sampleDispersed(vec2 sampleUV, vec2 dispPx, vec2 aberrationPx,
 // Light from colorful content under the glass, gathered a few steps inward
 // from the edge. Returns a saturated color and, in alpha, how colorful it is,
 // so neutral (white/gray/black) content does not light the rim.
-vec4 edgeGlowColor(vec2 sampleUV, vec2 dir, float band) {
+vec4 edgeGlowColor(vec2 sampleUV, vec2 dir, float band, vec2 invActorSize,
+                   vec2 zoomCentre, float invZoom, bool hasZoom,
+                   vec2 minUV, vec2 maxUV) {
     vec3 gathered = vec3(0.0);
     for (int i = 1; i <= 3; i++) {
         vec2 inwardPx = -dir * band * float(i) * 0.6;
-        gathered += sampleGlassBackdrop(backdropSampleUV(sampleUV, inwardPx)).rgb;
+        vec2 uv = backdropSampleUV(sampleUV, inwardPx, invActorSize, zoomCentre,
+                                   invZoom, hasZoom);
+        gathered += sampleGlassBackdrop(uv, minUV, maxUV).rgb;
     }
     gathered /= 3.0;
 
@@ -366,6 +339,11 @@ vec3 applyTintAndShadow(vec3 sample, vec2 localUV) {
 }
 
 void blurcinnamon_main() {
+    if (clip_width == 0.0 || clip_height == 0.0 || mask_width == 0.0 || mask_height == 0.0) {
+        cogl_color_out = vec4(0.0);
+        return;
+    }
+
     vec2 actorSize = vec2(width, height);
     vec2 actorUV = cogl_tex_coord_in[0].xy;
 
@@ -373,6 +351,23 @@ void blurcinnamon_main() {
     vec4 bounds = clip_width < 0.0 || clip_height < 0.0
         ? vec4(2.0, 2.0, max(3.0, width - 1.0), max(3.0, height - 1.0))
         : vec4(clip_x0, clip_y0, clip_x0 + clip_width, clip_y0 + clip_height);
+
+    // During resize stabilization, bounds holds the union of old/new rects while
+    // mask_* holds the instantaneous visible rect so shrinking surfaces clip cleanly
+    // without an extra outer CornerEffect offscreen pass. Defer the early return until
+    // after all fwidth()-based edgeCoverage() calls so 2x2 quad derivatives remain in
+    // uniform control flow on all GPUs.
+    float maskOpacity = 1.0;
+    if (mask_width > 0.0 && mask_height > 0.0) {
+        vec2 maskSize = vec2(mask_width, mask_height);
+        vec2 maskPx = actorPx - vec2(mask_x0, mask_y0);
+        vec2 maskHalf = maskSize * 0.5;
+        float maskR = clamp(corner_radius, 0.0, min(maskSize.x, maskSize.y) * 0.5);
+        if ((maskPx.y < maskHalf.y && corners_top == 0)
+            || (maskPx.y >= maskHalf.y && corners_bottom == 0))
+            maskR = 0.0;
+        maskOpacity = edgeCoverage(roundedBoxDistance(maskPx - maskHalf, maskHalf, maskR));
+    }
 
     vec2 glassSize = max(bounds.zw - bounds.xy, vec2(1.0));
     vec2 glassPx = actorPx - bounds.xy;
@@ -394,35 +389,35 @@ void blurcinnamon_main() {
     bool useCircularSurface = corners_top != 0 && corners_bottom != 0
         && nearlySquare && R >= shortestSide * 0.5 - 0.5;
 
-    EdgeInfo edge = estimateAnalyticEdge(glassPx, halfSize, roundingRadius);
-    if (edge.alpha <= 0.0) {
-        cogl_color_out = vec4(0.0);
-        return;
-    }
-
-    float distFromSide = edge.distance;
-    float edgeOpacity = edge.alpha;
+    float distFromSide;
+    float edgeOpacity;
     float refractionBand = bezel;
-    vec2 dir = edge.dir;
+    vec2 dir;
 
     if (useCircularSurface) {
         float circleRadius = shortestSide * 0.5;
-        vec2 circleCenter = glassSize * 0.5;
-        vec2 fromCenter = glassPx - circleCenter;
+        vec2 fromCenter = glassPx - halfSize;
         float circleDistance = length(fromCenter);
-
-        if (circleDistance > circleRadius + 1.0) {
+        edgeOpacity = edgeCoverage(circleDistance - circleRadius) * maskOpacity;
+        if (edgeOpacity <= 0.0) {
             cogl_color_out = vec4(0.0);
             return;
         }
 
         distFromSide = max(0.0, circleRadius - circleDistance);
         dir = circleDistance > 0.001 ? normalize(fromCenter) : vec2(0.0, -1.0);
-        edgeOpacity = edgeCoverage(circleDistance - circleRadius);
-
-        float rimRadius = max(1.0, bezel * 0.35);
-        refractionBand = rimRadius;
+        refractionBand = max(1.0, bezel * 0.35);
     } else {
+        EdgeInfo edge = estimateAnalyticEdge(glassPx, halfSize, roundingRadius);
+        edgeOpacity = edge.alpha * maskOpacity;
+        if (edgeOpacity <= 0.0) {
+            cogl_color_out = vec4(0.0);
+            return;
+        }
+
+        distFromSide = edge.distance;
+        dir = edge.dir;
+
         float rimRadius = max(1.0, bezel * 0.35 * max(1.0, rim_width));
         rimRadius = min(rimRadius, shortestSide * 0.5);
         if (R > 0.0 && (corners_top != 0 || corners_bottom != 0))
@@ -431,6 +426,14 @@ void blurcinnamon_main() {
         if (roundingRadius == 0.0 && distFromSide < refractionBand)
             dir = sharpCornerDir(glassPx, glassSize, refractionBand);
     }
+
+    // Precompute UV clamp and zoom parameters once per fragment for all backdrop taps.
+    vec2 invActorSize = 1.0 / actorSize;
+    vec2 minUV = vec2(2.5) * invActorSize;
+    vec2 maxUV = max(minUV, vec2(1.0) - vec2(1.5) * invActorSize);
+    float invZoom = 1.0 / max(backdrop_zoom, 0.01);
+    bool hasZoom = abs(backdrop_zoom - 1.0) > 0.001;
+    vec2 zoomCentre = (bounds.xy + bounds.zw) * 0.5 * invActorSize;
 
     // The reach widens the bend past the rim band, which the corner radius
     // caps on rounded glass. The bend keeps its shape and deepens with its
@@ -453,16 +456,35 @@ void blurcinnamon_main() {
     float edgeBand = clamp(1.0 - (lensDist / lensBand), 0.0, 1.0);
 
     float scale = max(scale_factor, 1.0);
-    float rimActiveSpan = max(lensBand, 3.0 * scale);
-    if (!useCircularSurface && (roundingRadius == 0.0 || R < shortestSide * 0.45)
-        && distFromSide >= rimActiveSpan) {
-        vec4 sourceSample = sampleGlassBackdrop(actorUV);
-        vec2 flatUV = backdropSampleUV(actorUV, vec2(0.0));
-        vec4 flatSample = sampleGlassBackdrop(flatUV);
-        float finalOpacity = edgeOpacity * mix(sourceSample.a, flatSample.a,
-                                               opacity_factor);
+    float ringWidthBase = clamp(refractionBand * 0.24 * fresnel_width, 1.0,
+                                2.5 * fresnel_width);
+    float bloomWidth = max(1.5, refractionBand * 0.25);
+    // Cover specular bloom until it falls below ~0.4/255 (4*bloomWidth <= refractionBand
+    // for normal radii >= 6, while protecting small radii where bloomWidth is clamped to 1.5).
+    float specBloomReach = specular_strength > 0.21
+        ? bloomWidth * 5.5
+        : (specular_strength > 0.001 ? bloomWidth * 4.0 : 0.0);
+    float rimActiveSpan = max(max(lensBand, max(ringWidthBase + 0.5, specBloomReach)),
+                              3.0 * scale);
+    if (distFromSide >= rimActiveSpan) {
+        vec2 flatUV = hasZoom
+            ? zoomCentre + (actorUV - zoomCentre) * invZoom
+            : actorUV;
+        vec4 flatSample = sampleGlassBackdrop(flatUV, minUV, maxUV);
         vec3 effectRGB = applyTintAndShadow(flatSample.rgb, localUV);
-        vec3 outRGB = mix(sourceSample.rgb, effectRGB, opacity_factor);
+        vec3 outRGB;
+        float finalOpacity;
+        if (opacity_factor < 0.999) {
+            vec4 sourceSample = hasZoom
+                ? sampleGlassBackdrop(actorUV, minUV, maxUV)
+                : flatSample;
+            finalOpacity = edgeOpacity * mix(sourceSample.a, flatSample.a,
+                                             opacity_factor);
+            outRGB = mix(sourceSample.rgb, effectRGB, opacity_factor);
+        } else {
+            finalOpacity = edgeOpacity * flatSample.a;
+            outRGB = effectRGB;
+        }
 
         cogl_color_out = vec4(outRGB * finalOpacity, finalOpacity);
         return;
@@ -489,65 +511,81 @@ void blurcinnamon_main() {
     // Dispersion follows the bend and is weighted toward the rim, so colors
     // spread out along the glass edge while the center stays clean.
     float dispersion = clamp(rgb_fringing, 0.0, 1.0) * DISPERSION_RATIO;
-    vec4 sourceColor = sampleGlassBackdrop(actorUV);
     vec2 aberrationPx = dispPx * clamp(normDisp, 0.0, 1.0) * dispersion;
-    vec4 bgColor = sampleDispersed(actorUV, dispPx, aberrationPx, dispersion);
+    vec4 bgColor = sampleDispersed(actorUV, dispPx, aberrationPx, dispersion,
+                                   invActorSize, zoomCentre, invZoom, hasZoom,
+                                   minUV, maxUV);
 
     vec3 outRGB = mix(bgColor.rgb, vec3(tint_r, tint_g, tint_b),
                       tint * tint_a);
 
-    // Facing of the edge relative to the fresnel glare axis: 1 on the lit
-    // edge pair, 0 on the perpendicular (side) edges.
-    vec2 glareAxis = vec2(cos(fresnel_angle), sin(fresnel_angle));
-    float glareAxisDot = dot(glareAxis, dir);
-    float glareFacing = abs(glareAxisDot);
+    float edgeShadowReach = edge_shadow > 0.001
+        ? clamp(refractionBand * 0.02, 0.5 * scale, 1.0 * scale) + 0.5
+        : 0.0;
+    float specActiveReach = specular_strength > 0.001
+        ? max(ringWidthBase + 0.5, specBloomReach)
+        : 0.0;
+    float glareMaxReach = max(edgeShadowReach,
+                              max(gloss > 0.001 ? ringWidthBase + 0.5 : 0.0,
+                                  specActiveReach));
 
-    // Rim position measured from where the corner curve starts on the glare
-    // edge (axis snapped to vertical/horizontal): < 0 on the straight glare
-    // edge, 0..R*PI/2 along the curve, beyond that down the side edge.
-    bool glareVertical = abs(glareAxis.y) >= abs(glareAxis.x);
-    vec2 rimP = abs(glassPx - halfSize);
-    vec2 straightHalf = max(halfSize - vec2(roundingRadius), vec2(0.0));
-    vec2 litP = glareVertical ? rimP : rimP.yx;
-    vec2 litStraight = glareVertical ? straightHalf : straightHalf.yx;
-    vec2 litDir = glareVertical ? abs(dir) : abs(dir).yx;
-    float rimPos = roundingRadius * atan(litDir.x, max(litDir.y, 0.0001)) +
-                   min(litP.x - litStraight.x, 0.0) +
-                   max(litStraight.y - litP.y, 0.0);
+    bool needGlare = distFromSide < glareMaxReach;
+    float glareAxisDot = 0.0;
+    float glareTaper = 0.0;
+    if (needGlare) {
+        // Facing of the edge relative to the fresnel glare axis: 1 on the lit
+        // edge pair, 0 on the perpendicular (side) edges.
+        vec2 glareAxis = vec2(fresnel_cos, fresnel_sin);
+        glareAxisDot = dot(glareAxis, dir);
+        float glareFacing = abs(glareAxisDot);
 
-    float taperR = max(roundingRadius, 4.0);
-    float glareLead = min(GLARE_TAPER_LEAD * taperR, litStraight.x);
-    float glareTail = min(GLARE_TAPER_TAIL * taperR, litStraight.y);
-    float glareTaper = 1.0 - smoothstep(-glareLead,
-                                        roundingRadius * 1.5707963 + glareTail +
-                                        0.001,
-                                        rimPos);
-    // Diagonal glare angles fall back to the plain facing taper.
-    float offAxis = clamp((1.0 - max(abs(glareAxis.x), abs(glareAxis.y))) /
-                          0.2928932, 0.0, 1.0);
-    glareTaper = mix(glareTaper, glareFacing, offAxis);
+        // Rim position measured from where the corner curve starts on the glare
+        // edge (axis snapped to vertical/horizontal): < 0 on the straight glare
+        // edge, 0..R*PI/2 along the curve, beyond that down the side edge.
+        bool glareVertical = abs(glareAxis.y) >= abs(glareAxis.x);
+        vec2 rimP = abs(glassPx - halfSize);
+        vec2 straightHalf = max(halfSize - vec2(roundingRadius), vec2(0.0));
+        vec2 litP = glareVertical ? rimP : rimP.yx;
+        vec2 litStraight = glareVertical ? straightHalf : straightHalf.yx;
+        vec2 litDir = glareVertical ? abs(dir) : abs(dir).yx;
+        float rimPos = roundingRadius * atan(litDir.x, max(litDir.y, 0.0001)) +
+                       min(litP.x - litStraight.x, 0.0) +
+                       max(litStraight.y - litP.y, 0.0);
 
-    if (fresnel_two_sided == 0) {
-        float oneSidedMask = 1.0 - smoothstep(-0.2, 0.1, glareAxisDot);
-        glareTaper *= oneSidedMask;
-    }
+        float taperR = max(roundingRadius, 4.0);
+        float glareLead = min(GLARE_TAPER_LEAD * taperR, litStraight.x);
+        float glareTail = min(GLARE_TAPER_TAIL * taperR, litStraight.y);
+        glareTaper = 1.0 - smoothstep(-glareLead,
+                                      roundingRadius * 1.5707963 + glareTail +
+                                      0.001,
+                                      rimPos);
+        // Diagonal glare angles fall back to the plain facing taper.
+        float offAxis = clamp((1.0 - max(abs(glareAxis.x), abs(glareAxis.y))) /
+                              0.2928932, 0.0, 1.0);
+        glareTaper = mix(glareTaper, glareFacing, offAxis);
 
-    // Thin dark border on the straight side edges (the pair perpendicular to
-    // the glare axis). It starts after the glare tail ends and thins in
-    // gradually, so the glare keeps its tapering through the corners.
-    if (edge_shadow > 0.001) {
-        float borderTaper = step(0.5, litDir.x) *
-                            smoothstep(glareTail - BORDER_FADE_LEAD * scale,
-                                       glareTail + BORDER_FADE_TAIL * scale,
-                                       litStraight.y - litP.y);
-        float lineWidth = clamp(refractionBand * 0.02, 0.5 * scale,
-                                1.0 * scale) * borderTaper;
-        float line = 1.0 - smoothstep(lineWidth - 0.5, lineWidth + 0.5,
-                                      distFromSide);
+        if (fresnel_two_sided == 0) {
+            float oneSidedMask = 1.0 - smoothstep(-0.2, 0.1, glareAxisDot);
+            glareTaper *= oneSidedMask;
+        }
 
-        float darken = edge_shadow * line * borderTaper *
-                       mix(0.5, 1.0, luminance(outRGB));
-        outRGB *= 1.0 - darken;
+        // Thin dark border on the straight side edges (the pair perpendicular to
+        // the glare axis). It starts after the glare tail ends and thins in
+        // gradually, so the glare keeps its tapering through the corners.
+        if (distFromSide < edgeShadowReach) {
+            float borderTaper = step(0.5, litDir.x) *
+                                smoothstep(glareTail - BORDER_FADE_LEAD * scale,
+                                           glareTail + BORDER_FADE_TAIL * scale,
+                                           litStraight.y - litP.y);
+            float lineWidth = clamp(refractionBand * 0.02, 0.5 * scale,
+                                    1.0 * scale) * borderTaper;
+            float line = 1.0 - smoothstep(lineWidth - 0.5, lineWidth + 0.5,
+                                          distFromSide);
+
+            float darken = edge_shadow * line * borderTaper *
+                           mix(0.5, 1.0, luminance(outRGB));
+            outRGB *= 1.0 - darken;
+        }
     }
 
     // Colorful content under the glass lights up the rim. Pixels past the
@@ -555,18 +593,29 @@ void blurcinnamon_main() {
     float glowWidth = max(1.5, refractionBand * 0.6);
     if (edge_glow > 0.001 && distFromSide < glowWidth) {
         float glowBand = 1.0 - smoothstep(0.0, glowWidth, distFromSide);
-        vec4 glow = edgeGlowColor(actorUV, dir, refractionBand);
+        vec4 glow = edgeGlowColor(actorUV, dir, refractionBand, invActorSize,
+                                  zoomCentre, invZoom, hasZoom, minUV, maxUV);
         float glowAmount = glowBand * glowBand * glow.a * edge_glow * 0.85;
         outRGB = mix(outRGB, clamp(glow.rgb * 1.15, 0.0, 1.0), glowAmount);
     }
 
-    float highlight = quartzGlassHighlight(distFromSide, refractionBand,
-                                           glareTaper, gloss) *
-                      edgeOpacity;
-    float bgLuminance = luminance(outRGB);
-    highlight *= mix(0.32, 1.0, bgLuminance);
-    highlight = min(highlight, 0.35);
-    outRGB = 1.0 - (1.0 - outRGB) * (1.0 - highlight);
+    // Compute the anti-aliased glare ring once and share it between the
+    // backdrop-modulated Fresnel highlight and the white specular reflection.
+    float ringCore = 0.0;
+    if (needGlare && (gloss > 0.001 || specular_strength > 0.001)
+        && distFromSide < ringWidthBase + 0.5 && glareTaper > 0.0) {
+        ringCore = quartzGlassRing(distFromSide, refractionBand, glareTaper) *
+                   sqrt(glareTaper);
+    }
+
+    if (gloss > 0.001 && ringCore > 0.0) {
+        float highlight = ringCore / max(1.0 + (1.0 - ringCore) * 1.35, 0.0001) *
+                          gloss * edgeOpacity;
+        float bgLuminance = luminance(outRGB);
+        highlight *= mix(0.32, 1.0, bgLuminance);
+        highlight = min(highlight, 0.35);
+        outRGB = 1.0 - (1.0 - outRGB) * (1.0 - highlight);
+    }
 
     outRGB *= 1.0 - smoothstep(0.25, 1.0, localUV.y) * shadow * 0.20;
 
@@ -576,22 +625,25 @@ void blurcinnamon_main() {
     // soft bloom fades sooner so the tail is a crisp thin line. Reflected
     // light is white and does not depend on the backdrop brightness, so it is
     // added after the inner shadow.
-    if (specular_strength > 0.001) {
+    if (needGlare && specular_strength > 0.001) {
         float side = glareAxisDot < 0.0 ? 1.0 : SPECULAR_FAR_SIDE;
-        float core = quartzGlassRing(distFromSide, refractionBand, glareTaper) *
-                     sqrt(glareTaper);
-        float bloomWidth = max(1.5, refractionBand * 0.25);
         float bloom = exp(-distFromSide / bloomWidth) * 0.35 *
                       glareTaper * glareTaper;
-        float specular = (core + bloom) * side * edgeOpacity *
+        float specular = (ringCore + bloom) * side * edgeOpacity *
                          specular_strength;
         specular = clamp(specular, 0.0, 0.85);
         outRGB = 1.0 - (1.0 - clamp(outRGB, 0.0, 1.0)) * (1.0 - specular);
     }
-    outRGB = mix(sourceColor.rgb, outRGB, opacity_factor);
 
-    float finalOpacity = edgeOpacity * mix(sourceColor.a, bgColor.a,
-                                           opacity_factor);
+    float finalOpacity;
+    if (opacity_factor < 0.999) {
+        vec4 sourceColor = sampleGlassBackdrop(actorUV, minUV, maxUV);
+        outRGB = mix(sourceColor.rgb, outRGB, opacity_factor);
+        finalOpacity = edgeOpacity * mix(sourceColor.a, bgColor.a,
+                                         opacity_factor);
+    } else {
+        finalOpacity = edgeOpacity * bgColor.a;
+    }
     cogl_color_out = vec4(clamp(outRGB, 0.0, 1.0) * finalOpacity, finalOpacity);
 }
 

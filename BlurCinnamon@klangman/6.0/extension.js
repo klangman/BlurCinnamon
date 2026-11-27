@@ -2311,7 +2311,8 @@ class BlurBase {
    }
 
    _releaseLiquidGlassEffect(effect) {
-      // Don't let a viewport's glass rect follow the effect to its next user
+      // Don't let a viewport's glass rect or settle callback follow the effect to its next user
+      effect.on_clip_settled = null;
       effect.glass_rect = null;
       EffectPool.releaseToPool(BlurBase.liquidGlassEffectCache, effect);
    }
@@ -2474,11 +2475,12 @@ class BlurBase {
       }
       if (saturation < 100)
          desatEffect = this._aquireDesaturateEffect( (100-saturation)/100 );
-      // A wrapped viewport always needs a corner effect, even with no rounding (radius 0): the viewport is
-      // sized to the *expanded* rect (visible rect + the blur's sampling margin - see _applyBackgroundClip)
-      // and its corner effect's clip is what cuts that margin away again. Without one, the viewport would
-      // paint its blurred and tinted content over the whole margin, outside the visible bounds.
-      if (cornerRadius>0 || useViewport)
+      // A wrapped viewport normally needs a corner effect, even with no rounding (radius 0), so it cuts
+      // the blur's sampling margin away again. Liquid Glass already clips its own rounded shape (including
+      // instantaneous resize masking), so skipping CornerEffect avoids a redundant full-viewport FBO pass
+      // and prevents GLSLEffect double-alpha darkening on anti-aliased edges.
+      const isLiquidGlassViewport = useViewport && isLiquidGlassBlurType(blurType);
+      if (!isLiquidGlassViewport && (cornerRadius > 0 || useViewport))
          cornerEffect = this._aquireCornerEffect(Math.max(0, cornerRadius), top, bottom);
 
       // Create the background actor where the effects will be applied
@@ -2545,6 +2547,10 @@ class BlurBase {
       }
       this.parent = parent;
 
+      // Remember the desired corner shape so switching between Liquid Glass (which clips itself)
+      // and other blur types (which need CornerEffect) preserves radius and top/bottom flags.
+      effectTarget._blurCinnamonCorner = { radius: Math.max(0, cornerRadius), top, bottom };
+
       // Attach the effects. The cornerEffect needs to be first or else the blur effect will spill
       // over the corner effect clip bounds. All three always go on the same actor (effectTarget) -
       // background when unwrapped, viewport when useViewport.
@@ -2579,13 +2585,18 @@ class BlurBase {
    }
 
    // The Liquid Glass effect draws its own rounded shape (used for the refraction, rim lighting and to
-   // clip its output), so its corner radius and top/bottom flags must match the corner effect of the
-   // same actor. Does nothing for other blur effects.
+   // clip its output), so its corner radius and top/bottom flags must match the actor's corner settings.
+   // Does nothing for other blur effects.
    _syncLiquidGlassCornerRadius(actor) {
       let blurEffect = this._getBlurEffect(actor);
       if (blurEffect instanceof Refraction.RefractionEffect) {
+         let corner = actor._blurCinnamonCorner;
          let cornerEffect = this._getCornerEffect(actor);
-         if (cornerEffect) {
+         if (corner) {
+            blurEffect.corner_radius = corner.radius;
+            blurEffect.corners_top = corner.top;
+            blurEffect.corners_bottom = corner.bottom;
+         } else if (cornerEffect) {
             blurEffect.corner_radius = cornerEffect.radius;
             blurEffect.corners_top = cornerEffect.corners_top;
             blurEffect.corners_bottom = cornerEffect.corners_bottom;
@@ -2702,6 +2713,12 @@ class BlurBase {
    }
 
    _updateCornerRadius(background, radius, top=true, bottom=true) {
+      background._blurCinnamonCorner = { radius: Math.max(0, radius), top, bottom };
+      let blurEffect = this._getBlurEffect(background);
+      if (background._blurCinnamonSceneClone && blurEffect instanceof Refraction.RefractionEffect) {
+         this._syncLiquidGlassCornerRadius(background);
+         return;
+      }
       let ce = background.get_effect(CORNER_EFFECT_NAME);
       if (ce) {
          ce.radius = radius;
@@ -2714,7 +2731,6 @@ class BlurBase {
             // Remove all the other effects so we can add them back in the correct order (corner effect must be first)
             let desatEffect = this._getDesatEffect(background);
             if (desatEffect) background.remove_effect(desatEffect);
-            let blurEffect = this._getBlurEffect(background);
             if (blurEffect) background.remove_effect(blurEffect);
             background.add_effect_with_name( CORNER_EFFECT_NAME, cornerEffect );
             if (desatEffect) background.add_effect_with_name( DESAT_EFFECT_NAME, desatEffect );
@@ -2737,36 +2753,53 @@ class BlurBase {
          (effectType === BlurType.DualKawase || effectType === BlurType.LiquidGlass);
       if (wantsPyramid && !viewport._blurCinnamonVisibleRect && !viewport._blurCinnamonSamplingRect)
          viewport.set_size(0, 0);
-      if (effectType === BlurType.Simple && !(curEffect instanceof Clutter.BlurEffect)) {
-         if (curEffect) {
-            viewport.remove_effect(curEffect);
-            this._releaseBlurEffect(curEffect);
+
+      const wantsNewBlur =
+         (effectType === BlurType.Simple && !(curEffect instanceof Clutter.BlurEffect)) ||
+         (effectType === BlurType.Gaussian && !(curEffect instanceof GaussianBlur.GaussianBlurEffect)) ||
+         (effectType === BlurType.MonteCarlo && !(curEffect instanceof MonteCarloBlur.MonteCarloBlurEffect)) ||
+         (effectType === BlurType.DualKawase && !(curEffect instanceof dualKawaseKind(true))) ||
+         (effectType === BlurType.LiquidGlass && !(curEffect instanceof Refraction.RefractionEffect));
+      if (wantsNewBlur && curEffect) {
+         viewport.remove_effect(curEffect);
+         this._releaseBlurEffect(curEffect);
+         curEffect = null;
+      }
+
+      // Liquid Glass clips its own rounded shape, so remove any CornerEffect when switching to it
+      // and restore CornerEffect first in the stack when switching back to another blur type.
+      let cornerEffect = this._getCornerEffect(viewport);
+      if (effectType === BlurType.LiquidGlass) {
+         if (cornerEffect) {
+            if (!viewport._blurCinnamonCorner)
+               viewport._blurCinnamonCorner = { radius: cornerEffect.radius, top: cornerEffect.corners_top, bottom: cornerEffect.corners_bottom };
+            viewport.remove_effect(cornerEffect);
+            this._releaseCornerEffect(cornerEffect);
          }
-         viewport.add_effect_with_name( BLUR_EFFECT_NAME, this._aquireSimpleBlurEffect() );
-      } else if (effectType === BlurType.Gaussian && !(curEffect instanceof GaussianBlur.GaussianBlurEffect)) {
-         if (curEffect) {
-            viewport.remove_effect(curEffect);
-            this._releaseBlurEffect(curEffect);
-         }
-         viewport.add_effect_with_name( BLUR_EFFECT_NAME, this._aquireGaussianEffect(radius, grain) );
-      } else if (effectType === BlurType.MonteCarlo && !(curEffect instanceof MonteCarloBlur.MonteCarloBlurEffect)) {
-         if (curEffect) {
-            viewport.remove_effect(curEffect);
-            this._releaseBlurEffect(curEffect);
-         }
-         viewport.add_effect_with_name( BLUR_EFFECT_NAME, this._aquireMonteCarloEffect(radius, grain) );
-      } else if (effectType === BlurType.DualKawase && !(curEffect instanceof dualKawaseKind(true))) {
-         if (curEffect) {
-            viewport.remove_effect(curEffect);
-            this._releaseBlurEffect(curEffect);
-         }
-         viewport.add_effect_with_name( BLUR_EFFECT_NAME, this._aquireDualKawaseEffect(radius, grain, true) );
-      } else if (effectType === BlurType.LiquidGlass && !(curEffect instanceof Refraction.RefractionEffect)) {
-         if (curEffect) {
-            viewport.remove_effect(curEffect);
-            this._releaseBlurEffect(curEffect);
-         }
-         viewport.add_effect_with_name( BLUR_EFFECT_NAME, this._aquireLiquidGlassEffect(radius, grain) );
+      } else if (!cornerEffect) {
+         const saved = viewport._blurCinnamonCorner || { radius: 0, top: true, bottom: true };
+         cornerEffect = this._aquireCornerEffect(saved.radius, saved.top, saved.bottom);
+         const existingDesat = this._getDesatEffect(viewport);
+         if (existingDesat) viewport.remove_effect(existingDesat);
+         if (curEffect) viewport.remove_effect(curEffect);
+         viewport.add_effect_with_name( CORNER_EFFECT_NAME, cornerEffect );
+         if (existingDesat) viewport.add_effect_with_name( DESAT_EFFECT_NAME, existingDesat );
+         if (curEffect) viewport.add_effect_with_name( BLUR_EFFECT_NAME, curEffect );
+         if (viewport._blurCinnamonGlassRect)
+            cornerEffect.set_viewport_clip(viewport._blurCinnamonGlassRect);
+      }
+
+      if (wantsNewBlur) {
+         if (effectType === BlurType.Simple)
+            viewport.add_effect_with_name( BLUR_EFFECT_NAME, this._aquireSimpleBlurEffect() );
+         else if (effectType === BlurType.Gaussian)
+            viewport.add_effect_with_name( BLUR_EFFECT_NAME, this._aquireGaussianEffect(radius, grain) );
+         else if (effectType === BlurType.MonteCarlo)
+            viewport.add_effect_with_name( BLUR_EFFECT_NAME, this._aquireMonteCarloEffect(radius, grain) );
+         else if (effectType === BlurType.DualKawase)
+            viewport.add_effect_with_name( BLUR_EFFECT_NAME, this._aquireDualKawaseEffect(radius, grain, true) );
+         else if (effectType === BlurType.LiquidGlass)
+            viewport.add_effect_with_name( BLUR_EFFECT_NAME, this._aquireLiquidGlassEffect(radius, grain) );
       }
       curEffect = this._getBlurEffect(viewport);
       if ((curEffect instanceof GaussianBlur.GaussianBlurEffect || curEffect instanceof MonteCarloBlur.MonteCarloBlurEffect || curEffect instanceof dualKawaseKind(true)) && curEffect.radius != radius) {
@@ -2865,6 +2898,13 @@ class BlurBase {
             cornerEffect.set_viewport_clip([x - ex, y - ey, width, height]);
          }
          this._setLiquidGlassRect(viewport, [x-ex, y-ey, width, height]);
+         let blurEffect = this._getBlurEffect(viewport);
+         if (blurEffect instanceof Refraction.RefractionEffect && !blurEffect.on_clip_settled) {
+            blurEffect.on_clip_settled = () => {
+               if (viewport._blurCinnamonVisibleRect && viewport.get_stage() && background.get_stage())
+                  this._applyBackgroundClip(background, viewport, ...viewport._blurCinnamonVisibleRect);
+            };
+         }
       } else {
          background.set_clip(x, y, width, height);
          let backgroundCornerEffect = this._getCornerEffect(background);
@@ -6856,6 +6896,14 @@ class BlurApplications extends BlurBase {
                cornerEffect.set_viewport_clip([rect.x - ex, rect.y - ey, rect.width, rect.height]);
             }
             this._setLiquidGlassRect(data.viewport, [rect.x - ex, rect.y - ey, rect.width, rect.height]);
+            let blurEffect = this._getBlurEffect(data.viewport);
+            if (blurEffect instanceof Refraction.RefractionEffect && !blurEffect.on_clip_settled) {
+               blurEffect.on_clip_settled = () => {
+                  if (!this._destroyed && compositor._blurCinnamonDataWindow === data &&
+                      data.viewport.visible && data.viewport.get_stage())
+                     this._setClip(compositor, false, true);
+               };
+            }
          } else {
             // The effects are on background, whose coordinates are the stage's: clip it to the frame
             // as the compositor draws it now

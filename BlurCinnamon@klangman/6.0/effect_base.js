@@ -169,16 +169,22 @@ const GlslEffectBase = USE_GLSL_EFFECT ? GObject.registerClass({
     // Uniforms are kept here and applied at paint time, like ShaderEffect does, because property setters
     // run during construction, before GLSLEffect has created this instance's pipeline. The pipeline keeps its
     // uniform values between paints, so only the ones that changed since the last paint are sent.
-    set_uniform_value(name, value) {
+    set_uniform_value_no_repaint(name, value) {
         if (!this._effect_base_uniforms) {
             this._effect_base_uniforms = new Map();
             this._effect_base_changed = new Map();
         }
         value = Number(value);
         if (this._effect_base_uniforms.get(name) === value)
-            return;
+            return false;
         this._effect_base_uniforms.set(name, value);
         this._effect_base_changed.set(name, value);
+        return true;
+    }
+
+    set_uniform_value(name, value) {
+        if (!this.set_uniform_value_no_repaint(name, value))
+            return;
         // Like ClutterShaderEffect: a new value needs a repaint. Without one, an offscreen effect keeps
         // showing its cached image until something else redraws the actor.
         this.queue_repaint();
@@ -193,9 +199,18 @@ const GlslEffectBase = USE_GLSL_EFFECT ? GObject.registerClass({
     vfunc_paint_target(...params) {
         let renamed = this.constructor._effect_base_renamed;
         if (this._effect_base_changed?.size && renamed) {
+            let locations = this._effect_base_locations;
+            if (!locations)
+                locations = this._effect_base_locations = new Map();
             for (let [name, value] of this._effect_base_changed) {
-                let location = this.get_uniform_location(renamed.has(name) ? `_u_${name}` : name);
-                this.set_uniform_float(location, 1, [value]);
+                let location = locations.get(name);
+                if (location === undefined) {
+                    location = this.get_uniform_location(renamed.has(name) ? `_u_${name}` : name);
+                    if (location >= 0)
+                        locations.set(name, location);
+                }
+                if (location >= 0)
+                    this.set_uniform_float(location, 1, [value]);
             }
             this._effect_base_changed.clear();
         }
