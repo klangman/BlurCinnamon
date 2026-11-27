@@ -45,7 +45,8 @@
          "type" : "section",
          "title" : "Additional effect specific settings",
          "keys" : ["effect-specific-type", "monte-carlo-iterations", "monte-carlo-use-base-pixel", "monte-carlo-prefer-closer-pixels",
-                   "liquid-glass-strength", "liquid-glass-edge-size", "liquid-glass-rim-width", "liquid-glass-falloff", "liquid-glass-gloss", "liquid-glass-backdrop-zoom", "liquid-glass-shadow", "liquid-glass-rgb-fringing", "liquid-glass-texture-repeat",
+                   "liquid-glass-strength", "liquid-glass-edge-size", "liquid-glass-rim-width", "liquid-glass-reach", "liquid-glass-falloff", "liquid-glass-gloss", "liquid-glass-specular-strength", "liquid-glass-edge-shadow", "liquid-glass-edge-glow", "liquid-glass-backdrop-zoom", "liquid-glass-shadow", "liquid-glass-rgb-fringing", "liquid-glass-texture-repeat",
+                   "dual-kawase-mode",
                    "additional-settings-label"]
       },
 
@@ -527,7 +528,7 @@
         "step" : 0.1,
         "dependency" : "blurType>1",
         "tooltip": "Adjusts the intensity of the blur effect by changing the radius use by the effect.",
-        "default": 9
+        "default": 20
     },
 
     "saturation": {
@@ -559,7 +560,8 @@
         "default": 0,
         "options": {
             "Monte Carlo": 0,
-            "Liquid Glass": 1
+            "Liquid Glass": 1,
+            "Dual Kawase": 2
         },
         "description": "Additional settings for",
         "tooltip": "Choose which effect's additional settings to show and edit."
@@ -609,7 +611,7 @@
         "description": "Refraction scale",
         "min": 0,
         "max": 1,
-        "default": 0.42,
+        "default": 1.0,
         "step": 0.01,
         "dependency" : "effect-specific-type=1",
         "tooltip": "How strongly the glass bends the sampled blur texture."
@@ -621,8 +623,8 @@
         "widget" : "CompactScale",
         "description": "Bezel width",
         "min": 1,
-        "max": 100,
-        "default": 22,
+        "max": 200,
+        "default": 32,
         "step": 1,
         "dependency" : "effect-specific-type=1",
         "tooltip": "How far the liquid-glass lens reaches inward from the edge."
@@ -641,6 +643,19 @@
         "tooltip": "How far the refraction eases inward from the glass edge."
     },
 
+    "liquid-glass-reach": {
+        "type" : "custom",
+        "file" : "CustomWidgets.py",
+        "widget" : "CompactScale",
+        "description": "Refraction reach",
+        "min": 0,
+        "max": 150,
+        "default": 0,
+        "step": 1,
+        "dependency" : "effect-specific-type=1",
+        "tooltip": "How far the refraction bends inward past the corner radius without creasing (0 keeps it at the rim)."
+    },
+
     "liquid-glass-falloff": {
         "type" : "custom",
         "file" : "CustomWidgets.py",
@@ -648,10 +663,10 @@
         "description": "Glass thickness",
         "min": 0.25,
         "max": 8,
-        "default": 2.4,
+        "default": 1.50,
         "step": 0.05,
         "dependency" : "effect-specific-type=1",
-        "tooltip": "Depth used by the Snell-style refraction profile."
+        "tooltip": "Depth used by the refraction edge profile."
     },
 
     "liquid-glass-gloss": {
@@ -661,10 +676,49 @@
         "description": "Fresnel glare",
         "min": 0,
         "max": 1,
-        "default": 0.55,
+        "default": 1.0,
         "step": 0.01,
         "dependency" : "effect-specific-type=1",
-        "tooltip": "Strength of the Schlick fresnel rim glare from the glass edge."
+        "tooltip": "Strength of the directional fresnel glare along the glass edges."
+    },
+
+    "liquid-glass-specular-strength": {
+        "type" : "custom",
+        "file" : "CustomWidgets.py",
+        "widget" : "CompactScale",
+        "description": "Specular glare",
+        "min": 0,
+        "max": 1,
+        "default": 0.10,
+        "step": 0.01,
+        "dependency" : "effect-specific-type=1",
+        "tooltip": "Strength of the white specular highlight along the lit glass edges (0 disables it)."
+    },
+
+    "liquid-glass-edge-shadow": {
+        "type" : "custom",
+        "file" : "CustomWidgets.py",
+        "widget" : "CompactScale",
+        "description": "Edge border",
+        "min": 0,
+        "max": 1,
+        "default": 0.70,
+        "step": 0.01,
+        "dependency" : "effect-specific-type=1",
+        "tooltip": "Thin dark outline along the straight side edges, defining the glass on light backgrounds."
+    },
+
+    "liquid-glass-edge-glow": {
+        "type" : "custom",
+        "file" : "CustomWidgets.py",
+        "widget" : "CompactScale",
+        "description": "Edge glow",
+        "min": 0,
+        "max": 1,
+        "default": 0.50,
+        "step": 0.01,
+        "dependency" : "effect-specific-type=1",
+        "tooltip": "Strength of the colored light picked up by the glass edge from vibrant content behind it."
     },
 
     "liquid-glass-backdrop-zoom": {
@@ -687,7 +741,7 @@
         "description": "Inner shadow",
         "min": 0,
         "max": 1,
-        "default": 0.28,
+        "default": 0.30,
         "step": 0.01,
         "dependency" : "effect-specific-type=1",
         "tooltip": "Darkens the lower and inner edge for a deeper glass surface."
@@ -700,7 +754,7 @@
         "description": "Chromatic dispersion",
         "min": 0,
         "max": 1,
-        "default": 0.08,
+        "default": 0.15,
         "step": 0.01,
         "dependency" : "effect-specific-type=1",
         "tooltip": "Physical per-channel refraction dispersion at the glass edge."
@@ -716,6 +770,19 @@
         "description": "Edge behavior",
         "dependency" : "effect-specific-type=1",
         "tooltip": "How texture coordinates outside the actor are sampled."
+    },
+
+    "dual-kawase-mode": {
+        "type": "combobox",
+        "default": "auto",
+        "options": {
+            "Automatic (optimized pyramid where supported)": "auto",
+            "Optimized pyramid (where supported)": "pyramid",
+            "Legacy (full resolution)": "stable"
+        },
+        "description": "Dual Kawase implementation",
+        "dependency" : "effect-specific-type=2",
+        "tooltip": "Choose which Dual Kawase implementation is used by Dual Kawase and Liquid Glass blur. The optimized pyramid blurs at lower resolutions for better GPU performance with similar visual quality. Automatic uses it on Cinnamon versions where it is supported and falls back to the legacy full-resolution filter otherwise. Choose Legacy if you prefer the original behavior or notice visual issues."
     },
 
     "overview-opacity": {
@@ -763,7 +830,7 @@
         "step" : 0.1,
         "dependency" : "enable-overview-effects & component-selector=6 & overview-blurType>1 & enable-overview-override",
         "tooltip": "Adjusts the intensity of the blur effect by changing the radius use by the effect.",
-        "default": 9
+        "default": 20
     },
 
     "overview-saturation": {
@@ -837,7 +904,7 @@
         "max" : 100,
         "step" : 0.1,
         "tooltip": "Adjusts the intensity of the blur effect by changing the radius use by the effect.",
-        "default": 9,
+        "default": 20,
         "dependency" : "enable-expo-effects & component-selector=3 & expo-blurType>1 & enable-expo-override"
     },
 
@@ -1153,7 +1220,7 @@
         "default": 2,
         "dependency" : "enable-desktop-effects & component-selector=2 & desktop-blurType>1 & enable-desktop-override"
     },
-    
+
     "notification-opacity" : {
         "type" : "custom",
         "file" : "CustomWidgets.py",
@@ -1204,7 +1271,7 @@
         "max" : 100,
         "step" : 0.1,
         "tooltip": "Adjusts the intensity of the blur effect by changing the radius use by the effect.",
-        "default": 9,
+        "default": 20,
         "dependency" : "enable-notification-effects & component-selector=5 & notification-blurType>1 & notification-blurType!=3 & enable-notification-override"
     },
 
@@ -1315,7 +1382,7 @@
         "max" : 100,
         "step" : 0.1,
         "tooltip": "Adjusts the intensity of the blur effect by changing the radius use by the effect.",
-        "default": 9,
+        "default": 20,
         "dependency" : "enable-appswitcher-effects & component-selector=0 & appswitcher-blurType>1 & enable-appswitcher-override"
     },
 
@@ -1395,7 +1462,7 @@
         "max" : 100,
         "step" : 0.1,
         "tooltip": "Adjusts the intensity of the blur effect by changing the radius use by the effect.",
-        "default": 9,
+        "default": 20,
         "dependency" : "enable-tooltips-effects & component-selector=8 & tooltips-blurType>1 & tooltips-blurType!=3 & enable-tooltips-override"
     },
 

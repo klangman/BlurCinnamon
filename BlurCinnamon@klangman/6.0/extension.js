@@ -103,6 +103,7 @@ function importLocal(name) {
 const GaussianBlur = importLocal("gaussian_blur");
 const MonteCarloBlur = importLocal("monte_carlo_blur");
 const DualKawaseBlur = importLocal("dual_kawase_blur");
+const Kawase = importLocal("kawase_pyramid");
 const Refraction = importLocal("refraction");
 const CornerEffect = importLocal("corner");
 const EffectPool = importLocal("effect_base");
@@ -110,6 +111,26 @@ const Utils = importLocal("utils");
 
 const ANIMATION_TIME = 0.25;
 const AUTOHIDE_ANIMATION_TIME = 0.2;  // This is a copy of "Panel.AUTOHIDE_ANIMATION_TIME", we can't legally access it since it's a const and EC6 does not allow it
+
+const DualKawaseMode = {
+   Auto: "auto",
+   Pyramid: "pyramid",
+   Stable: "stable",
+};
+
+function useKawasePyramid(hasViewport = false) {
+   const mode = settings?.dualKawaseMode ?? DualKawaseMode.Auto;
+   if (mode === DualKawaseMode.Stable)
+      return false;
+   if (mode === DualKawaseMode.Auto && !Kawase.isDefaultSupported())
+      return false;
+   return hasViewport || Kawase.supportsActor(null);
+}
+
+function dualKawaseKind(hasViewport = false) {
+   return useKawasePyramid(hasViewport)
+      ? Kawase.PyramidEffect : DualKawaseBlur.DualFilteringBlurEffect;
+}
 
 const BLUR_EFFECT_NAME = "blur";
 const DESAT_EFFECT_NAME = "desat";
@@ -262,8 +283,12 @@ function getLiquidGlassParams(radius) {
       blur_radius: liquidGlassBlurRadius(radius),
       edge_size: settings.liquidGlassEdgeSize,
       rim_width: settings.liquidGlassRimWidth,
+      reach: settings.liquidGlassReach,
       falloff: settings.liquidGlassFalloff,
       gloss: settings.liquidGlassGloss,
+      specular_strength: settings.liquidGlassSpecularStrength,
+      edge_shadow: settings.liquidGlassEdgeShadow,
+      edge_glow: settings.liquidGlassEdgeGlow,
       tint: 0,   // The generic Tint strength and Tint color settings provide the tinting
       backdrop_zoom: settings.liquidGlassBackdropZoom,
       shadow: settings.liquidGlassShadow,
@@ -321,6 +346,43 @@ function printStackTrace(header) {
    log( "Stack:\n"+err.stack );
 }
 
+// Shell-owned backgrounds use Dual Kawase for the Liquid Glass setting because
+// neither Overview, Expo nor the 3D switcher has a glass shape to refract.
+function addShellBackgroundEffects(actor, blurType, radius, grain, saturation) {
+   const effects = [];
+   if (blurType > BlurType.None) {
+      const params = {radius, brightness: 1, width: 0, height: 0, grain};
+      let effect;
+      if (blurType === BlurType.Simple)
+         effect = new Clutter.BlurEffect();
+      else if (blurType === BlurType.Gaussian || blurType === BlurType.DynamicBlur)
+         effect = new GaussianBlur.GaussianBlurEffect(params);
+      else if (blurType === BlurType.MonteCarlo || blurType === BlurType.DynamicMC)
+         effect = new MonteCarloBlur.MonteCarloBlurEffect({...params, iterations: settings.montecarloIterations,
+            prefer_closer_pixels: settings.montecarloPerferCloserPixels, use_base_pixel: settings.montecarloUseBasePixel});
+      else
+         effect = new (dualKawaseKind())(params);
+      actor.add_effect_with_name(BLUR_EFFECT_NAME, effect);
+      effects.push(effect);
+   }
+   if (saturation < 100) {
+      const desat = new Clutter.DesaturateEffect({factor: (100 - saturation) / 100});
+      actor.add_effect_with_name(DESAT_EFFECT_NAME, desat);
+      effects.push(desat);
+   }
+   return effects;
+}
+
+function shellBackgroundTargets(background, blurType) {
+   // The 6.8 shell groups separate wallpaper actors for each monitor.
+   // Process them independently so the blur can't sample the next monitor.
+   if (dualKawaseKind() === Kawase.PyramidEffect &&
+       (staticBlurType(blurType) === BlurType.DualKawase || isLiquidGlassBlurType(blurType)) &&
+       typeof Main.createFullScreenBackground === "function")
+      return background.get_children();
+   return [background];
+}
+
 function _animateVisibleOverview() {
    if (this.visible || this.animationInProgress)
       return;
@@ -336,29 +398,23 @@ function _animateVisibleOverview() {
    let saturation = (settings.overviewOverride) ? settings.overviewSaturation : settings.saturation;
    let grain = (settings.overviewOverride) ? settings.overviewGrain : settings.grain;
 
-   // Get the overview's background image and add the BlurEffect to it if configured to do so
-   // The Liquid Glass blur doesn't make any sense for the Overview so we'll default to Gaussian if the generic settings calls for Liquid Glass
-   let desktopBackground = children[0];
-   if (blurType > BlurType.None) {
-      let fx;
-      if (blurType === BlurType.Simple) {
-         fx = new Clutter.BlurEffect();
-      } else if (blurType === BlurType.Gaussian || blurType === BlurType.DynamicBlur || isLiquidGlassBlurType(blurType)) {
-         fx = new GaussianBlur.GaussianBlurEffect( { radius: radius, brightness: 1, width: 0, height: 0, grain: grain } );
-      } else if (blurType === BlurType.MonteCarlo || blurType === BlurType.DynamicMC) {
-         fx = new MonteCarloBlur.MonteCarloBlurEffect( { radius: radius, iterations: settings.montecarloIterations, prefer_closer_pixels: settings.montecarloPerferCloserPixels, use_base_pixel: settings.montecarloUseBasePixel, brightness: 1, width: 0, height: 0, grain: grain } );
-      } else { // Dual-Kawase
-         fx = new DualKawaseBlur.DualFilteringBlurEffect( { radius: radius, brightness: 1, width: 0, height: 0, grain: grain } );
-      }
-      desktopBackground.add_effect_with_name( BLUR_EFFECT_NAME, fx );
+   // In 6.8 all existing children are monitor backgrounds. Older Overview
+   // appends a shade actor after the background.
+   let backgroundShade;
+   if (this._shadeEffect) {
+      backgroundShade = new St.Bin({style_class: 'workspace-overview-background-shade'});
+      backgroundShade.set_size(global.screen_width, global.screen_height);
+      this._background.add_child(backgroundShade);
+   } else {
+      backgroundShade = children.pop();
    }
-   if (saturation<100) {
-      let desat = new Clutter.DesaturateEffect({factor: (100-saturation)/100});
-      desktopBackground.add_effect_with_name( DESAT_EFFECT_NAME, desat );
-   }
-   // Get the overview's backgroundShade child and set it's color to see-through solid black/"Color blend" color
-   let backgroundShade = children[1];
-   let [ret,color] = Clutter.Color.from_string( blendColor );
+   for (const background of children)
+      addShellBackgroundEffects(background, blurType, radius, grain, saturation);
+   if (!backgroundShade)
+      return;
+
+   // Dim the backgroundShade by making the black/"Color blend" color less see-through by the configured percentage
+   const [, color] = Clutter.Color.from_string(blendColor);
    backgroundShade.set_opacity(0);
    backgroundShade.set_background_color(color);
 
@@ -381,25 +437,9 @@ function _animateVisibleExpo() {
    let saturation = (settings.expoOverride) ? settings.expoSaturation : settings.saturation;
    let grain = (settings.expoOverride) ? settings.expoGrain : settings.grain;
 
-   // The Liquid Glass blur doesn't make any sense for the Expo so we'll default to Gaussian if the generic settings calls for Liquid Glass
-   let desktopBackground = this._background
-   if (blurType > BlurType.None) {
-      let fx;
-      if (blurType === BlurType.Simple) {
-         fx =  new Clutter.BlurEffect();
-      } else if (blurType === BlurType.Gaussian || blurType === BlurType.DynamicBlur || isLiquidGlassBlurType(blurType)) {
-         fx = new GaussianBlur.GaussianBlurEffect( {radius: radius, brightness: 1, width: 0, height: 0, grain: grain} );
-      } else if (blurType === BlurType.MonteCarlo || blurType === BlurType.DynamicMC) {
-         fx = new MonteCarloBlur.MonteCarloBlurEffect( { radius: radius, iterations: settings.montecarloIterations, prefer_closer_pixels: settings.montecarloPerferCloserPixels, use_base_pixel: settings.montecarloUseBasePixel, brightness: 1, width: 0, height: 0, grain: grain } );
-      } else { // Dual-Kawase
-         fx = new DualKawaseBlur.DualFilteringBlurEffect( { radius: radius, brightness: 1, width: 0, height: 0, grain: grain } );
-      }
-      desktopBackground.add_effect_with_name( BLUR_EFFECT_NAME, fx );
-   }
-   if (saturation<100) {
-      let desat = new Clutter.DesaturateEffect({factor: (100-saturation)/100});
-      desktopBackground.add_effect_with_name( DESAT_EFFECT_NAME, desat );
-   }
+   for (const background of shellBackgroundTargets(this._background, blurType))
+      addShellBackgroundEffects(background, blurType, radius, grain, saturation);
+
    // Create a shade, set it's color in accordance with the settings and make it invisible
    let backgroundShade = new St.Bin({style_class: 'workspace-overview-background-shade'});
    this._backgroundShade = backgroundShade;
@@ -424,27 +464,8 @@ function _showAppSwitcher3D(...params) {
       let saturation = (settings.appswitcherOverride) ? settings.appswitcherSaturation : settings.saturation;
       let grain = (settings.appswitcherOverride) ? settings.appswitcherGrain : settings.grain;
 
-      // The Liquid Glass blur doesn't make any sense for the 3dAppSwicher so we'll default to Gaussian of the generic settings calls for Liquid Glass
-      let desktopBackground = this._background
-      if (blurType > BlurType.None) {
-         let fx;
-         if (blurType === BlurType.Simple) {
-            fx =  new Clutter.BlurEffect();
-         } else if (blurType === BlurType.Gaussian || blurType === BlurType.DynamicBlur || isLiquidGlassBlurType(blurType)) {
-            fx = new GaussianBlur.GaussianBlurEffect( {radius: radius, brightness: 1, width: 0, height: 0, grain: grain} );
-         } else if (blurType === BlurType.MonteCarlo || blurType === BlurType.DynamicMC) {
-            fx = new MonteCarloBlur.MonteCarloBlurEffect( { radius: radius, iterations: settings.montecarloIterations, prefer_closer_pixels: settings.montecarloPerferCloserPixels, use_base_pixel: settings.montecarloUseBasePixel, brightness: 1, width: 0, height: 0, grain: grain } );
-         } else { // Dual-Kawase
-            fx = new DualKawaseBlur.DualFilteringBlurEffect( { radius: radius, brightness: 1, width: 0, height: 0, grain: grain } );
-         }
-         desktopBackground.add_effect_with_name( BLUR_EFFECT_NAME, fx );
-         this._blurCinnamonBlurEffect = fx;
-      }
-      if (saturation<100) {
-         let desat = new Clutter.DesaturateEffect({factor: (100-saturation)/100});
-         desktopBackground.add_effect_with_name( DESAT_EFFECT_NAME, desat );
-         this._blurCinnamonDesatEffect = desat;
-      }
+      this._blurCinnamonBackgroundEffects = shellBackgroundTargets(this._background, blurType)
+         .flatMap(background => addShellBackgroundEffects(background, blurType, radius, grain, saturation));
 
       let [ret,color] = Clutter.Color.from_string( blendColor );
       if (!ret) { [ret,color] = Clutter.Color.from_string( "rgba(0,0,0,0)" ); }
@@ -463,12 +484,9 @@ function _showAppSwitcher3D(...params) {
 }
 
 function _hideAppSwitcher3D(...params) {
-   if (this._background && this._blurCinnamonBlurEffect) {
-      this._background.remove_effect(this._blurCinnamonBlurEffect);
-   }
-   if (this._background && this._blurCinnamonDesatEffect) {
-      this._background.remove_effect(this._blurCinnamonDesatEffect);
-   }
+   for (const effect of this._blurCinnamonBackgroundEffects ?? [])
+      effect.get_actor()?.remove_effect(effect);
+   this._blurCinnamonBackgroundEffects = null;
 
    // Enable all panels
    if (settings.appswitcherDisablePanels) {
@@ -536,11 +554,26 @@ const VIEWPORT_EDGE_PAD = 3;
 // How many pixels a wrapped viewport must extend past the visible rect, on every side, so that the blur
 // effect always has real, correctly cloned content to sample for every visible pixel. Each blur effect
 // reports its own maximum sampling distance through sample_reach (see the .js file of each effect).
-function getViewportMargin(viewport) {
-   let effect = viewport.get_effect(BLUR_EFFECT_NAME);
-   if (!effect || !effect.sample_reach)
-      return 0;
-   return Math.ceil(effect.sample_reach) + VIEWPORT_EDGE_PAD;
+function getViewportMargin(viewport, rect, stageRect = rect) {
+   const effect = viewport.get_effect(BLUR_EFFECT_NAME);
+   if (!effect) return 0;
+   let reach;
+   if (effect.get_sampling_margin) {
+      const [x, y, w, h] = stageRect;
+      let scale = 1;
+      for (const monitor of Main.layoutManager.monitors) {
+         if (rectOverlap(x, y, x + w, y + h, monitor.x, monitor.y,
+             monitor.x + monitor.width, monitor.y + monitor.height)) {
+            scale = Math.max(scale, global.display.get_monitor_scale?.(monitor.index) || 1);
+         }
+      }
+      // Clutter may still report the old scale before the viewport is allocated.
+      reach = Math.max(effect.get_sampling_margin(rect[2], rect[3], scale),
+         effect.get_sampling_margin(rect[2], rect[3]));
+   } else {
+      reach = effect.sample_reach;
+   }
+   return reach ? Math.ceil(reach) + VIEWPORT_EDGE_PAD : 0;
 }
 
 // The area a blur over the given visible rect may sample, as [x, y, width, height]: the box around the monitors
@@ -2219,6 +2252,7 @@ class BlurBase {
       [ BlurBase.cornerEffectCache, BlurBase.gaussianEffectCache, BlurBase.liquidGlassEffectCache,
         BlurBase.monteCarloEffectCache, BlurBase.dualKawaseEffectCache ].forEach( (pool) => EffectPool.drainPool(pool) );
       GaussianBlur.drainPools();
+      Kawase.drainPools();
       DualKawaseBlur.drainPools();
    }
 
@@ -2264,18 +2298,21 @@ class BlurBase {
    }
 
    _aquireLiquidGlassEffect(radius, grain) {
+      const usePyramid = useKawasePyramid(true);
       if (BlurBase.liquidGlassEffectCache.length > 0) {
          let effect = BlurBase.liquidGlassEffectCache.pop();
+         effect.use_kawase_pyramid = usePyramid;
          applyLiquidGlassSettings(effect, radius);
          effect.grain = grain;
          return(effect);
       } else {
-         return(new Refraction.RefractionEffect( {...getLiquidGlassParams(radius), grain: grain} ));
+         return new Refraction.RefractionEffect({...getLiquidGlassParams(radius), grain, use_kawase_pyramid: usePyramid});
       }
    }
 
    _releaseLiquidGlassEffect(effect) {
-      // Don't let a viewport's glass rect follow the effect to its next user
+      // Don't let a viewport's glass rect or settle callback follow the effect to its next user
+      effect.on_clip_settled = null;
       effect.glass_rect = null;
       EffectPool.releaseToPool(BlurBase.liquidGlassEffectCache, effect);
    }
@@ -2298,7 +2335,9 @@ class BlurBase {
       EffectPool.releaseToPool(BlurBase.monteCarloEffectCache, effect);
    }
 
-   _aquireDualKawaseEffect(radius, grain) {
+   _aquireDualKawaseEffect(radius, grain, hasViewport) {
+      if (dualKawaseKind(hasViewport) === Kawase.PyramidEffect)
+         return new Kawase.PyramidEffect({radius, brightness: 1, grain});
       if (BlurBase.dualKawaseEffectCache.length > 0) {
          let effect = BlurBase.dualKawaseEffectCache.pop();
          effect.radius = radius;
@@ -2430,17 +2469,18 @@ class BlurBase {
       } else if (blurType === BlurType.MonteCarlo || blurType === BlurType.DynamicMC) {
          blurEffect = this._aquireMonteCarloEffect(radius, grain);
       } else if (blurType === BlurType.DualKawase || blurType === BlurType.DynamicDK) {
-         blurEffect = this._aquireDualKawaseEffect(radius, grain);
+         blurEffect = this._aquireDualKawaseEffect(radius, grain, useViewport);
       } else if (isLiquidGlassBlurType(blurType)) {
          blurEffect = this._aquireLiquidGlassEffect(radius, grain);
       }
       if (saturation < 100)
          desatEffect = this._aquireDesaturateEffect( (100-saturation)/100 );
-      // A wrapped viewport always needs a corner effect, even with no rounding (radius 0): the viewport is
-      // sized to the *expanded* rect (visible rect + the blur's sampling margin - see _applyBackgroundClip)
-      // and its corner effect's clip is what cuts that margin away again. Without one, the viewport would
-      // paint its blurred and tinted content over the whole margin, outside the visible bounds.
-      if (cornerRadius>0 || useViewport)
+      // A wrapped viewport normally needs a corner effect, even with no rounding (radius 0), so it cuts
+      // the blur's sampling margin away again. Liquid Glass already clips its own rounded shape (including
+      // instantaneous resize masking), so skipping CornerEffect avoids a redundant full-viewport FBO pass
+      // and prevents GLSLEffect double-alpha darkening on anti-aliased edges.
+      const isLiquidGlassViewport = useViewport && isLiquidGlassBlurType(blurType);
+      if (!isLiquidGlassViewport && (cornerRadius > 0 || useViewport))
          cornerEffect = this._aquireCornerEffect(Math.max(0, cornerRadius), top, bottom);
 
       // Create the background actor where the effects will be applied
@@ -2488,6 +2528,9 @@ class BlurBase {
       let effectTarget = background;
       if (useViewport) {
          viewport = new St.Group({clip_to_allocation: true});
+         // Wait for the visible rect before preparing pyramid buffers.
+         if (blurEffect instanceof Kawase.PyramidEffect || (useKawasePyramid(true) && isLiquidGlassBlurType(blurType)))
+            viewport.set_size(0, 0);
          let sceneClone = new Clutter.Clone({source: background, reactive: false});
          viewport.add_child(sceneClone);
          viewport._blurCinnamonSceneClone = sceneClone;
@@ -2503,6 +2546,10 @@ class BlurBase {
          if (viewport) parent.add_child(viewport);
       }
       this.parent = parent;
+
+      // Remember the desired corner shape so switching between Liquid Glass (which clips itself)
+      // and other blur types (which need CornerEffect) preserves radius and top/bottom flags.
+      effectTarget._blurCinnamonCorner = { radius: Math.max(0, cornerRadius), top, bottom };
 
       // Attach the effects. The cornerEffect needs to be first or else the blur effect will spill
       // over the corner effect clip bounds. All three always go on the same actor (effectTarget) -
@@ -2538,14 +2585,26 @@ class BlurBase {
    }
 
    // The Liquid Glass effect draws its own rounded shape (used for the refraction, rim lighting and to
-   // clip its output), so its corner radius must match the corner effect of the same actor. It only
-   // has a single radius for all 4 corners, so if just the top or just the bottom corners are rounded
-   // then use 0 and let the corner effect do the rounding. Does nothing for other blur effects.
+   // clip its output), so its corner radius and top/bottom flags must match the actor's corner settings.
+   // Does nothing for other blur effects.
    _syncLiquidGlassCornerRadius(actor) {
       let blurEffect = this._getBlurEffect(actor);
       if (blurEffect instanceof Refraction.RefractionEffect) {
+         let corner = actor._blurCinnamonCorner;
          let cornerEffect = this._getCornerEffect(actor);
-         blurEffect.corner_radius = (cornerEffect && cornerEffect.corners_top && cornerEffect.corners_bottom) ? cornerEffect.radius : 0;
+         if (corner) {
+            blurEffect.corner_radius = corner.radius;
+            blurEffect.corners_top = corner.top;
+            blurEffect.corners_bottom = corner.bottom;
+         } else if (cornerEffect) {
+            blurEffect.corner_radius = cornerEffect.radius;
+            blurEffect.corners_top = cornerEffect.corners_top;
+            blurEffect.corners_bottom = cornerEffect.corners_bottom;
+         } else {
+            blurEffect.corner_radius = 0;
+            blurEffect.corners_top = true;
+            blurEffect.corners_bottom = true;
+         }
          // A Liquid Glass effect newly added to a viewport picks up the last visible rect
          if (actor._blurCinnamonGlassRect)
             blurEffect.glass_rect = actor._blurCinnamonGlassRect;
@@ -2654,9 +2713,17 @@ class BlurBase {
    }
 
    _updateCornerRadius(background, radius, top=true, bottom=true) {
+      background._blurCinnamonCorner = { radius: Math.max(0, radius), top, bottom };
+      let blurEffect = this._getBlurEffect(background);
+      if (background._blurCinnamonSceneClone && blurEffect instanceof Refraction.RefractionEffect) {
+         this._syncLiquidGlassCornerRadius(background);
+         return;
+      }
       let ce = background.get_effect(CORNER_EFFECT_NAME);
       if (ce) {
          ce.radius = radius;
+         ce.corners_top = top;
+         ce.corners_bottom = bottom;
       } else {
          if (radius>0) {
             // Create the effect
@@ -2664,7 +2731,6 @@ class BlurBase {
             // Remove all the other effects so we can add them back in the correct order (corner effect must be first)
             let desatEffect = this._getDesatEffect(background);
             if (desatEffect) background.remove_effect(desatEffect);
-            let blurEffect = this._getBlurEffect(background);
             if (blurEffect) background.remove_effect(blurEffect);
             background.add_effect_with_name( CORNER_EFFECT_NAME, cornerEffect );
             if (desatEffect) background.add_effect_with_name( DESAT_EFFECT_NAME, desatEffect );
@@ -2683,39 +2749,60 @@ class BlurBase {
    _updateViewportEffects(background, viewport, opacity, blendColor, blurType, radius, saturation, grain) {
       let curEffect = this._getBlurEffect(viewport);
       let effectType = staticBlurType(blurType);
-      if (effectType === BlurType.Simple && !(curEffect instanceof Clutter.BlurEffect)) {
-         if (curEffect) {
-            viewport.remove_effect(curEffect);
-            this._releaseBlurEffect(curEffect);
+      const wantsPyramid = useKawasePyramid(true) &&
+         (effectType === BlurType.DualKawase || effectType === BlurType.LiquidGlass);
+      if (wantsPyramid && !viewport._blurCinnamonVisibleRect && !viewport._blurCinnamonSamplingRect)
+         viewport.set_size(0, 0);
+
+      const wantsNewBlur =
+         (effectType === BlurType.Simple && !(curEffect instanceof Clutter.BlurEffect)) ||
+         (effectType === BlurType.Gaussian && !(curEffect instanceof GaussianBlur.GaussianBlurEffect)) ||
+         (effectType === BlurType.MonteCarlo && !(curEffect instanceof MonteCarloBlur.MonteCarloBlurEffect)) ||
+         (effectType === BlurType.DualKawase && !(curEffect instanceof dualKawaseKind(true))) ||
+         (effectType === BlurType.LiquidGlass && !(curEffect instanceof Refraction.RefractionEffect));
+      if (wantsNewBlur && curEffect) {
+         viewport.remove_effect(curEffect);
+         this._releaseBlurEffect(curEffect);
+         curEffect = null;
+      }
+
+      // Liquid Glass clips its own rounded shape, so remove any CornerEffect when switching to it
+      // and restore CornerEffect first in the stack when switching back to another blur type.
+      let cornerEffect = this._getCornerEffect(viewport);
+      if (effectType === BlurType.LiquidGlass) {
+         if (cornerEffect) {
+            if (!viewport._blurCinnamonCorner)
+               viewport._blurCinnamonCorner = { radius: cornerEffect.radius, top: cornerEffect.corners_top, bottom: cornerEffect.corners_bottom };
+            viewport.remove_effect(cornerEffect);
+            this._releaseCornerEffect(cornerEffect);
          }
-         viewport.add_effect_with_name( BLUR_EFFECT_NAME, this._aquireSimpleBlurEffect() );
-      } else if (effectType === BlurType.Gaussian && !(curEffect instanceof GaussianBlur.GaussianBlurEffect)) {
-         if (curEffect) {
-            viewport.remove_effect(curEffect);
-            this._releaseBlurEffect(curEffect);
-         }
-         viewport.add_effect_with_name( BLUR_EFFECT_NAME, this._aquireGaussianEffect(radius, grain) );
-      } else if (effectType === BlurType.MonteCarlo && !(curEffect instanceof MonteCarloBlur.MonteCarloBlurEffect)) {
-         if (curEffect) {
-            viewport.remove_effect(curEffect);
-            this._releaseBlurEffect(curEffect);
-         }
-         viewport.add_effect_with_name( BLUR_EFFECT_NAME, this._aquireMonteCarloEffect(radius, grain) );
-      } else if (effectType === BlurType.DualKawase && !(curEffect instanceof DualKawaseBlur.DualFilteringBlurEffect)) {
-         if (curEffect) {
-            viewport.remove_effect(curEffect);
-            this._releaseBlurEffect(curEffect);
-         }
-         viewport.add_effect_with_name( BLUR_EFFECT_NAME, this._aquireDualKawaseEffect(radius, grain) );
-      } else if (effectType === BlurType.LiquidGlass && !(curEffect instanceof Refraction.RefractionEffect)) {
-         if (curEffect) {
-            viewport.remove_effect(curEffect);
-            this._releaseBlurEffect(curEffect);
-         }
-         viewport.add_effect_with_name( BLUR_EFFECT_NAME, this._aquireLiquidGlassEffect(radius, grain) );
+      } else if (!cornerEffect) {
+         const saved = viewport._blurCinnamonCorner || { radius: 0, top: true, bottom: true };
+         cornerEffect = this._aquireCornerEffect(saved.radius, saved.top, saved.bottom);
+         const existingDesat = this._getDesatEffect(viewport);
+         if (existingDesat) viewport.remove_effect(existingDesat);
+         if (curEffect) viewport.remove_effect(curEffect);
+         viewport.add_effect_with_name( CORNER_EFFECT_NAME, cornerEffect );
+         if (existingDesat) viewport.add_effect_with_name( DESAT_EFFECT_NAME, existingDesat );
+         if (curEffect) viewport.add_effect_with_name( BLUR_EFFECT_NAME, curEffect );
+         if (viewport._blurCinnamonGlassRect)
+            cornerEffect.set_viewport_clip(viewport._blurCinnamonGlassRect);
+      }
+
+      if (wantsNewBlur) {
+         if (effectType === BlurType.Simple)
+            viewport.add_effect_with_name( BLUR_EFFECT_NAME, this._aquireSimpleBlurEffect() );
+         else if (effectType === BlurType.Gaussian)
+            viewport.add_effect_with_name( BLUR_EFFECT_NAME, this._aquireGaussianEffect(radius, grain) );
+         else if (effectType === BlurType.MonteCarlo)
+            viewport.add_effect_with_name( BLUR_EFFECT_NAME, this._aquireMonteCarloEffect(radius, grain) );
+         else if (effectType === BlurType.DualKawase)
+            viewport.add_effect_with_name( BLUR_EFFECT_NAME, this._aquireDualKawaseEffect(radius, grain, true) );
+         else if (effectType === BlurType.LiquidGlass)
+            viewport.add_effect_with_name( BLUR_EFFECT_NAME, this._aquireLiquidGlassEffect(radius, grain) );
       }
       curEffect = this._getBlurEffect(viewport);
-      if ((curEffect instanceof GaussianBlur.GaussianBlurEffect || curEffect instanceof MonteCarloBlur.MonteCarloBlurEffect || curEffect instanceof DualKawaseBlur.DualFilteringBlurEffect) && curEffect.radius != radius) {
+      if ((curEffect instanceof GaussianBlur.GaussianBlurEffect || curEffect instanceof MonteCarloBlur.MonteCarloBlurEffect || curEffect instanceof dualKawaseKind(true)) && curEffect.radius != radius) {
          curEffect.radius = radius;
       }
       if (curEffect instanceof MonteCarloBlur.MonteCarloBlurEffect) {
@@ -2724,9 +2811,10 @@ class BlurBase {
          curEffect.prefer_closer_pixels = settings.montecarloPerferCloserPixels;
       }
       if (curEffect instanceof Refraction.RefractionEffect) {
+         curEffect.use_kawase_pyramid = useKawasePyramid(true);
          applyLiquidGlassSettings(curEffect, radius);
       }
-      if (curEffect instanceof EffectPool.EffectBase) {
+      if (curEffect instanceof EffectPool.EffectBase || curEffect instanceof Kawase.PyramidEffect) {
          curEffect.grain = grain;
       }
       this._syncLiquidGlassCornerRadius(viewport);
@@ -2737,7 +2825,13 @@ class BlurBase {
       } else if (desatEffect && desatEffect.factor !== (100-saturation)/100) {
          desatEffect.set_factor((100-saturation)/100);
       } else if (!desatEffect && saturation < 100) {
+         // Install desaturation outside the pyramid blur and refraction,
+         // matching the order used when the viewport is first created.
+         const reorder = curEffect instanceof Kawase.PyramidEffect ||
+            curEffect instanceof Refraction.RefractionEffect;
+         if (reorder) viewport.remove_effect(curEffect);
          viewport.add_effect_with_name( DESAT_EFFECT_NAME, this._aquireDesaturateEffect( (100-saturation)/100 ) );
+         if (reorder) viewport.add_effect_with_name(BLUR_EFFECT_NAME, curEffect);
       }
 
       let dimmerColor = this._getColor( blendColor, opacity );
@@ -2791,7 +2885,7 @@ class BlurBase {
       if (viewport) {
          // Remember the visible rect so the margin can be re-derived if the blur radius/type changes
          viewport._blurCinnamonVisibleRect = [x, y, width, height];
-         let margin = (width > 0 && height > 0) ? getViewportMargin(viewport) : 0;
+         let margin = (width > 0 && height > 0) ? getViewportMargin(viewport, viewport._blurCinnamonVisibleRect) : 0;
          let [ex, ey, ew, eh] = getExpandedRect(x, y, width, height, margin);
          background.set_clip(ex, ey, ew, eh);
          viewport.set_position(ex, ey);
@@ -2804,6 +2898,13 @@ class BlurBase {
             cornerEffect.set_viewport_clip([x - ex, y - ey, width, height]);
          }
          this._setLiquidGlassRect(viewport, [x-ex, y-ey, width, height]);
+         let blurEffect = this._getBlurEffect(viewport);
+         if (blurEffect instanceof Refraction.RefractionEffect && !blurEffect.on_clip_settled) {
+            blurEffect.on_clip_settled = () => {
+               if (viewport._blurCinnamonVisibleRect && viewport.get_stage() && background.get_stage())
+                  this._applyBackgroundClip(background, viewport, ...viewport._blurCinnamonVisibleRect);
+            };
+         }
       } else {
          background.set_clip(x, y, width, height);
          let backgroundCornerEffect = this._getCornerEffect(background);
@@ -2823,7 +2924,10 @@ class BlurBase {
    _needsBackgroundRebuild(background, blurType, wantsViewport) {
       const changesBackgroundKind = !Meta.is_wayland_compositor() &&
          ((background instanceof Meta.X11BackgroundActor) !== (blurType !== BlurType.Transparent));
-      return this._viewportMismatch(background, blurType, wantsViewport) || changesBackgroundKind;
+      const changesDirectKawase = !wantsViewport && !background._blurCinnamonViewport &&
+         staticBlurType(blurType) === BlurType.DualKawase &&
+         !(this._getBlurEffect(background) instanceof dualKawaseKind(false));
+      return this._viewportMismatch(background, blurType, wantsViewport) || changesBackgroundKind || changesDirectKawase;
    }
 
    // Whether background has to be rebuilt to gain or lose its viewport, or because the viewport was made for a
@@ -3080,24 +3184,20 @@ class BlurOSD extends BlurBase {
    _syncActorStyle(actor, transparent) {
       if (!actor) return;
       if (transparent && settings.allowTransparentColorOSD && !actor._blurCinnamonData) {
-         actor._blurCinnamonData = {
-            original_color: actor.get_background_color(),
-            original_style: actor.get_style(),
-            original_class: actor.get_style_class_name(),
-            original_pseudo_class: actor.get_style_pseudo_class()
-         };
+         const originalStyle = actor.get_style();
+         actor._blurCinnamonData = { original_style: originalStyle };
 
-         actor.set_style(
+         let base = originalStyle ? originalStyle.trim() : "";
+         if (base.length > 0 && !base.endsWith(";"))
+            base += ";";
+         const transparentStyle =
             "background-gradient-direction: vertical; " +
             "background-gradient-start: transparent; " +
             "background-gradient-end: transparent; " +
-            "background: transparent;"
-         );
+            "background: transparent;";
+         actor.set_style(base.length > 0 ? `${base} ${transparentStyle}` : transparentStyle);
       } else if ((!transparent || !settings.allowTransparentColorOSD) && actor._blurCinnamonData) {
-         actor.set_background_color(actor._blurCinnamonData.original_color);
          actor.set_style(actor._blurCinnamonData.original_style);
-         actor.set_style_class_name(actor._blurCinnamonData.original_class);
-         actor.set_style_pseudo_class(actor._blurCinnamonData.original_pseudo_class);
          delete actor._blurCinnamonData;
       }
    }
@@ -3107,9 +3207,23 @@ class BlurOSD extends BlurBase {
       target.set_opacity(state.osdActor.get_paint_opacity());
    }
 
-   _scheduleReclip(state, showBackground = false) {
+   _getSettingsKey(values) {
+      const [, , blurType, radius] = values;
+      const parts = [...values, settings.allowTransparentColorOSD, settings.dualKawaseMode];
+      if (isLiquidGlassBlurType(blurType))
+         parts.push(...Object.values(getLiquidGlassParams(radius)));
+      else if (staticBlurType(blurType) === BlurType.MonteCarlo)
+         parts.push(settings.montecarloIterations, settings.montecarloUseBasePixel, settings.montecarloPerferCloserPixels);
+      return parts.join("|");
+   }
+
+   _scheduleReclip(state, showBackground = false, forceCloneRefresh = false) {
       if (!this._isCurrentState(state))
          return;
+      // Preserve a pending workspace clone refresh if a layout/style signal
+      // replaces this callback before BEFORE_REDRAW runs.
+      if (forceCloneRefresh)
+         state.pendingCloneRefresh = true;
       this._cancelReclip(state);
 
       // Keep the callback registered until preparation succeeds
@@ -3124,7 +3238,8 @@ class BlurOSD extends BlurBase {
             return false;
          }
 
-         if (!state.clipActor.is_mapped() || !this._setClip(state))
+         const clipStatus = state.clipActor.is_mapped() ? this._setClip(state) : 0;
+         if (!clipStatus)
             return true;
 
          // A forced layout can emit allocation notifications and replace this
@@ -3133,13 +3248,21 @@ class BlurOSD extends BlurBase {
             return false;
          state.laterId = 0;
 
+         const clipChanged = clipStatus === 2;
+         const needsCloneRefresh = state.pendingCloneRefresh;
+         state.pendingCloneRefresh = false;
+
          if (showBackground) {
+            const wasVisible = state.background.visible;
             this._syncBackgroundOpacity(state);
-            state.background.show();
-            if (state.viewport) state.viewport.show();
-            if (isDynamicBlurType(state.blurType))
+            if (!wasVisible) {
+               state.background.show();
+               if (state.viewport) state.viewport.show();
+            }
+            if (isDynamicBlurType(state.blurType) && (!wasVisible || clipChanged || needsCloneRefresh))
                cloneWindowsForBackgroundNow(state.background, state.background._blurCinnamonDesktopOnly);
-            this._syncActorStyle(state.actor, true);
+            if (!wasVisible)
+               this._syncActorStyle(state.actor, true);
          }
          return false;
       });
@@ -3157,6 +3280,7 @@ class BlurOSD extends BlurBase {
 
       const values = this._getSettings(settings.osdOverride);
       const [opacity, blendColor, blurType, radius, saturation, grain] = values;
+      const settingsKey = this._getSettingsKey(values);
       const useViewport = this._wantsViewport(blurType);
       let state = this._states.get(osd);
       if (state && (state.actor !== actor || state.clipActor !== clipActor || this._needsBackgroundRebuild(state.background, blurType, useViewport))) {
@@ -3166,15 +3290,28 @@ class BlurOSD extends BlurBase {
 
       if (state) {
          this.parent = state.background.get_parent() || getBackgroundParent();
-         if (state.viewport)
-            this._updateViewportEffects(state.background, state.viewport, ...values);
-         else
-            this._updateEffects(state.background, opacity, blendColor, blurType, radius, saturation);
-         state.blurType = blurType;
+         const settingsChanged = state.settingsKey !== settingsKey;
+         if (settingsChanged) {
+            if (state.viewport)
+               this._updateViewportEffects(state.background, state.viewport, ...values);
+            else
+               this._updateEffects(state.background, opacity, blendColor, blurType, radius, saturation);
+            state.blurType = blurType;
+            state.settingsKey = settingsKey;
+            // Margin or theme transparency may have changed; force the next _setClip() to apply.
+            state.lastClip = null;
+            this._syncActorStyle(state.actor, state.background.visible);
+         }
 
-         // Workspace OSD needs an explicit refresh because its visual
-         // source changes when switching workspaces
-         this._scheduleReclip(state, true);
+         // Repeated slider updates (e.g. holding volume/brightness) reuse the active
+         // background as-is; allocation/style signals handle any actual size change.
+         // Workspace OSD still refreshes because the windows behind it change.
+         if (!isWorkspaceOsd && !settingsChanged && state.background.visible && !state.laterId) {
+            this._syncBackgroundOpacity(state);
+            return;
+         }
+
+         this._scheduleReclip(state, true, isWorkspaceOsd);
          return;
       }
 
@@ -3188,6 +3325,7 @@ class BlurOSD extends BlurBase {
       if (viewport) viewport._blurCinnamonName = "OsdWindow";
       state = {
          osd, actor, clipActor, osdActor, background, viewport, blurType,
+         settingsKey, lastClip: null, pendingCloneRefresh: false,
          signalManager: new SignalManager.SignalManager(null), laterId: 0
       };
       this._states.set(osd, state);
@@ -3256,10 +3394,11 @@ class BlurOSD extends BlurBase {
          delete osd._blurCinnamonBackground;
    }
 
+   // Returns 0 if bounds are not ready yet, 1 if unchanged, or 2 if clip/corners were updated.
    _setClip(state) {
       const actor = state.clipActor;
       if (!this._isCurrentState(state) || !actor.get_stage())
-         return false;
+         return 0;
 
       // Use the allocated bounds: width/height may return the preferred
       // size, including theme margins, while a relayout is pending
@@ -3268,21 +3407,35 @@ class BlurOSD extends BlurBase {
       const height = box.y2 - box.y1;
       if (![box.x1, box.y1, width, height].every(Number.isFinite) ||
           width <= 0 || height <= 0)
-         return false;
+         return 0;
 
       // Use the actor that represents the complete popup for
       // both clipping geometry and corner radius
       const themeNode = actor.get_theme_node();
+      let cornerRadius = null;
       if (themeNode) {
-         let cornerRadius = themeNode.get_border_radius(St.Corner.TOPLEFT);
+         cornerRadius = themeNode.get_border_radius(St.Corner.TOPLEFT);
          if (cornerRadius === 9999)
             cornerRadius = Math.min(width, height) / 2;
-         this._updateViewportCornerRadius(state.background, state.viewport, cornerRadius / global.ui_scale, true, true);
+         cornerRadius /= global.ui_scale;
       }
+
+      // Avoid re-applying clip and re-cloning when a signal (such as style-changed
+      // from our own transparent style override) fires with identical geometry.
+      const prev = state.lastClip;
+      if (prev &&
+          prev[0] === box.x1 && prev[1] === box.y1 &&
+          prev[2] === width && prev[3] === height &&
+          prev[4] === cornerRadius)
+         return 1;
+
+      if (cornerRadius !== null)
+         this._updateViewportCornerRadius(state.background, state.viewport, cornerRadius, true, true);
       if (!this._isCurrentState(state))
-         return false;
+         return 0;
       this._applyBackgroundClip(state.background, state.viewport, box.x1, box.y1, width, height);
-      return true;
+      state.lastClip = [box.x1, box.y1, width, height, cornerRadius];
+      return 2;
    }
 
    destroy() {
@@ -4384,7 +4537,13 @@ class BlurPopupMenus extends BlurBase {
       super();
       debugMsg( "Constructing popup menu object" );
       this._menus = [];
-      this._reclipLaterId = 0;
+      this._reclipStageId = 0;
+      this._reclipWakeId = 0;
+      this._pendingShow = false;
+      this._pendingDynamicBlur = false;
+      this._lastClipRect = null;
+      this._appliedCornerRadius = null;
+      this._themeVersion = 0;
       blurPopupMenusThis = this; // Make "this" available to monkey patched functions
       this.original_popupmenu_open = PopupMenu.PopupMenu.prototype.open;
       PopupMenu.PopupMenu.prototype.open = this._popupMenuOpen;
@@ -4409,6 +4568,8 @@ class BlurPopupMenus extends BlurBase {
       // A theme change can change whether a theme paints the menu sidebars, so those accent decisions must be redone
       this._themeContext = St.ThemeContext.get_for_stage(global.stage);
       this._themeChangedId = this._themeContext.connect("changed", () => this._onThemeChanged());
+      this._scaleChangedId = global.connect("scale-changed", () => this._onScaleChanged());
+      this._monitorsChangedId = Main.layoutManager.connect("monitors-changed", () => { this._lastClipRect = null; });
       debugMsg( "BlurPopupMenus initilized, actor hidden" );
    }
 
@@ -4428,6 +4589,12 @@ class BlurPopupMenus extends BlurBase {
       {
          debugMsg( "Attaching to a new popup menu, _popupMenuOpen()" );
          blurPopupMenusThis._blurPopupMenu(this);
+         if (settings.allowTransparentColorPopup && !this.isOpen &&
+             this.actor && !(this.actor.is_finalized && this.actor.is_finalized()) &&
+             this.actor.get_stage())
+         {
+            blurPopupMenusThis._prepareMenuStyle(this);
+         }
       } else {
          // If we applied effects to this menu in the past, remove the effects now
          let idx = blurPopupMenusThis._menus.indexOf(this);
@@ -4435,7 +4602,7 @@ class BlurPopupMenus extends BlurBase {
             blurPopupMenusThis._cancelAccentActorsScan(this);
             this.blurCinnamonSignalManager.disconnectAllSignals();
             delete this.blurCinnamonSignalManager;
-            blurPopupMenusThis._restoreMenuStyle(this);
+            blurPopupMenusThis._clearMenuAccentState(this);
             blurPopupMenusThis._menus.splice( idx, 1 );
          }
       }
@@ -4443,92 +4610,213 @@ class BlurPopupMenus extends BlurBase {
    }
 
    _cancelMenuReclip() {
-      if (this._reclipLaterId) {
-         Meta.later_remove(this._reclipLaterId);
-         this._reclipLaterId = 0;
+      if (this._reclipStageId) {
+         global.stage.disconnect(this._reclipStageId);
+         this._reclipStageId = 0;
+      }
+      if (this._reclipWakeId) {
+         Meta.later_remove(this._reclipWakeId);
+         this._reclipWakeId = 0;
       }
    }
 
-   _queueMenuReclip(menu) {
-      if (menu !== this._currentMenu || this._reclipLaterId)
+   _syncMenuOpacity(menu) {
+      if (menu !== this._currentMenu || !this._background)
+         return;
+      const opacity = menu.actor.visible ? menu.actor.opacity : 0;
+      if (this._viewport) {
+         // Keep the underlying expanded background transparent; only the viewport paints visibly.
+         this._viewport.opacity = opacity;
+         this._background.opacity = 0;
+      } else {
+         this._background.opacity = opacity;
+      }
+   }
+
+   _updateMenuCornerRadius(menu) {
+      let cornerRadius;
+      const scale = global.ui_scale;
+      if (menu._blurCinnamonCornerThemeVersion === this._themeVersion &&
+          menu._blurCinnamonCornerScale === scale &&
+          menu._blurCinnamonCornerRadius !== undefined) {
+         cornerRadius = menu._blurCinnamonCornerRadius;
+      } else {
+         // The menu's rounded corners could be applied to the box or the menu's actor, so check both.
+         // A non-zero radius on menu.actor takes precedence over menu.box.
+         cornerRadius = 0;
+         let actorNode = menu.actor.get_theme_node();
+         let actorRadius = actorNode ? actorNode.get_border_radius(St.Corner.TOPLEFT) : 0;
+         if (actorRadius != 0) {
+            cornerRadius = actorRadius / scale;
+         } else {
+            let boxNode = menu.box.get_theme_node();
+            if (boxNode)
+               cornerRadius = boxNode.get_border_radius(St.Corner.TOPLEFT) / scale;
+         }
+         if (menu.actor.get_stage()) {
+            menu._blurCinnamonCornerRadius = cornerRadius;
+            menu._blurCinnamonCornerThemeVersion = this._themeVersion;
+            menu._blurCinnamonCornerScale = scale;
+         }
+      }
+      if (this._appliedCornerRadius !== cornerRadius) {
+         this._appliedCornerRadius = cornerRadius;
+         this._updateViewportCornerRadius(this._background, this._viewport, cornerRadius, true, true);
+         // A newly created or updated corner effect needs its clip rect refreshed in _setClip().
+         this._lastClipRect = null;
+      }
+   }
+
+   _queueMenuReclip(menu, wakeStage = false) {
+      if (menu !== this._currentMenu)
          return;
 
-      let laterId = 0;
-      const isCurrent = () => this._currentMenu === menu && this._reclipLaterId === laterId;
-      laterId = Meta.later_add(Meta.LaterType.BEFORE_REDRAW, () => {
-         if (!isCurrent()) return false;
-         try {
-            const actor = menu.actor;
-            if (!actor.visible) {
-               this._applyBackgroundClip(this._background, this._viewport, 0, 0, 0, 0);
-               if (isCurrent()) this._reclipLaterId = 0;
-               return false;
+      if (!this._reclipStageId) {
+         let stageId = 0;
+         const isCurrent = () => this._currentMenu === menu && this._reclipStageId === stageId;
+         // Run on stage "before-update" (after timelines and BEFORE_REDRAW repositioning, and before
+         // Clutter's stage relayout/paint) so slide-in/out and submenu/layout changes land in the
+         // same frame without mutating geometry during allocation or paint.
+         stageId = global.stage.connect("before-update", () => {
+            if (!isCurrent()) return;
+            if (this._reclipWakeId) {
+               Meta.later_remove(this._reclipWakeId);
+               this._reclipWakeId = 0;
             }
-            if (!actor.get_stage() || !actor.is_mapped())
-               return true;
+            try {
+               const actor = menu.actor;
+               if (!actor.visible) {
+                  this._pendingShow = false;
+                  this._background.hide();
+                  if (this._viewport) this._viewport.hide();
+                  if (isCurrent()) {
+                     global.stage.disconnect(stageId);
+                     this._reclipStageId = 0;
+                  }
+                  return;
+               }
+               if (!actor.get_stage() || !actor.is_mapped())
+                  return;
 
-            const ready = this._setClip(menu);
-            if (!isCurrent()) return false;
-            if (!ready) return true;
+               const ready = this._setClip(menu);
+               if (!isCurrent()) return;
+               if (!ready) return;
 
-            // The initial clip is empty, so addBackground() cannot populate window clones yet.
-            // Populate them before this frame is painted instead of waiting for an idle.
-            // Pending work also includes window changes unrelated to the menu's geometry.
-            const background = this._background;
-            if (cloneManager && background._blurCinnamonWinClones && background._blurCinnamonRecloneId) {
-               Mainloop.source_remove(background._blurCinnamonRecloneId);
-               background._blurCinnamonRecloneId = 0;
-               cloneManager.backgroundClipChangedNow(background);
+               if (this._pendingShow) {
+                  this._pendingShow = false;
+                  this._syncMenuOpacity(menu);
+                  const alreadyDynamic = this._isDynamicEffectActive(this._background);
+                  if (!this._background.mapped && alreadyDynamic && this._background._blurCinnamonRecloneId) {
+                     Mainloop.source_remove(this._background._blurCinnamonRecloneId);
+                     this._background._blurCinnamonRecloneId = 0;
+                  }
+                  this._background.show();
+                  if (this._viewport) this._viewport.show();
+                  debugMsg( "Blurred actor is now visible" );
+                  if (this._pendingDynamicBlur && !alreadyDynamic) {
+                     this._createDynamicEffect(this._background);
+                  }
+               }
+
+               // Flush any pending window clone update before this frame paints instead of waiting for an idle.
+               const background = this._background;
+               if (cloneManager && background._blurCinnamonWinClones && background._blurCinnamonRecloneId) {
+                  Mainloop.source_remove(background._blurCinnamonRecloneId);
+                  background._blurCinnamonRecloneId = 0;
+                  cloneManager.backgroundClipChangedNow(background);
+               }
+               if (!isCurrent()) return;
+               global.stage.disconnect(stageId);
+               this._reclipStageId = 0;
+            } catch (error) {
+               if (isCurrent()) {
+                  global.stage.disconnect(stageId);
+                  this._reclipStageId = 0;
+                  this._pendingShow = false;
+                  this._lastClipRect = null;
+                  this._background.hide();
+                  if (this._viewport) this._viewport.hide();
+               }
+               global.logError(error);
             }
-            if (!isCurrent()) return false;
-            this._reclipLaterId = 0;
+         });
+         this._reclipStageId = stageId;
+      }
+
+      // Connecting "before-update" does not schedule a frame by itself; wake the frame clock
+      // when opening or refreshing a menu whose allocation may not change.
+      if (wakeStage && !this._reclipWakeId) {
+         this._reclipWakeId = Meta.later_add(Meta.LaterType.BEFORE_REDRAW, () => {
+            this._reclipWakeId = 0;
             return false;
-         } catch (error) {
-            if (isCurrent()) {
-               this._reclipLaterId = 0;
-               this._applyBackgroundClip(this._background, this._viewport, 0, 0, 0, 0);
-            }
-            global.logError(error);
-            return false;
-         }
-      });
-      this._reclipLaterId = laterId;
+         });
+      }
    }
 
    // Set the visible section of the background based on the size of the popup menu
    _setClip(menu){
-      const reclipLaterId = this._reclipLaterId;
+      const reclipStageId = this._reclipStageId;
       if (menu && this._currentMenu && menu === this._currentMenu) {
          let actor = menu.actor;
          if (actor.visible) {
-            let themeNode = menu.actor.get_theme_node();
+            let themeNode = actor.get_theme_node();
             let pLeft = themeNode.get_padding(St.Side.LEFT);
             let pRight = themeNode.get_padding(St.Side.RIGHT);
             let pTop = themeNode.get_padding(St.Side.TOP);
             let pBottom = themeNode.get_padding(St.Side.BOTTOM);
             let bm = menu.box.get_margin();
-            // Read allocated bounds only after layout. The width/height properties
-            // may include CSS margins while a relayout is pending.
-            // BEFORE_REDRAW can run before Clutter's normal relayout. This helper completes
-            // pending layout here. Waiting for has_allocation() can stall throughout an animation.
-            // _setClip() runs from the scheduled callback, never directly inside allocation handlers.
-            const box = Cinnamon.util_get_transformed_allocation(actor);
+            // Completing pending layout can trigger PopupMenu._allocationChanged(), which calls
+            // set_position() and invalidates the allocation again. Loop briefly so the repositioned
+            // box settles before we clip and before Clutter paints this frame.
+            let box = null;
+            for (let pass = 0; pass < 3; pass++) {
+               box = Cinnamon.util_get_transformed_allocation(actor);
+               // Completing layout can emit signals that close, reopen or replace this menu.
+               if (menu !== this._currentMenu || reclipStageId !== this._reclipStageId || !actor.visible)
+                  return false;
+               if (actor.has_allocation())
+                  break;
+            }
             const width = box.x2 - box.x1;
             const height = box.y2 - box.y1;
             if (![box.x1, box.y1, width, height].every(Number.isFinite) || width <= 0 || height <= 0)
                return false;
-            // Completing layout can emit signals that close, reopen or replace this menu.
-            if (menu !== this._currentMenu || reclipLaterId !== this._reclipLaterId)
-               return false;
-            this._applyBackgroundClip(this._background, this._viewport,
-               box.x1+bm.left+pLeft, box.y1+bm.top+pTop,
-               width-(bm.left+bm.right+pLeft+pRight), height-(bm.top+bm.bottom+pTop+pBottom));
+            const x = box.x1 + bm.left + pLeft;
+            const y = box.y1 + bm.top + pTop;
+            const w = width - (bm.left + bm.right + pLeft + pRight);
+            const h = height - (bm.top + bm.bottom + pTop + pBottom);
+            const prev = this._lastClipRect;
+            if (prev && prev[0] === x && prev[1] === y && prev[2] === w && prev[3] === h)
+               return true;
+            this._lastClipRect = [x, y, w, h];
+            this._applyBackgroundClip(this._background, this._viewport, x, y, w, h);
          } else {
-            this._applyBackgroundClip(this._background, this._viewport, 0, 0, 0, 0);
+            this._background.hide();
+            if (this._viewport) this._viewport.hide();
          }
          return true;
       }
       return false;
+   }
+
+   // Pre-apply accent and box styles before PopupMenu.open() maps the actor so StWidget does not
+   // animate theme transition-duration from the opaque theme background on the first open.
+   // Leave _foundAccentActors unset until _onOpenStateChanged() so lazily built children are still found.
+   _prepareMenuStyle(menu) {
+      if (menu._blurCinnamonChangeCount != this._changeCount) {
+         debugMsg( "Applying new settings to menu" );
+         this._reapplyMenuStyle(menu, this._boxColor);
+      }
+      menu._blurCinnamonChangeCount = this._changeCount;
+
+      if (!menu._foundAccentActors) {
+         this._findAccentActors(menu, menu.actor);
+      }
+      this._reapplyAccentActorsStyle(menu);
+
+      if (!menu.box._blurCinnamonData) {
+         this._applyActorStyle(menu.box, this._boxColor);
+      }
    }
 
    _onOpenStateChanged(menu, open) {
@@ -4548,29 +4836,16 @@ class BlurPopupMenus extends BlurBase {
             // Find all the accent actors and adjust their transparency and background color
             if (!menu._foundAccentActors) {
                this._findAccentActors(menu, menu.actor);
-               menu._foundAccentActors=true;
-            } else {
-               this._reapplyAccentActorsStyle(menu);
+               menu._foundAccentActors = true;
             }
+            this._reapplyAccentActorsStyle(menu);
 
             // Adjust the menu transparency and color for the menu box if required
             if (!menu.box._blurCinnamonData) {
                this._applyActorStyle(menu.box, this._boxColor);
             }
 
-            // The menu's rounded corners could be applied to the box or the menus actor, so we have to check both
-            // We are assuming that all corners have the same radius, hope that is true.
-            let themeNode = menu.box.get_theme_node();
-            if (themeNode) {
-               let radius = themeNode.get_border_radius(St.Corner.TOPLEFT);
-               this._updateViewportCornerRadius( this._background, this._viewport, radius/global.ui_scale, true, true );
-            }
-            themeNode = menu.actor.get_theme_node();
-            if (themeNode) {
-               let radius = themeNode.get_border_radius(St.Corner.TOPLEFT);
-               if (radius != 0)
-                  this._updateViewportCornerRadius( this._background, this._viewport, radius/global.ui_scale, true, true );
-            }
+            this._updateMenuCornerRadius(menu);
 
             // PopupMenu.open() calls setMaxHeight() just before emitting 'open-state-changed', which replaces
             // menu.actor's inline style with "max-height: Npx; max-width: Npx;". We must append to that style
@@ -4587,23 +4862,25 @@ class BlurPopupMenus extends BlurBase {
          }
 
          this._cancelMenuReclip();
-         this._currentMenu = menu;
-         // Make the background visible but zero size initially, let the paint signal re-clip the background as needed
-         this._applyBackgroundClip(this._background, this._viewport, 0, 0, 0, 0);
-         // Use the exact same clip-rect formula _setClip() uses for every later notify::allocation update
-         // Schedule every open, even if the final allocation is unchanged and emits no notification.
-         this._queueMenuReclip(menu);
-         this._background.show();
-         if (this._viewport) this._viewport.show();
-         debugMsg( "Blurred actor is now visible" );
-
-         // If Dynamic Blurring is enabled, create window clones and add them to the background
-         if (isDynamicBlurType(blurType)) {
-            this._createDynamicEffect(this._background);
+         if (this._currentMenu && this._currentMenu !== menu) {
+            if (this._background.visible) this._background.hide();
+            if (this._viewport && this._viewport.visible) this._viewport.hide();
          }
+         this._currentMenu = menu;
+         this._pendingShow = true;
+         this._pendingDynamicBlur = isDynamicBlurType(blurType);
+         // Keep the background/viewport hidden until before-update computes the real clip rect
+         // (avoiding a 0x0 resize that drops retained blur FBOs on reopen).
+         // Schedule every open, even if the final allocation is unchanged and emits no notification.
+         this._queueMenuReclip(menu, true);
 
-         // Now that the menu is open we need to know if new actors are added so we can check for accent elements
-         menu.blurCinnamonSignalManager.connect(menu.actor, 'queue-relayout', () => this._queueAccentActorsScan(menu) );
+         // Track layout changes while the menu is open for frame-accurate reclipping and accent discovery.
+         // Disconnect first in case a menu reopens before its animated close finished.
+         menu.blurCinnamonSignalManager.disconnect("queue-relayout", menu.actor);
+         menu.blurCinnamonSignalManager.connect(menu.actor, 'queue-relayout', () => {
+            this._queueMenuReclip(menu);
+            this._queueAccentActorsScan(menu);
+         });
       } else {
          this._cancelAccentActorsScan(menu);
       }
@@ -4619,6 +4896,7 @@ class BlurPopupMenus extends BlurBase {
       this._cancelAccentActorsScan(menu);
       if (this._currentMenu === menu) {
          this._cancelMenuReclip();
+         this._pendingShow = false;
          if (this._background.is_visible()) {
             // In some cases the Tween for the popupMenu close animation will not call its onComplete function
             // and therefore no "menu-animated-closed" signal which would call _onClosed().
@@ -4658,12 +4936,25 @@ class BlurPopupMenus extends BlurBase {
    }
 
    _reapplyAccentActorsStyle(menu) {
-      menu._blurCinnamonAccentActors.forEach( (child) => this._applyActorStyle(child, this._accentColor) );
+      if (!menu._blurCinnamonAccentActors) return;
+      let writeIdx = 0;
+      for (let i = 0; i < menu._blurCinnamonAccentActors.length; i++) {
+         let child = menu._blurCinnamonAccentActors[i];
+         if (child.is_finalized && child.is_finalized()) continue;
+         menu._blurCinnamonAccentActors[writeIdx++] = child;
+         this._applyActorStyle(child, this._accentColor);
+      }
+      menu._blurCinnamonAccentActors.length = writeIdx;
    }
 
    _applyActorStyle(actor, color) {
-      let radius = 0;
       let style = actor.get_style();
+      let rgba = `rgba(${color.red}, ${color.green}, ${color.blue}, ${color.alpha/255.0})`;
+      if (actor._blurCinnamonData &&
+          style === actor._blurCinnamonData.applied_entry_style &&
+          actor._blurCinnamonData.applied_rgba === rgba) {
+         return;
+      }
       if (!actor._blurCinnamonData || style !== actor._blurCinnamonData.applied_entry_style) {
          actor._blurCinnamonData = {original_entry_color: actor.get_background_color(), original_entry_style: style,
                                     original_entry_class: actor.get_style_class_name(), original_entry_pseudo_class: actor.get_style_pseudo_class()};
@@ -4673,19 +4964,24 @@ class BlurPopupMenus extends BlurBase {
       let originalStyle = actor._blurCinnamonData.original_entry_style ?? "";
       if (originalStyle.length > 0 && !originalStyle.trimEnd().endsWith(";"))
          originalStyle += ";";
-      let rgba = `rgba(${color.red}, ${color.green}, ${color.blue}, ${color.alpha/255.0})`
       let appliedStyle = originalStyle + (originalStyle.length > 0 ? " " : "") + `background-gradient-direction: vertical; background-gradient-start: ${rgba}; background-gradient-end: ${rgba};`;
       // Identify CSS exactly so reapplication never rebases it
       actor._blurCinnamonData.applied_entry_style = appliedStyle;
+      actor._blurCinnamonData.applied_rgba = rgba;
       actor.set_style(appliedStyle);
       return;
    }
 
-   _restoreMenuStyle(menu) {
-      if (menu.box._blurCinnamonData) {
+   _clearMenuAccentState(menu) {
+      if (menu.box && menu.box._blurCinnamonData) {
          this._restoreActorStyle(menu.box);
+      }
+      if (menu.actor && !(menu.actor.is_finalized && menu.actor.is_finalized())) {
          this._restoreActorChildrenStyle(menu.actor);
       }
+      delete menu._foundAccentActors;
+      delete menu._blurCinnamonAccentActors;
+      delete menu._blurCinnamonChangeCount;
    }
 
    _restoreActorChildrenStyle(actor) {
@@ -4693,6 +4989,8 @@ class BlurPopupMenus extends BlurBase {
       for (let i=0 ; i < children.length ; i++ ) {
          if (children[i]._blurCinnamonData) {
             this._restoreActorStyle(children[i]);
+         } else if (children[i]._blurCinnamonData === null) {
+            delete children[i]._blurCinnamonData;
          }
          this._restoreActorChildrenStyle(children[i]);
       }
@@ -4728,6 +5026,7 @@ class BlurPopupMenus extends BlurBase {
             return false;
          try {
             this._findAccentActors(menu, menu.actor);
+            menu._foundAccentActors = true;
          } catch (error) {
             global.logError(error);
          }
@@ -4738,9 +5037,14 @@ class BlurPopupMenus extends BlurBase {
 
    // Forget the theme-dependent accent decisions so the sidebars are checked again against the new theme
    _onThemeChanged() {
+      this._themeVersion++;
+      this._appliedCornerRadius = null;
+      this._lastClipRect = null;
       for (const menu of this._menus) {
          if (menu._blurCinnamonAccentActors) {
             menu._blurCinnamonAccentActors = menu._blurCinnamonAccentActors.filter( (child) => {
+               if (child.is_finalized && child.is_finalized())
+                  return false;
                if (!THEME_CHECKED_ACCENT_CLASSES.includes(child.get_style_class_name()))
                   return true;
                if (child._blurCinnamonData)
@@ -4748,10 +5052,26 @@ class BlurPopupMenus extends BlurBase {
                return false;
             });
          }
-         this._clearThemeSkipMarkers(menu.actor);
+         if (menu.actor && !(menu.actor.is_finalized && menu.actor.is_finalized()))
+            this._clearThemeSkipMarkers(menu.actor);
+         menu._foundAccentActors = false;
          // An open menu won't be rescanned until something changes in it, so rescan it now
-         if (menu === this._currentMenu && menu.isOpen)
+         if (menu === this._currentMenu && menu.isOpen) {
+            if (settings.allowTransparentColorPopup)
+               this._updateMenuCornerRadius(menu);
             this._queueAccentActorsScan(menu);
+            this._queueMenuReclip(menu, true);
+         }
+      }
+   }
+
+   _onScaleChanged() {
+      this._appliedCornerRadius = null;
+      this._lastClipRect = null;
+      if (this._currentMenu && this._currentMenu.isOpen) {
+         if (settings.allowTransparentColorPopup)
+            this._updateMenuCornerRadius(this._currentMenu);
+         this._queueMenuReclip(this._currentMenu, true);
       }
    }
 
@@ -4769,6 +5089,18 @@ class BlurPopupMenus extends BlurBase {
    _themeFillsBackground(actor) {
       if (!actor.get_stage())
          return null;
+      // St defers style_changed propagation on unmapped subtrees, so an actor inside a
+      // closed menu can still hold a stale cached St.ThemeNode after a theme switch.
+      // Clear cached theme nodes top-down across unmapped ancestors before reading.
+      if (!actor.is_mapped()) {
+         const unmapped = [];
+         for (let a = actor; a && !a.is_mapped(); a = a.get_parent()) {
+            if (a instanceof St.Widget && a.peek_theme_node())
+               unmapped.push(a);
+         }
+         for (let i = unmapped.length - 1; i >= 0; i--)
+            unmapped[i].style_changed();
+      }
       const node = actor.get_theme_node();
       if (node.get_background_color().alpha > 0)
          return true;
@@ -4836,6 +5168,9 @@ class BlurPopupMenus extends BlurBase {
          menu.blurCinnamonSignalManager.connect(menu.actor, "notify::allocation", queueReclip);
          menu.blurCinnamonSignalManager.connect(menu.actor, "notify::size", queueReclip);
          menu.blurCinnamonSignalManager.connect(menu.actor, "notify::position", queueReclip);
+         menu.blurCinnamonSignalManager.connect(menu.actor, "notify::x", queueReclip);
+         menu.blurCinnamonSignalManager.connect(menu.actor, "notify::y", queueReclip);
+         menu.blurCinnamonSignalManager.connect(menu.actor, "notify::opacity", () => this._syncMenuOpacity(menu));
          this._menus.push(menu);
       }
       debugMsg( "attach complete" );
@@ -4845,6 +5180,7 @@ class BlurPopupMenus extends BlurBase {
       this._cancelAccentActorsScan(menu);
       if (this._currentMenu === menu) {
          this._cancelMenuReclip();
+         this._pendingShow = false;
          this._background.hide();
          if (this._viewport) this._viewport.hide();
          debugMsg( "blur actor hidden" );
@@ -4859,6 +5195,9 @@ class BlurPopupMenus extends BlurBase {
    updateEffects() {
       this._cancelAccentActorsScan(this._currentMenu);
       this._cancelMenuReclip();
+      this._pendingShow = false;
+      this._lastClipRect = null;
+      this._appliedCornerRadius = null;
       debugMsg("updateEffects for popup menus" );
       this._changeCount++;
 
@@ -4901,9 +5240,7 @@ class BlurPopupMenus extends BlurBase {
          let menus = this._menus;
          if (menus) {
             for (let i=0 ; i < menus.length ; i++) {
-               if (menus[i].box._blurCinnamonData) {
-                  this._restoreMenuStyle(menus[i]);
-               }
+               this._clearMenuAccentState(menus[i]);
             }
          }
       }
@@ -4911,12 +5248,23 @@ class BlurPopupMenus extends BlurBase {
 
    destroy() {
       this._cancelMenuReclip();
+      this._pendingShow = false;
+      this._lastClipRect = null;
+      this._appliedCornerRadius = null;
       this._currentMenu = null;
       // Restore monkey patched PopupMenu open & close functions
       debugMsg( "Destroying Popup Menu object" );
       if (this._themeChangedId) {
          this._themeContext.disconnect(this._themeChangedId);
          this._themeChangedId = 0;
+      }
+      if (this._scaleChangedId) {
+         global.disconnect(this._scaleChangedId);
+         this._scaleChangedId = 0;
+      }
+      if (this._monitorsChangedId) {
+         Main.layoutManager.disconnect(this._monitorsChangedId);
+         this._monitorsChangedId = 0;
       }
       for (const menu of this._menus)
          this._cancelAccentActorsScan(menu);
@@ -4930,9 +5278,10 @@ class BlurPopupMenus extends BlurBase {
                menus[i].blurCinnamonSignalManager.disconnectAllSignals();
                delete menus[i].blurCinnamonSignalManager;
             }
-            if (menus[i].box._blurCinnamonData) {
-               this._restoreMenuStyle(menus[i]);
-            }
+            this._clearMenuAccentState(menus[i]);
+            delete menus[i]._blurCinnamonCornerRadius;
+            delete menus[i]._blurCinnamonCornerThemeVersion;
+            delete menus[i]._blurCinnamonCornerScale;
          }
       }
    }
@@ -4987,7 +5336,7 @@ class BlurDesktop extends BlurBase {
    _getGenericSettings() {
       let genericSettings = super._getGenericSettings();
       if (isLiquidGlassBlurType(genericSettings[2]))
-         genericSettings[2] = BlurType.Gaussian;
+         genericSettings[2] = BlurType.DualKawase;
       return genericSettings;
    }
 
@@ -5001,7 +5350,7 @@ class BlurDesktop extends BlurBase {
       if (blurType === BlurType.Simple)     return Clutter.BlurEffect;
       if (blurType === BlurType.Gaussian)   return GaussianBlur.GaussianBlurEffect;
       if (blurType === BlurType.MonteCarlo) return MonteCarloBlur.MonteCarloBlurEffect;
-      if (blurType === BlurType.DualKawase) return DualKawaseBlur.DualFilteringBlurEffect;
+      if (blurType === BlurType.DualKawase) return dualKawaseKind();
       return null;
    }
 
@@ -5013,8 +5362,8 @@ class BlurDesktop extends BlurBase {
          return new GaussianBlur.GaussianBlurEffect( {radius: this._radius, brightness: 1, width: 0, height: 0, grain: this._grain} );
       if (kind === MonteCarloBlur.MonteCarloBlurEffect)
          return new MonteCarloBlur.MonteCarloBlurEffect( { radius: this._radius, iterations: settings.montecarloIterations, prefer_closer_pixels: settings.montecarloPerferCloserPixels, use_base_pixel: settings.montecarloUseBasePixel, brightness: 1, width: 0, height: 0, grain: this._grain } );
-      if (kind === DualKawaseBlur.DualFilteringBlurEffect)
-         return new DualKawaseBlur.DualFilteringBlurEffect( { radius: this._radius, brightness: 1, width: 0, height: 0, grain: this._grain } );
+      if (kind === DualKawaseBlur.DualFilteringBlurEffect || kind === Kawase.PyramidEffect)
+         return new kind({radius: this._radius, brightness: 1, width: 0, height: 0, grain: this._grain});
       return null;
    }
 
@@ -5096,15 +5445,21 @@ class BlurDesktop extends BlurBase {
       }
       if (this._blurEnabled && !entry.blur) {
          entry.blur = this._createBlurEffect();
-         if (entry.blur)
+         if (entry.blur) {
+            const hasDesat = entry.desat && target.get_effect(DESAT_EFFECT_NAME) === entry.desat;
+            if (hasDesat)
+               target.remove_effect(entry.desat);
             target.add_effect_with_name( BLUR_EFFECT_NAME, entry.blur );
+            if (hasDesat)
+               target.add_effect_with_name( DESAT_EFFECT_NAME, entry.desat );
+         }
          return;
       }
       if (!entry.blur)
          return;
       if (!(entry.blur instanceof Clutter.BlurEffect) && entry.blur.radius != this._radius)
          entry.blur.radius = this._radius;
-      if (entry.blur instanceof EffectPool.EffectBase)
+      if (entry.blur instanceof EffectPool.EffectBase || entry.blur instanceof Kawase.PyramidEffect)
          entry.blur.grain = this._grain;
       if (entry.blur instanceof MonteCarloBlur.MonteCarloBlurEffect) {
          entry.blur.iterations = settings.montecarloIterations;
@@ -5189,19 +5544,31 @@ class BlurDesktop extends BlurBase {
    }
 }
 
+// Inline style appended to notification actors so the theme background doesn't hide the blurred background
+const NOTIFICATION_TRANSPARENT_STYLE = "background-gradient-direction: vertical; background-gradient-start: transparent; " +
+                                       "background-gradient-end: transparent; background: transparent;";
+
 class BlurNotifications extends BlurBase {
    constructor() {
       super();
       this._signalManager = new SignalManager.SignalManager(null);
-      this.animation_time = 0.08; // seconds
+      this._reclipStageId = 0;
+      this._reclipWakeId = 0;
+      this._pendingShow = false;
+      this._lastClipRect = null;
+      this._appliedCornerRadius = null;
+      this._cachedCornerRadius = undefined;
+      this._cachedCornerKey = null;
+      this._themeVersion = 0;
+
       blurNotificationsThis = this; // Make "this" available to monkey patched functions
-      // Monkey patch the Notification show and hide functions
+      // Monkey patch Notification show and hide-complete so blur follows the entire fade-in/out animation
       this.original_showNotification = MessageTray.MessageTray.prototype._showNotification;
       MessageTray.MessageTray.prototype._showNotification = this._showNotification;
-      this.original_hideNotification = MessageTray.MessageTray.prototype._hideNotification
-      MessageTray.MessageTray.prototype._hideNotification = this._hideNotification;
+      this.original_hideNotificationCompleted = MessageTray.MessageTray.prototype._hideNotificationCompleted;
+      MessageTray.MessageTray.prototype._hideNotificationCompleted = this._hideNotificationCompleted;
 
-      // Create the effects and the background actor to apply to effects to
+      // Create the effects and the background actor to apply the effects to (starts hidden)
       let [opacity, blendColor, blurType, radius, saturation, grain] = this._getSettings(settings.notificationOverride);
       this._blurType = blurType;
       let useViewport = this._wantsViewport(blurType);
@@ -5211,7 +5578,11 @@ class BlurNotifications extends BlurBase {
       if (this._viewport) this._viewport._blurCinnamonName = "Notifications";
 
       this._activeNotificationData = null;
-      this.updateEffects();
+
+      this._themeContext = St.ThemeContext.get_for_stage(global.stage);
+      this._themeChangedId = this._themeContext.connect("changed", () => this._onThemeChanged());
+      this._scaleChangedId = global.connect("scale-changed", () => this._onScaleChanged());
+      this._monitorsChangedId = Main.layoutManager.connect("monitors-changed", () => this._onMonitorsChanged());
    }
 
    _supportsDynamicBlur() {
@@ -5222,8 +5593,255 @@ class BlurNotifications extends BlurBase {
       return [settings.notificationOpacity, settings.notificationBlendColor, settings.notificationBlurType, settings.notificationRadius, settings.notificationSaturation, settings.notificationGrain];
    }
 
+   _isActorAlive(actor) {
+      return !!actor && !(actor.is_finalized && actor.is_finalized());
+   }
+
+   _cancelNotificationReclip() {
+      if (this._reclipStageId) {
+         global.stage.disconnect(this._reclipStageId);
+         this._reclipStageId = 0;
+      }
+      if (this._reclipWakeId) {
+         Meta.later_remove(this._reclipWakeId);
+         this._reclipWakeId = 0;
+      }
+   }
+
+   _isHiddenByFullscreen(data) {
+      if (!data || data.showFullscreenNotifications)
+         return false;
+      let idx = data.monitorIndex;
+      if (typeof idx !== "number" || idx < 0 || idx >= Main.layoutManager.monitors.length) {
+         const monitor = this._isActorAlive(data.actor) ? Main.layoutManager.findMonitorForActor(data.actor) : null;
+         idx = monitor ? monitor.index : Main.layoutManager.primaryIndex;
+      }
+      if (idx < 0 || idx >= Main.layoutManager.monitors.length)
+         return false;
+      return global.display.get_monitor_in_fullscreen(idx);
+   }
+
+   _syncNotificationOpacity() {
+      const data = this._activeNotificationData;
+      if (!data || !this._background || !this._isActorAlive(data.actor))
+         return;
+      const opacity = (data.actor.visible && !this._isHiddenByFullscreen(data)) ? data.actor.opacity : 0;
+      if (this._viewport) {
+         // Keep the underlying expanded background transparent; only the viewport paints visibly.
+         this._viewport.opacity = opacity;
+         this._background.opacity = 0;
+      } else {
+         this._background.opacity = opacity;
+      }
+   }
+
+   _applyTransparentStyle(actor, originalStyle) {
+      if (!this._isActorAlive(actor))
+         return;
+      let base = originalStyle ?? "";
+      if (base.includes(NOTIFICATION_TRANSPARENT_STYLE)) {
+         if (actor.get_style() !== base)
+            actor.set_style(base);
+         return;
+      }
+      if (base.length > 0 && !base.trimEnd().endsWith(";"))
+         base += ";";
+      const applied = (base.length > 0 ? base + " " : "") + NOTIFICATION_TRANSPARENT_STYLE;
+      if (actor.get_style() !== applied)
+         actor.set_style(applied);
+   }
+
+   _applyNotificationStyles(data) {
+      if (!data) return;
+      if (settings.allowTransparentColorNotifications) {
+         this._applyTransparentStyle(data.actor, data.original_actor_style);
+         this._applyTransparentStyle(data.button, data.original_button_style);
+         this._applyTransparentStyle(data.table, data.original_table_style);
+      } else {
+         this._restoreNotificationStyle();
+      }
+   }
+
+   _updateNotificationCornerRadius(table) {
+      if (!this._isActorAlive(table))
+         return;
+      const scale = global.ui_scale;
+      const cacheKey = `${this._themeVersion}:${scale}:${table.get_name() || ""}:${table.get_style_class_name() || ""}`;
+      let cornerRadius;
+      if (this._cachedCornerKey === cacheKey && this._cachedCornerRadius !== undefined) {
+         cornerRadius = this._cachedCornerRadius;
+      } else {
+         cornerRadius = 0;
+         let themeNode = table.get_theme_node();
+         if (themeNode) {
+            // We are assuming that all corners have the same radius, hope that is true.
+            cornerRadius = themeNode.get_border_radius(St.Corner.TOPLEFT) / scale;
+         }
+         if (table.get_stage()) {
+            this._cachedCornerKey = cacheKey;
+            this._cachedCornerRadius = cornerRadius;
+         }
+      }
+      if (this._appliedCornerRadius !== cornerRadius) {
+         this._appliedCornerRadius = cornerRadius;
+         this._updateViewportCornerRadius(this._background, this._viewport, cornerRadius, true, true);
+         // A newly created or updated corner effect needs its clip rect refreshed in _setNotificationClip().
+         this._lastClipRect = null;
+      }
+   }
+
+   _setNotificationClip(data) {
+      const reclipStageId = this._reclipStageId;
+      if (!data || data !== this._activeNotificationData)
+         return false;
+      const {actor, table} = data;
+      if (!this._isActorAlive(actor) || !this._isActorAlive(table))
+         return false;
+      if (!actor.visible) {
+         this._background.hide();
+         if (this._viewport) this._viewport.hide();
+         return true;
+      }
+
+      // Completing pending layout can trigger MessageTray's bottomPositionSignal (queue-redraw)
+      // which updates _notificationBin.y and invalidates the allocation again. Loop briefly so
+      // the settled allocation is clipped in this same frame.
+      let box = null;
+      for (let pass = 0; pass < 3; pass++) {
+         box = Cinnamon.util_get_transformed_allocation(actor);
+         if (data !== this._activeNotificationData || reclipStageId !== this._reclipStageId ||
+             !this._isActorAlive(actor) || !this._isActorAlive(table) || !actor.visible)
+            return false;
+         if (actor.has_allocation())
+            break;
+      }
+      const width = box.x2 - box.x1;
+      const height = box.y2 - box.y1;
+      if (![box.x1, box.y1, width, height].every(Number.isFinite) || width <= 0 || height <= 0)
+         return false;
+
+      let left = 0, right = 0, top = 0, bottom = 0;
+      const themeNode = table.get_theme_node();
+      if (themeNode) {
+         left   = themeNode.get_margin(St.Side.LEFT);
+         right  = themeNode.get_margin(St.Side.RIGHT);
+         top    = themeNode.get_margin(St.Side.TOP);
+         bottom = themeNode.get_margin(St.Side.BOTTOM);
+      }
+      const x = box.x1 + left;
+      const y = box.y1 + top;
+      const w = width - (left + right);
+      const h = height - (top + bottom);
+      if (w <= 0 || h <= 0)
+         return false;
+
+      const prev = this._lastClipRect;
+      if (prev && prev[0] === x && prev[1] === y && prev[2] === w && prev[3] === h)
+         return true;
+      this._lastClipRect = [x, y, w, h];
+      this._applyBackgroundClip(this._background, this._viewport, x, y, w, h);
+      return true;
+   }
+
+   _queueNotificationReclip(wakeStage = false) {
+      const data = this._activeNotificationData;
+      if (!data)
+         return;
+
+      if (!this._reclipStageId) {
+         let stageId = 0;
+         const isCurrent = () => this._activeNotificationData === data && this._reclipStageId === stageId;
+         // Run on stage "before-update" (after timelines and before Clutter's stage relayout/paint)
+         // so initial positioning (including bottom-notifications), multi-line reflows, and hide
+         // slides stay frame-locked without mutating geometry during allocation or paint.
+         stageId = global.stage.connect("before-update", () => {
+            if (!isCurrent()) return;
+            if (this._reclipWakeId) {
+               Meta.later_remove(this._reclipWakeId);
+               this._reclipWakeId = 0;
+            }
+            try {
+               const actor = data.actor;
+               if (!this._isActorAlive(actor) || !this._isActorAlive(data.table)) {
+                  this._unblurNotification(true);
+                  return;
+               }
+               if (!actor.visible) {
+                  this._pendingShow = false;
+                  this._background.hide();
+                  if (this._viewport) this._viewport.hide();
+                  if (isCurrent()) {
+                     global.stage.disconnect(stageId);
+                     this._reclipStageId = 0;
+                  }
+                  return;
+               }
+               if (!actor.get_stage() || !actor.is_mapped())
+                  return;
+
+               const ready = this._setNotificationClip(data);
+               if (!isCurrent()) return;
+               if (!ready) return;
+
+               if (this._pendingShow) {
+                  this._pendingShow = false;
+                  if (!this._isHiddenByFullscreen(data)) {
+                     this._syncNotificationOpacity();
+                     const alreadyDynamic = this._isDynamicEffectActive(this._background);
+                     if (!this._background.mapped && alreadyDynamic && this._background._blurCinnamonRecloneId) {
+                        Mainloop.source_remove(this._background._blurCinnamonRecloneId);
+                        this._background._blurCinnamonRecloneId = 0;
+                     }
+                     this._background.show();
+                     if (this._viewport) this._viewport.show();
+                     if (isDynamicBlurType(this._blurType) && !alreadyDynamic) {
+                        this._createDynamicEffect(this._background);
+                     }
+                  } else {
+                     this._background.hide();
+                     if (this._viewport) this._viewport.hide();
+                  }
+               }
+
+               // Flush any pending clone update before this frame paints instead of waiting for an idle.
+               const background = this._background;
+               if (cloneManager && background._blurCinnamonWinClones && background._blurCinnamonRecloneId) {
+                  Mainloop.source_remove(background._blurCinnamonRecloneId);
+                  background._blurCinnamonRecloneId = 0;
+                  cloneManager.backgroundClipChangedNow(background);
+               }
+               if (!isCurrent()) return;
+               global.stage.disconnect(stageId);
+               this._reclipStageId = 0;
+            } catch (error) {
+               if (isCurrent()) {
+                  global.stage.disconnect(stageId);
+                  this._reclipStageId = 0;
+                  this._pendingShow = false;
+                  this._lastClipRect = null;
+                  this._background.hide();
+                  if (this._viewport) this._viewport.hide();
+               }
+               global.logError(error);
+            }
+         });
+         this._reclipStageId = stageId;
+      }
+
+      if (wakeStage && !this._reclipWakeId) {
+         this._reclipWakeId = Meta.later_add(Meta.LaterType.BEFORE_REDRAW, () => {
+            this._reclipWakeId = 0;
+            return false;
+         });
+      }
+   }
+
    updateEffects() {
-      this._cancelShowTimeout()
+      this._cancelNotificationReclip();
+      this._lastClipRect = null;
+      this._appliedCornerRadius = null;
+      this._cachedCornerRadius = undefined;
+      this._cachedCornerKey = null;
 
       let [opacity, blendColor, blurType, radius, saturation, grain] = this._getSettings(settings.notificationOverride);
 
@@ -5246,182 +5864,219 @@ class BlurNotifications extends BlurBase {
          this._updateViewportEffects(this._background, this._viewport, opacity, blendColor, blurType, radius, saturation, grain);
       } else {
          this._background = this._updateEffects(this._background, opacity, blendColor, blurType, radius, saturation);
+         this._background._blurCinnamonName = "Notifications";
       }
 
-      if (this._activeNotificationData) {
-        let {actor, button, table} = this._activeNotificationData;
-
-         let themeNode = table.get_theme_node();
-         if (themeNode) {
-            // We are assuming that all corners have the same radius, hope that is true.
-            let radius = themeNode.get_border_radius(St.Corner.TOPLEFT);
-            this._updateViewportCornerRadius(this._background, this._viewport, (radius/*+6*/)/global.ui_scale, true, true);
-         }
-         if (settings.allowTransparentColorNotifications) {
-            actor.set_style( /*"border-radius: 0px;*/ "background-gradient-direction: vertical; background-gradient-start: transparent; " +
-                             "background-gradient-end: transparent; background: transparent;" );
-            button.set_style( /*"border-radius: 0px;*/ "background-gradient-direction: vertical; background-gradient-start: transparent; " +
-                             "background-gradient-end: transparent; background: transparent;" );
-            table.set_style( /*"border-radius: 0px;*/ "background-gradient-direction: vertical; background-gradient-start: transparent; " +
-                             "background-gradient-end: transparent; background: transparent;" );
-         } else {
-            actor.set_style( this._activeNotificationData.original_actor_style );
-            button.set_style( this._activeNotificationData.original_button_style );
-            table.set_style( this._activeNotificationData.original_table_style );
-         }
-         this._setClip(actor, this._background, table, this._viewport);
-         this._fullscreen_changed()
-         if ((isDynamicBlurType(this._blurType)) && !this._isDynamicEffectActive(this._background)) {
-            this._createDynamicEffect(this._background);
-         }
+      const data = this._activeNotificationData;
+      if (data && this._isActorAlive(data.actor) && this._isActorAlive(data.table)) {
+         this._updateNotificationCornerRadius(data.table);
+         this._applyNotificationStyles(data);
+         this._pendingShow = true;
+         this._queueNotificationReclip(true);
       } else {
-         this._background.hide()
+         if (data)
+            this._unblurNotification(true);
+         this._pendingShow = false;
+         this._background.hide();
          if (this._viewport) this._viewport.hide();
       }
    }
 
    _showNotification() {
-      // Call the original function then call the function to setup the effect
+      // Call the original function then setup the blur effect on _notificationBin
       blurNotificationsThis.original_showNotification.call(this);
-      const allowFullscreen = this._showFullscreenNotifications || this._notification?.urgency === MessageTray.Urgency.CRITICAL;
-      blurNotificationsThis._blurNotification.call(blurNotificationsThis, this._notificationBin, allowFullscreen);
+      const allowFullscreen = Boolean(this._showFullscreenNotifications) ||
+         this._notification?.urgency === MessageTray.Urgency.CRITICAL;
+      const monitorIndex = (this._monitor && typeof this._monitor.index === "number") ? this._monitor.index : -1;
+      blurNotificationsThis._blurNotification.call(blurNotificationsThis, this._notificationBin, allowFullscreen, monitorIndex);
    }
 
-   _restoreNotificationStyle() {
+   _hideNotificationCompleted() {
+      // Restore notification styles before Cinnamon hands the actor to the notifications applet or destroys it.
+      blurNotificationsThis._unblurNotification(false);
+      blurNotificationsThis.original_hideNotificationCompleted.call(this);
+   }
+
+   _restoreNotificationStyle(skipChildActors = false) {
       const data = this._activeNotificationData;
       if (!data) return;
-      data.actor.set_style(data.original_actor_style);
-      data.button.set_style(data.original_button_style);
-      data.table.set_style(data.original_table_style);
+      if (this._isActorAlive(data.actor))
+         data.actor.set_style(data.original_actor_style);
+      if (!skipChildActors) {
+         if (this._isActorAlive(data.button))
+            data.button.set_style(data.original_button_style);
+         if (this._isActorAlive(data.table))
+            data.table.set_style(data.original_table_style);
+      }
    }
 
-   _blurNotification(actor, showFullscreenNotifications) {
-      this._cancelShowTimeout();
+   _unblurNotification(skipChildActors = false) {
+      this._cancelNotificationReclip();
+      this._pendingShow = false;
+      this._destroyDynamicEffect(this._background);
+      this._restoreNotificationStyle(skipChildActors);
+      this._activeNotificationData = null;
       this._signalManager.disconnectAllSignals();
-      let blendColor = (settings.notificationOverride) ? settings.notificationBlendColor : settings.blendColor;
-      let opacity = (settings.notificationOverride) ? settings.notificationOpacity : settings.opacity;
+      this._background.hide();
+      if (this._viewport) this._viewport.hide();
+   }
 
-      let button = actor.get_child();
-      let table = button.get_child();
-      //log( `Bluring the notification bin actor: ${actor}` );
-      //log( `   button ${actor.get_child()}` );
-      //log( `   table  ${actor.get_child().get_child()}` );
-      //this._printActor(actor);
-      //this._printActor(button);
-      //this._printActor(table);
+   _blurNotification(actor, showFullscreenNotifications, monitorIndex = -1) {
+      this._cancelNotificationReclip();
+      this._signalManager.disconnectAllSignals();
 
+      const button = this._isActorAlive(actor) ? actor.get_child() : null;
+      const table = this._isActorAlive(button) ? button.get_child() : null;
+      if (!button || !table) {
+         this._unblurNotification(true);
+         return;
+      }
+
+      // Save the current settings so we can restore them cleanly when the notification closes
+      const prevData = this._activeNotificationData;
+      if (!prevData || prevData.actor !== actor || prevData.button !== button || prevData.table !== table) {
+         this._restoreNotificationStyle();
+         this._activeNotificationData = {
+            actor, button, table, showFullscreenNotifications, monitorIndex,
+            original_actor_style: actor.get_style(),
+            original_button_style: button.get_style(),
+            original_table_style: table.get_style()
+         };
+      } else {
+         prevData.showFullscreenNotifications = showFullscreenNotifications;
+         prevData.monitorIndex = monitorIndex;
+      }
 
       if (actor.visible) {
-         let themeNode = table.get_theme_node();
-         if (themeNode) {
-            // We are assuming that all corners have the same radius, hope that is true.
-            let radius = themeNode.get_border_radius(St.Corner.TOPLEFT);
-            this._updateViewportCornerRadius(this._background, this._viewport, (radius/*+6*/)/global.ui_scale, true, true);
-         }
-
-         // Save the current settings so we can restore it if need be
-         const data = this._activeNotificationData;
-         if (!data || data.actor !== actor || data.button !== button || data.table !== table) {
-            this._restoreNotificationStyle();
-            this._activeNotificationData = {
-               actor, button, table, showFullscreenNotifications,
-               original_actor_style: actor.get_style(),
-               original_button_style: button.get_style(),
-               original_table_style: table.get_style()
-            };
-         }
-         this._activeNotificationData.showFullscreenNotifications = showFullscreenNotifications;
-
-         if (settings.allowTransparentColorNotifications) {
-            actor.set_style( /*"border-radius: 0px;*/ "background-gradient-direction: vertical; background-gradient-start: transparent; " +
-                             "background-gradient-end: transparent; background: transparent;" );
-            button.set_style( /*"border-radius: 0px;*/ "background-gradient-direction: vertical; background-gradient-start: transparent; " +
-                             "background-gradient-end: transparent; background: transparent;" );
-            table.set_style( /*"border-radius: 0px;*/ "background-gradient-direction: vertical; background-gradient-start: transparent; " +
-                             "background-gradient-end: transparent; background: transparent;" );
-         }
+         this._updateNotificationCornerRadius(table);
+         this._applyNotificationStyles(this._activeNotificationData);
       }
-      // Resize the background to match the size of the notification window
-      this._setClip(actor, this._background, table, this._viewport);
-      // If Dynamic Blurring is enabled, create a workspace clone and add the clone to the background
-      if (isDynamicBlurType(this._blurType)) {
-         this._createDynamicEffect(this._background);
-      }
-      // The notification window size can change after being shown, so we need to adjust the background when that happens
-      connectDeferredClip(this._signalManager, actor, () => this._setClip(actor, this._background, table, this._viewport) );
+
+      // Keep background/viewport hidden until before-update computes the settled clip rect
+      // (avoiding wrong pre-layout bottom-notification geometry and duplicate dynamic cloning).
+      if (this._background.visible) this._background.hide();
+      if (this._viewport && this._viewport.visible) this._viewport.hide();
+      this._pendingShow = true;
+
+      const queueReclip = () => this._queueNotificationReclip();
+      this._signalManager.connect(actor, "notify::allocation", queueReclip);
+      this._signalManager.connect(actor, "notify::size", queueReclip);
+      this._signalManager.connect(actor, "notify::position", queueReclip);
+      this._signalManager.connect(actor, "notify::x", queueReclip);
+      this._signalManager.connect(actor, "notify::y", queueReclip);
+      this._signalManager.connect(actor, "queue-relayout", queueReclip);
+      this._signalManager.connect(actor, "notify::opacity", () => this._syncNotificationOpacity());
+      this._signalManager.connect(actor, "notify::visible", () => {
+         if (!actor.visible) {
+            this._pendingShow = false;
+            this._background.hide();
+            if (this._viewport) this._viewport.hide();
+         } else {
+            this._syncNotificationOpacity();
+            this._queueNotificationReclip(true);
+         }
+      });
+      // Clicking or dismissing a notification destroys button immediately while _notificationBin
+      // finishes an empty hide tween; tear down the blur right away so no ghost blur lingers.
+      this._signalManager.connect(button, "destroy", () => {
+         if (this._activeNotificationData && this._activeNotificationData.button === button)
+            this._unblurNotification(true);
+      });
       if (!showFullscreenNotifications) {
          this._signalManager.connect(global.display, "in-fullscreen-changed", this._fullscreen_changed, this);
       }
-      let monitor = Main.layoutManager.findMonitorForActor(this._background);
-      let idx = Main.layoutManager.monitors.indexOf(monitor);
-      if (showFullscreenNotifications || !global.display.get_monitor_in_fullscreen(idx)) {
-         // Delay showing the blurred background until the notification tween is well underway
-         const background = this._background;
-         const activeData = this._activeNotificationData;
-         this._showTimeoutId = Mainloop.timeout_add(this.animation_time * 1000, () => {
-            this._showTimeoutId = 0;
-            if (!activeData || this._activeNotificationData !== activeData ||
-                this._background !== background || !actor.visible)
-               return false;
-            const monitor = Main.layoutManager.findMonitorForActor(background);
-            const idx = Main.layoutManager.monitors.indexOf(monitor);
-            if (showFullscreenNotifications || !global.display.get_monitor_in_fullscreen(idx)) {
-               background.show();
-               if (this._viewport) this._viewport.show();
-            }
-            return false;
-         });
-      }
+
+      this._queueNotificationReclip(true);
    }
 
    _fullscreen_changed() {
       const data = this._activeNotificationData;
-      let shouldShow = false;
-      if (data && data.actor.visible) {
-         const monitor = Main.layoutManager.findMonitorForActor(this._background);
-         const idx = Main.layoutManager.monitors.indexOf(monitor);
-         shouldShow = data.showFullscreenNotifications ||
-            !global.display.get_monitor_in_fullscreen(idx);
+      if (!data || !this._isActorAlive(data.actor) || !data.actor.visible) {
+         this._background.hide();
+         if (this._viewport) this._viewport.hide();
+         return;
       }
-      if (shouldShow) {
+      if (this._pendingShow)
+         return;
+      if (!this._isHiddenByFullscreen(data)) {
+         this._syncNotificationOpacity();
+         const alreadyDynamic = this._isDynamicEffectActive(this._background);
+         if (!this._background.mapped && alreadyDynamic && this._background._blurCinnamonRecloneId) {
+            Mainloop.source_remove(this._background._blurCinnamonRecloneId);
+            this._background._blurCinnamonRecloneId = 0;
+         }
          this._background.show();
          if (this._viewport) this._viewport.show();
+         if (isDynamicBlurType(this._blurType) && !alreadyDynamic) {
+            this._createDynamicEffect(this._background);
+         }
       } else {
          this._background.hide();
          if (this._viewport) this._viewport.hide();
       }
    }
 
-   _hideNotification() {
-      blurNotificationsThis._destroyDynamicEffect(blurNotificationsThis._background);
-      blurNotificationsThis._cancelShowTimeout();
-      blurNotificationsThis._restoreNotificationStyle();
-      blurNotificationsThis._activeNotificationData = null;
-      blurNotificationsThis._signalManager.disconnectAllSignals();
-      blurNotificationsThis._background.hide();
-      if (blurNotificationsThis._viewport) blurNotificationsThis._viewport.hide();
-      blurNotificationsThis.original_hideNotification.call(this);
+   _onThemeChanged() {
+      this._themeVersion++;
+      this._appliedCornerRadius = null;
+      this._cachedCornerRadius = undefined;
+      this._cachedCornerKey = null;
+      this._lastClipRect = null;
+      const data = this._activeNotificationData;
+      if (data && this._isActorAlive(data.table) && this._isActorAlive(data.actor) && data.actor.visible) {
+         this._updateNotificationCornerRadius(data.table);
+         this._queueNotificationReclip(true);
+      }
    }
 
-   _cancelShowTimeout() {
-      if (this._showTimeoutId) {
-         Mainloop.source_remove(this._showTimeoutId);
-         this._showTimeoutId = 0;
+   _onScaleChanged() {
+      this._appliedCornerRadius = null;
+      this._cachedCornerRadius = undefined;
+      this._cachedCornerKey = null;
+      this._lastClipRect = null;
+      const data = this._activeNotificationData;
+      if (data && this._isActorAlive(data.table) && this._isActorAlive(data.actor) && data.actor.visible) {
+         this._updateNotificationCornerRadius(data.table);
+         this._queueNotificationReclip(true);
+      }
+   }
+
+   _onMonitorsChanged() {
+      this._lastClipRect = null;
+      const data = this._activeNotificationData;
+      if (data) {
+         data.monitorIndex = -1;
+         if (this._isActorAlive(data.actor) && data.actor.visible) {
+            this._fullscreen_changed();
+            this._queueNotificationReclip(true);
+         }
       }
    }
 
    destroy() {
-      // If there is an active notification, then restore it's original visual settings
-      this._cancelShowTimeout();
-      this._restoreNotificationStyle();
-      this._activeNotificationData = null;
-      this._signalManager.disconnectAllSignals();
-      this._background.hide();
-      if (this._viewport) this._viewport.hide();
+      // If there is an active notification, restore its original visual settings
+      this._unblurNotification(false);
+      this._lastClipRect = null;
+      this._appliedCornerRadius = null;
+      this._cachedCornerRadius = undefined;
+      this._cachedCornerKey = null;
+
+      if (this._themeChangedId) {
+         this._themeContext.disconnect(this._themeChangedId);
+         this._themeChangedId = 0;
+      }
+      if (this._scaleChangedId) {
+         global.disconnect(this._scaleChangedId);
+         this._scaleChangedId = 0;
+      }
+      if (this._monitorsChangedId) {
+         Main.layoutManager.disconnect(this._monitorsChangedId);
+         this._monitorsChangedId = 0;
+      }
 
       // Restore monkey patched functions and destroy the _background
       MessageTray.MessageTray.prototype._showNotification = this.original_showNotification;
-      MessageTray.MessageTray.prototype._hideNotification = this.original_hideNotification;
+      MessageTray.MessageTray.prototype._hideNotificationCompleted = this.original_hideNotificationCompleted;
       this._destroyBackgroundAndViewport(this._background, getBackgroundParent());
       if (blurNotificationsThis === this) blurNotificationsThis = null;
    }
@@ -6207,9 +6862,10 @@ class BlurApplications extends BlurBase {
             // CloneManager uses to decide which windows to clone (see getBackgroundClip()).
             data.viewport._blurCinnamonSamplingRect = [rect.x, rect.y, rect.width, rect.height];
 
-            let margin = getViewportMargin(data.viewport);
             // The monitors the window is drawn on now, which an animation can change
-            let bounds = getSamplingBounds(ox + sx * rect.x, oy + sy * rect.y, sx * rect.width, sy * rect.height);
+            const stageRect = [ox + sx * rect.x, oy + sy * rect.y, sx * rect.width, sy * rect.height];
+            let margin = getViewportMargin(data.viewport, data.viewport._blurCinnamonSamplingRect, stageRect);
+            let bounds = getSamplingBounds(...stageRect);
             bounds = _stageRectInActorCoordinates(transform, bounds, rect.x + rect.width / 2, rect.y + rect.height / 2);
             let [ex, ey, ew, eh] = getExpandedRect(rect.x, rect.y, rect.width, rect.height, margin, bounds);
             data.background.set_clip( ox + sx * ex, oy + sy * ey, sx * ew, sy * eh );
@@ -6240,6 +6896,14 @@ class BlurApplications extends BlurBase {
                cornerEffect.set_viewport_clip([rect.x - ex, rect.y - ey, rect.width, rect.height]);
             }
             this._setLiquidGlassRect(data.viewport, [rect.x - ex, rect.y - ey, rect.width, rect.height]);
+            let blurEffect = this._getBlurEffect(data.viewport);
+            if (blurEffect instanceof Refraction.RefractionEffect && !blurEffect.on_clip_settled) {
+               blurEffect.on_clip_settled = () => {
+                  if (!this._destroyed && compositor._blurCinnamonDataWindow === data &&
+                      data.viewport.visible && data.viewport.get_stage())
+                     this._setClip(compositor, false, true);
+               };
+            }
          } else {
             // The effects are on background, whose coordinates are the stage's: clip it to the frame
             // as the compositor draws it now
@@ -7054,7 +7718,9 @@ class BlurDesklets extends BlurBase {
    // A string that changes whenever a global, blur type specific setting used by the given blur type changes
    _getExtraEffectSignature(blurType, radius) {
       if (isLiquidGlassBlurType(blurType))
-         return JSON.stringify( getLiquidGlassParams(radius) );
+         return `${settings.dualKawaseMode}/${JSON.stringify( getLiquidGlassParams(radius) )}`;
+      if (blurType === BlurType.DualKawase || blurType === BlurType.DynamicDK)
+         return settings.dualKawaseMode;
       if (blurType === BlurType.MonteCarlo || blurType === BlurType.DynamicMC)
          return `${settings.montecarloIterations}/${settings.montecarloUseBasePixel}/${settings.montecarloPerferCloserPixels}`;
       return "";
@@ -7220,6 +7886,7 @@ class BlurSettings {
       this.bind('blendColor', 'blendColor', colorChanged);
       this.bind('saturation', 'saturation', saturationChanged);
       this.bind('grain',      'grain',      grainChanged);
+      this.bind('dual-kawase-mode', 'dualKawaseMode', dualKawaseModeChanged);
 
       this.bind('monte-carlo-iterations', 'montecarloIterations', blurChanged);
       this.bind('monte-carlo-use-base-pixel', 'montecarloUseBasePixel', blurChanged);
@@ -7228,8 +7895,12 @@ class BlurSettings {
       this.bind('liquid-glass-strength', 'liquidGlassStrength', blurChanged);
       this.bind('liquid-glass-edge-size', 'liquidGlassEdgeSize', blurChanged);
       this.bind('liquid-glass-rim-width', 'liquidGlassRimWidth', blurChanged);
+      this.bind('liquid-glass-reach', 'liquidGlassReach', blurChanged);
       this.bind('liquid-glass-falloff', 'liquidGlassFalloff', blurChanged);
       this.bind('liquid-glass-gloss', 'liquidGlassGloss', blurChanged);
+      this.bind('liquid-glass-specular-strength', 'liquidGlassSpecularStrength', blurChanged);
+      this.bind('liquid-glass-edge-shadow', 'liquidGlassEdgeShadow', blurChanged);
+      this.bind('liquid-glass-edge-glow', 'liquidGlassEdgeGlow', blurChanged);
       this.bind('liquid-glass-backdrop-zoom', 'liquidGlassBackdropZoom', blurChanged);
       this.bind('liquid-glass-shadow', 'liquidGlassShadow', blurChanged);
       this.bind('liquid-glass-rgb-fringing', 'liquidGlassRgbFringing', blurChanged);
@@ -7502,6 +8173,15 @@ function grainChanged() {
    updateFocusedWindowEffect();
 }
 
+function dualKawaseModeChanged() {
+   EffectPool.drainPool(BlurBase.liquidGlassEffectCache);
+   blurChanged();
+   EffectPool.drainPool(BlurBase.dualKawaseEffectCache);
+   DualKawaseBlur.drainPools();
+   Kawase.drainIdlePools();
+   Utils.scheduleFramebufferGC();
+}
+
 function blurChanged() {
    if (blurPanels) {
       blurPanels.updateEffects();
@@ -7740,7 +8420,6 @@ function enable() {
 
 function disable() {
   cancelWindowEnableIdle();
-  Utils.cancelFramebufferGC();
 
    if (Overview.Overview.prototype._oldAnimateVisible) {
       delete Overview.Overview.prototype._oldAnimateVisible;
@@ -7821,6 +8500,7 @@ function disable() {
 
    // All components have released their effects into the pools by now
    BlurBase.drainEffectPools();
+   Utils.cancelFramebufferGC();
 
    // If disabled was called to remove the extension entirely rather than a reload
    // we can reset the "new-install" value so that if the user adds the extension
